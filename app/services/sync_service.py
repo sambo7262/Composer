@@ -198,9 +198,14 @@ async def run_sync() -> None:
             if total is None:
                 total = batch_total
                 _sync_status.total_tracks = total
+                logger.info("Sync started: %d total tracks", total)
 
             await _upsert_tracks(batch)
             _sync_status.synced_tracks += len(batch)
+            logger.info("Synced %d / %d tracks", _sync_status.synced_tracks, total)
+
+            # Yield to event loop so status endpoint can respond
+            await asyncio.sleep(0)
 
             if len(batch) < batch_size or offset + len(batch) >= total:
                 break
