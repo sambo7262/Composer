@@ -76,7 +76,7 @@ async def start_scheduler() -> None:
             sync_info = get_last_sync_info(session)
             if sync_info["last_sync_completed"] is None and is_service_configured(session, "plex"):
                 logger.info("No prior sync found and Plex is configured -- triggering auto-sync")
-                await run_sync()
+                asyncio.create_task(run_sync())
     except Exception:
         # Schedule with default even if settings load fails
         schedule_sync(interval_hours)
