@@ -204,6 +204,14 @@ async def run_sync() -> None:
                 _sync_status.state = SyncStateEnum.COMPLETED
                 _sync_status.last_synced = now
                 await asyncio.to_thread(_update_sync_state_sync, total)
+
+                # D-01: Auto-trigger analysis after delta sync
+                try:
+                    from app.services.analysis_service import trigger_post_sync_analysis
+                    await trigger_post_sync_analysis()
+                except Exception as analysis_exc:
+                    logger.warning("Post-sync analysis trigger failed: %s", analysis_exc)
+
                 return
             else:
                 # Delta returned 0 -- check if library actually has tracks
@@ -245,6 +253,13 @@ async def run_sync() -> None:
         _sync_status.state = SyncStateEnum.COMPLETED
         _sync_status.last_synced = now
         await asyncio.to_thread(_update_sync_state_sync, total or 0)
+
+        # D-01: Auto-trigger analysis of un-analyzed tracks after sync completes
+        try:
+            from app.services.analysis_service import trigger_post_sync_analysis
+            await trigger_post_sync_analysis()
+        except Exception as analysis_exc:
+            logger.warning("Post-sync analysis trigger failed: %s", analysis_exc)
 
     except Exception as exc:
         _sync_status.state = SyncStateEnum.FAILED
