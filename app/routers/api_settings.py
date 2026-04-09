@@ -1,0 +1,250 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import HTMLResponse
+from sqlmodel import Session
+
+from app.database import get_session
+from app.services.plex_client import test_plex_connection
+from app.services.ollama_client import test_ollama_connection
+from app.services.lidarr_client import test_lidarr_connection
+from app.services.settings_service import (
+    get_all_settings,
+    get_setting,
+    save_setting,
+)
+
+router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+def get_templates():
+    """Lazy import to avoid circular dependency with app.main."""
+    from app.main import templates
+    return templates
+
+
+# --- Plex endpoints ---
+
+
+@router.post("/plex/test", response_class=HTMLResponse)
+async def test_plex(
+    request: Request,
+    url: str = Form(...),
+    token: str = Form(...),
+):
+    """Test Plex connection. Returns HTMX partial with result."""
+    result = await test_plex_connection(url, token)
+    templates = get_templates()
+
+    return templates.TemplateResponse(
+        request,
+        "partials/connection_status.html",
+        {
+            "service": "plex",
+            "success": result["success"],
+            "server_name": result.get("server_name"),
+            "options": result.get("libraries", []),
+            "option_label": "Music Library",
+            "option_name": "library",
+            "error": result.get("error"),
+            "url": url,
+            "token": token,
+        },
+    )
+
+
+@router.post("/plex/save", response_class=HTMLResponse)
+async def save_plex(
+    request: Request,
+    url: str = Form(...),
+    token: str = Form(...),
+    library_id: str = Form(...),
+    library_name: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    """Save Plex configuration."""
+    save_setting(
+        session, "plex", url, token,
+        {"library_id": library_id, "library_name": library_name},
+    )
+    setting = get_setting(session, "plex")
+    templates = get_templates()
+
+    return templates.TemplateResponse(
+        request,
+        "partials/service_card.html",
+        {
+            "service": "plex",
+            "heading": "Plex Server",
+            "description": "Connect to your Plex Media Server to access your music library.",
+            "configured": True,
+            "enabled": True,
+            "setting": setting,
+        },
+    )
+
+
+# --- Ollama endpoints ---
+
+
+@router.post("/ollama/test", response_class=HTMLResponse)
+async def test_ollama(
+    request: Request,
+    url: str = Form(...),
+):
+    """Test Ollama connection. Returns HTMX partial with result."""
+    result = await test_ollama_connection(url)
+    templates = get_templates()
+
+    return templates.TemplateResponse(
+        request,
+        "partials/connection_status.html",
+        {
+            "service": "ollama",
+            "success": result["success"],
+            "options": result.get("models", []),
+            "option_label": "Model",
+            "option_name": "model",
+            "error": result.get("error"),
+            "url": url,
+        },
+    )
+
+
+@router.post("/ollama/save", response_class=HTMLResponse)
+async def save_ollama(
+    request: Request,
+    url: str = Form(...),
+    model: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    """Save Ollama configuration."""
+    save_setting(session, "ollama", url, "", {"model": model})
+    setting = get_setting(session, "ollama")
+    templates = get_templates()
+
+    return templates.TemplateResponse(
+        request,
+        "partials/service_card.html",
+        {
+            "service": "ollama",
+            "heading": "Ollama",
+            "description": "Connect to Ollama for AI-powered mood interpretation. Optional -- you can add this later.",
+            "configured": True,
+            "enabled": True,
+            "setting": setting,
+        },
+    )
+
+
+# --- Lidarr endpoints ---
+
+
+@router.post("/lidarr/test", response_class=HTMLResponse)
+async def test_lidarr(
+    request: Request,
+    url: str = Form(...),
+    api_key: str = Form(...),
+):
+    """Test Lidarr connection. Returns HTMX partial with result."""
+    result = await test_lidarr_connection(url, api_key)
+    templates = get_templates()
+
+    return templates.TemplateResponse(
+        request,
+        "partials/connection_status.html",
+        {
+            "service": "lidarr",
+            "success": result["success"],
+            "options": result.get("profiles", []),
+            "option_label": "Quality Profile",
+            "option_name": "profile",
+            "error": result.get("error"),
+            "url": url,
+            "api_key": api_key,
+        },
+    )
+
+
+@router.post("/lidarr/save", response_class=HTMLResponse)
+async def save_lidarr(
+    request: Request,
+    url: str = Form(...),
+    api_key: str = Form(...),
+    profile_id: str = Form(...),
+    profile_name: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    """Save Lidarr configuration."""
+    save_setting(
+        session, "lidarr", url, api_key,
+        {"profile_id": profile_id, "profile_name": profile_name},
+    )
+    setting = get_setting(session, "lidarr")
+    templates = get_templates()
+
+    return templates.TemplateResponse(
+        request,
+        "partials/service_card.html",
+        {
+            "service": "lidarr",
+            "heading": "Lidarr",
+            "description": "Connect to Lidarr for artist discovery and library management. Optional -- you can add this later.",
+            "configured": True,
+            "enabled": True,
+            "setting": setting,
+        },
+    )
+
+
+# --- Status endpoint ---
+
+
+@router.get("")
+async def get_settings_status(session: Session = Depends(get_session)):
+    """Return all service statuses. No credentials in response."""
+    settings = get_all_settings(session)
+    return [s.dict() for s in settings]
+
+
+# --- Reconfigure endpoints ---
+
+
+@router.post("/{service}/reconfigure", response_class=HTMLResponse)
+async def reconfigure_service(
+    request: Request,
+    service: str,
+    session: Session = Depends(get_session),
+):
+    """Return the unconfigured form partial for re-entry. Does NOT delete config."""
+    templates = get_templates()
+
+    service_meta = {
+        "plex": {
+            "heading": "Plex Server",
+            "description": "Connect to your Plex Media Server to access your music library.",
+        },
+        "ollama": {
+            "heading": "Ollama",
+            "description": "Connect to Ollama for AI-powered mood interpretation. Optional -- you can add this later.",
+        },
+        "lidarr": {
+            "heading": "Lidarr",
+            "description": "Connect to Lidarr for artist discovery and library management. Optional -- you can add this later.",
+        },
+    }
+
+    meta = service_meta.get(service, {"heading": service, "description": ""})
+
+    return templates.TemplateResponse(
+        request,
+        "partials/service_card.html",
+        {
+            "service": service,
+            "heading": meta["heading"],
+            "description": meta["description"],
+            "configured": False,
+            "enabled": True,
+            "setting": None,
+        },
+    )

@@ -1,0 +1,91 @@
+<div id="{{ service }}-status">
+{% if success %}
+  <div class="mt-4 p-4 rounded-lg border border-success bg-surface-elevated">
+    <div class="flex items-center gap-2 mb-3">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-success">
+        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+        <polyline points="22 4 12 14.01 9 11.01"/>
+      </svg>
+      <span class="text-success font-semibold text-[15px]">
+        Connected{% if server_name %} to {{ server_name }}{% endif %}
+      </span>
+    </div>
+
+    {% if service == "plex" %}
+    <p class="text-text-secondary text-[15px] mb-3">Connected to {{ server_name }}. Select your music library below.</p>
+    {% elif service == "ollama" %}
+    <p class="text-text-secondary text-[15px] mb-3">Connected. Select a model below.</p>
+    {% elif service == "lidarr" %}
+    <p class="text-text-secondary text-[15px] mb-3">Connected. Select a default quality profile below.</p>
+    {% endif %}
+
+    <form hx-post="/api/settings/{{ service }}/save" hx-target="#{{ service }}-card">
+      {% if service == "plex" %}
+        <input type="hidden" name="url" value="{{ url }}">
+        <input type="hidden" name="token" value="{{ token }}">
+        <div class="mb-3">
+          <label for="{{ service }}-option" class="block text-[13px] text-text-secondary mb-1">{{ option_label }}</label>
+          <select id="{{ service }}-option" name="library_id"
+                  class="w-full bg-surface-elevated border border-border rounded px-4 py-2 text-text-primary focus:border-border-focus focus:ring-1 focus:ring-border-focus">
+            {% for opt in options %}
+            <option value="{{ opt.key }}">{{ opt.title }}</option>
+            {% endfor %}
+          </select>
+          <!-- Hidden field for library name -->
+          <select name="library_name" class="hidden">
+            {% for opt in options %}
+            <option value="{{ opt.title }}" {% if loop.first %}selected{% endif %}>{{ opt.title }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      {% elif service == "ollama" %}
+        <input type="hidden" name="url" value="{{ url }}">
+        <div class="mb-3">
+          <label for="{{ service }}-option" class="block text-[13px] text-text-secondary mb-1">{{ option_label }}</label>
+          <select id="{{ service }}-option" name="model"
+                  class="w-full bg-surface-elevated border border-border rounded px-4 py-2 text-text-primary focus:border-border-focus focus:ring-1 focus:ring-border-focus">
+            {% for opt in options %}
+            <option value="{{ opt }}">{{ opt }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      {% elif service == "lidarr" %}
+        <input type="hidden" name="url" value="{{ url }}">
+        <input type="hidden" name="api_key" value="{{ api_key }}">
+        <div class="mb-3">
+          <label for="{{ service }}-option" class="block text-[13px] text-text-secondary mb-1">{{ option_label }}</label>
+          <select id="{{ service }}-option" name="profile_id"
+                  class="w-full bg-surface-elevated border border-border rounded px-4 py-2 text-text-primary focus:border-border-focus focus:ring-1 focus:ring-border-focus">
+            {% for opt in options %}
+            <option value="{{ opt.id }}">{{ opt.name }}</option>
+            {% endfor %}
+          </select>
+          <select name="profile_name" class="hidden">
+            {% for opt in options %}
+            <option value="{{ opt.name }}" {% if loop.first %}selected{% endif %}>{{ opt.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      {% endif %}
+
+      <button type="submit"
+              class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-6 py-2 rounded-lg transition-colors min-h-[44px]">
+        Save Configuration
+      </button>
+    </form>
+  </div>
+{% else %}
+  <div class="mt-4 p-4 rounded-lg border border-error bg-surface-elevated">
+    <div class="flex items-center gap-2">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-error">
+        <circle cx="12" cy="12" r="10"/>
+        <line x1="15" y1="9" x2="9" y2="15"/>
+        <line x1="9" y1="9" x2="15" y2="15"/>
+      </svg>
+      <span class="text-error text-[15px]">{{ error }}</span>
+    </div>
+  </div>
+{% endif %}
+</div>

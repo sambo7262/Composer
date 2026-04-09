@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.database import init_db
-from app.routers import api_health, pages
+from app.routers import api_health, api_settings, pages
 from app.services.encryption import get_encryptor
 
 
@@ -25,4 +25,5 @@ templates = Jinja2Templates(directory="app/templates")
 
 # Include routers
 app.include_router(api_health.router)
+app.include_router(api_settings.router)
 app.include_router(pages.router)

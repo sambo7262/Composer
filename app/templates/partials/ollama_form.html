@@ -1,0 +1,17 @@
+<form hx-post="/api/settings/ollama/test" hx-target="#ollama-result" hx-indicator="#ollama-spinner">
+  <div class="space-y-4">
+    <div>
+      <label for="ollama-url" class="block text-[13px] text-text-secondary mb-1">Endpoint URL</label>
+      <input type="text" id="ollama-url" name="url" placeholder="http://ollama:11434"
+             class="w-full bg-surface-elevated border border-border rounded px-4 py-2 text-text-primary placeholder-text-muted focus:border-border-focus focus:ring-1 focus:ring-border-focus focus:outline-none">
+    </div>
+    <div class="flex items-center gap-3">
+      <button type="submit"
+              class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-6 py-2 rounded-lg transition-colors min-h-[44px]">
+        Test Connection
+      </button>
+      {% include "partials/spinner.html" %}
+    </div>
+  </div>
+</form>
+<div id="ollama-result"></div>

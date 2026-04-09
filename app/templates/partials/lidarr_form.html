@@ -1,0 +1,22 @@
+<form hx-post="/api/settings/lidarr/test" hx-target="#lidarr-result" hx-indicator="#lidarr-spinner">
+  <div class="space-y-4">
+    <div>
+      <label for="lidarr-url" class="block text-[13px] text-text-secondary mb-1">Server URL</label>
+      <input type="text" id="lidarr-url" name="url" placeholder="http://lidarr:8686"
+             class="w-full bg-surface-elevated border border-border rounded px-4 py-2 text-text-primary placeholder-text-muted focus:border-border-focus focus:ring-1 focus:ring-border-focus focus:outline-none">
+    </div>
+    <div>
+      <label for="lidarr-api-key" class="block text-[13px] text-text-secondary mb-1">API Key</label>
+      <input type="password" id="lidarr-api-key" name="api_key" placeholder="Your Lidarr API key"
+             class="w-full bg-surface-elevated border border-border rounded px-4 py-2 text-text-primary placeholder-text-muted focus:border-border-focus focus:ring-1 focus:ring-border-focus focus:outline-none">
+    </div>
+    <div class="flex items-center gap-3">
+      <button type="submit"
+              class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-6 py-2 rounded-lg transition-colors min-h-[44px]">
+        Test Connection
+      </button>
+      {% include "partials/spinner.html" %}
+    </div>
+  </div>
+</form>
+<div id="lidarr-result"></div>
