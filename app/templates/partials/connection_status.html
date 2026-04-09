@@ -32,12 +32,6 @@
             <option value="{{ opt.key }}">{{ opt.title }}</option>
             {% endfor %}
           </select>
-          <!-- Hidden field for library name -->
-          <select name="library_name" class="hidden">
-            {% for opt in options %}
-            <option value="{{ opt.title }}" {% if loop.first %}selected{% endif %}>{{ opt.title }}</option>
-            {% endfor %}
-          </select>
         </div>
       {% elif service == "ollama" %}
         <input type="hidden" name="url" value="{{ url }}">

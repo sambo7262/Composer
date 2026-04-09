@@ -49,5 +49,6 @@ def init_db() -> None:
     """Create all database tables."""
     # Import models to register them with SQLModel metadata
     from app.models.settings import ServiceConfig  # noqa: F401
+    from app.models.track import Track, SyncState  # noqa: F401
 
     SQLModel.metadata.create_all(get_engine())

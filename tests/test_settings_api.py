@@ -58,13 +58,18 @@ class TestPlexSaveEndpoint:
     @patch("app.routers.api_settings.test_plex_connection")
     def test_save_persists_and_returns_masked_state(self, mock_test, client):
         """POST plex/save persists the setting and returns masked credential HTML."""
+        mock_test.return_value = {
+            "success": True,
+            "server_name": "My Plex",
+            "libraries": [{"key": "1", "title": "Music"}],
+        }
+
         response = client.post(
             "/api/settings/plex/save",
             data={
                 "url": "http://plex:32400",
                 "token": "secret-token",
                 "library_id": "1",
-                "library_name": "Music",
             },
         )
 
@@ -72,6 +77,52 @@ class TestPlexSaveEndpoint:
         # Should show masked credential, not the raw token
         assert "secret-token" not in response.text
         assert "http://plex:32400" in response.text
+
+    @patch("app.routers.api_settings.test_plex_connection")
+    def test_save_resolves_library_name_server_side(self, mock_test, client):
+        """POST plex/save no longer requires library_name -- resolves from library_id."""
+        mock_test.return_value = {
+            "success": True,
+            "server_name": "My Plex",
+            "libraries": [
+                {"key": "1", "title": "Music"},
+                {"key": "2", "title": "Audiobooks"},
+            ],
+        }
+
+        # No library_name in form data -- server resolves it
+        response = client.post(
+            "/api/settings/plex/save",
+            data={
+                "url": "http://plex:32400",
+                "token": "secret-token",
+                "library_id": "2",
+            },
+        )
+
+        assert response.status_code == 200
+
+    @patch("app.routers.api_settings.test_plex_connection")
+    def test_save_no_library_name_form_field_required(self, mock_test, client):
+        """Verify library_name is NOT a required form field (D-12 bug fix)."""
+        mock_test.return_value = {
+            "success": True,
+            "server_name": "My Plex",
+            "libraries": [{"key": "1", "title": "Music"}],
+        }
+
+        # Explicitly do NOT send library_name
+        response = client.post(
+            "/api/settings/plex/save",
+            data={
+                "url": "http://plex:32400",
+                "token": "secret-token",
+                "library_id": "1",
+            },
+        )
+
+        # Should succeed without library_name
+        assert response.status_code == 200
 
 
 class TestSettingsStatusEndpoint:

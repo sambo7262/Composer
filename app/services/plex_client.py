@@ -5,6 +5,62 @@ import asyncio
 from plexapi.server import PlexServer
 
 
+def _map_track(t) -> dict:
+    """Map a PlexAPI Track object to a dict with standard field names."""
+    return {
+        "plex_rating_key": str(t.ratingKey),
+        "title": t.title or "",
+        "artist": t.grandparentTitle or "",
+        "album": t.parentTitle or "",
+        "genre": ", ".join(g.tag for g in (t.genres or [])),
+        "year": t.year,
+        "duration_ms": t.duration or 0,
+        "added_at": t.addedAt.isoformat() if t.addedAt else None,
+        "updated_at": t.updatedAt.isoformat() if t.updatedAt else None,
+    }
+
+
+async def get_library_tracks(
+    url: str,
+    token: str,
+    library_id: str,
+    container_start: int = 0,
+    container_size: int = 200,
+) -> tuple[list[dict], int]:
+    """Fetch tracks from a Plex music library in paginated batches.
+
+    Returns (tracks_list, total_count).
+    """
+    plex = await asyncio.to_thread(PlexServer, url, token, timeout=30)
+    section = await asyncio.to_thread(lambda: plex.library.sectionByID(int(library_id)))
+    total = section.totalSize
+    tracks = await asyncio.to_thread(
+        section.searchTracks,
+        container_start=container_start,
+        container_size=container_size,
+    )
+    return [_map_track(t) for t in tracks], total
+
+
+async def get_tracks_since(
+    url: str,
+    token: str,
+    library_id: str,
+    since_date_str: str,
+) -> tuple[list[dict], int]:
+    """Fetch tracks added after a given date for delta sync.
+
+    Returns (tracks_list, count).
+    """
+    plex = await asyncio.to_thread(PlexServer, url, token, timeout=30)
+    section = await asyncio.to_thread(lambda: plex.library.sectionByID(int(library_id)))
+    tracks = await asyncio.to_thread(
+        section.searchTracks,
+        filters={"addedAt>>": since_date_str},
+    )
+    return [_map_track(t) for t in tracks], len(tracks)
+
+
 async def test_plex_connection(url: str, token: str) -> dict:
     """Test Plex connection and return server name + music libraries."""
     try:

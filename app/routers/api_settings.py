@@ -59,10 +59,17 @@ async def save_plex(
     url: str = Form(...),
     token: str = Form(...),
     library_id: str = Form(...),
-    library_name: str = Form(...),
     session: Session = Depends(get_session),
 ):
-    """Save Plex configuration."""
+    """Save Plex configuration. Resolves library_name server-side (D-12 fix)."""
+    # Resolve library name from Plex server instead of relying on form field
+    library_name = library_id  # fallback
+    result = await test_plex_connection(url, token)
+    if result["success"]:
+        for lib in result.get("libraries", []):
+            if lib["key"] == library_id:
+                library_name = lib["title"]
+                break
     save_setting(
         session, "plex", url, token,
         {"library_id": library_id, "library_name": library_name},
