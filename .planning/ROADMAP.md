@@ -12,7 +12,7 @@ Composer delivers mood-based playlist generation from a fully self-hosted music 
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation, Configuration & Deployment** - Docker container, CI/CD to Docker Hub, settings page, security patterns, Plex connection
+- [x] **Phase 1: Foundation, Configuration & Deployment** - Docker container, CI/CD to Docker Hub, settings page, security patterns, Plex connection (completed 2026-04-09)
 - [ ] **Phase 2: Library Sync** - Full Plex music library synced to local SQLite with delta updates
 - [ ] **Phase 3: Audio Feature Extraction** - Essentia analyzes local audio files for energy, tempo, danceability, valence
 - [ ] **Phase 4: Playlist Generation** - Mood-to-playlist pipeline: natural language in, curated playlist out, pushed to Plex
@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Plex media directory is mounted read-only and accessible to the container for future Essentia analysis
   5. App persists configuration across container restarts via SQLite
   6. Docker image is automatically built via GitHub Actions on push/tag and published to Docker Hub
-**Plans:** 3 plans
+**Plans:** 3/3 plans complete
 Plans:
 - [x] 01-01-PLAN.md — Project foundation: database, encryption, models, app factory, Docker files, dark theme
 - [x] 01-02-PLAN.md — Settings page: test-and-configure flows for Plex/Ollama/Lidarr, welcome page, progressive setup
@@ -105,7 +105,7 @@ Note: Phases 5 and 6 both depend on Phase 4 and could execute in parallel.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|---------------|--------|-----------|
-| 1. Foundation, Configuration & Deployment | 0/3 | Planned | - |
+| 1. Foundation, Configuration & Deployment | 3/3 | Complete    | 2026-04-09 |
 | 2. Library Sync | 0/TBD | Not started | - |
 | 3. Audio Feature Extraction | 0/TBD | Not started | - |
 | 4. Playlist Generation | 0/TBD | Not started | - |
