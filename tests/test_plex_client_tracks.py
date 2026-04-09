@@ -112,3 +112,72 @@ class TestGetTracksSince:
         assert count == 1
         assert tracks[0]["plex_rating_key"] == "99"
         assert tracks[0]["title"] == "New Song"
+
+
+class TestMapTrackFilePath:
+    """Tests for file_path extraction in _map_track."""
+
+    def test_extracts_file_path_from_media_parts(self):
+        """_map_track extracts file_path from track.media[0].parts[0].file."""
+        from app.services.plex_client import _map_track
+
+        mock_part = MagicMock()
+        mock_part.file = "/data/Music/Artist/Album/song.flac"
+        mock_media = MagicMock()
+        mock_media.parts = [mock_part]
+
+        mock_track = MagicMock()
+        mock_track.ratingKey = 100
+        mock_track.title = "Song"
+        mock_track.grandparentTitle = "Artist"
+        mock_track.parentTitle = "Album"
+        mock_track.genres = []
+        mock_track.year = 2020
+        mock_track.duration = 200000
+        mock_track.addedAt = None
+        mock_track.updatedAt = None
+        mock_track.media = [mock_media]
+
+        result = _map_track(mock_track)
+        assert result["file_path"] == "/data/Music/Artist/Album/song.flac"
+
+    def test_file_path_none_when_no_media(self):
+        """_map_track returns file_path=None when media is empty."""
+        from app.services.plex_client import _map_track
+
+        mock_track = MagicMock()
+        mock_track.ratingKey = 101
+        mock_track.title = "No Media"
+        mock_track.grandparentTitle = "Artist"
+        mock_track.parentTitle = "Album"
+        mock_track.genres = []
+        mock_track.year = 2020
+        mock_track.duration = 200000
+        mock_track.addedAt = None
+        mock_track.updatedAt = None
+        mock_track.media = []
+
+        result = _map_track(mock_track)
+        assert result["file_path"] is None
+
+    def test_file_path_none_when_no_parts(self):
+        """_map_track returns file_path=None when parts is empty."""
+        from app.services.plex_client import _map_track
+
+        mock_media = MagicMock()
+        mock_media.parts = []
+
+        mock_track = MagicMock()
+        mock_track.ratingKey = 102
+        mock_track.title = "No Parts"
+        mock_track.grandparentTitle = "Artist"
+        mock_track.parentTitle = "Album"
+        mock_track.genres = []
+        mock_track.year = 2020
+        mock_track.duration = 200000
+        mock_track.addedAt = None
+        mock_track.updatedAt = None
+        mock_track.media = [mock_media]
+
+        result = _map_track(mock_track)
+        assert result["file_path"] is None

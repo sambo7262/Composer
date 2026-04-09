@@ -97,6 +97,78 @@ class TestTrackModel:
         assert track.added_at is None
         assert track.synced_at is None
 
+    def test_audio_feature_columns_exist(self, db_with_tracks):
+        """Track model has all 11 new audio feature columns with correct defaults."""
+        from app.models.track import Track
+
+        track = Track(plex_rating_key="22222", title="Feature Test", artist="Test")
+        db_with_tracks.add(track)
+        db_with_tracks.commit()
+        db_with_tracks.refresh(track)
+
+        # All new fields should default to None
+        assert track.file_path is None
+        assert track.energy is None
+        assert track.tempo is None
+        assert track.danceability is None
+        assert track.valence is None
+        assert track.musical_key is None
+        assert track.scale is None
+        assert track.spectral_complexity is None
+        assert track.loudness is None
+        assert track.analyzed_at is None
+        assert track.analysis_error is None
+
+    def test_audio_feature_columns_indexed(self, db_with_tracks):
+        """energy, danceability, valence columns have database indexes."""
+        from app.models.track import Track  # noqa: F401
+
+        inspector = inspect(db_with_tracks.get_bind())
+        indexes = inspector.get_indexes("track")
+        indexed_columns = set()
+        for idx in indexes:
+            for col in idx["column_names"]:
+                indexed_columns.add(col)
+
+        assert "energy" in indexed_columns
+        assert "danceability" in indexed_columns
+        assert "valence" in indexed_columns
+
+    def test_track_with_audio_features(self, db_with_tracks):
+        """Track model stores audio feature values correctly."""
+        from app.models.track import Track
+
+        track = Track(
+            plex_rating_key="33333",
+            title="Analyzed Song",
+            artist="Test",
+            file_path="/music/Artist/Album/song.flac",
+            energy=0.75,
+            tempo=120.5,
+            danceability=0.68,
+            valence=0.55,
+            musical_key="C",
+            scale="major",
+            spectral_complexity=12.3,
+            loudness=-8.5,
+            analyzed_at="2026-04-09T12:00:00",
+        )
+        db_with_tracks.add(track)
+        db_with_tracks.commit()
+        db_with_tracks.refresh(track)
+
+        assert track.file_path == "/music/Artist/Album/song.flac"
+        assert track.energy == 0.75
+        assert track.tempo == 120.5
+        assert track.danceability == 0.68
+        assert track.valence == 0.55
+        assert track.musical_key == "C"
+        assert track.scale == "major"
+        assert track.spectral_complexity == 12.3
+        assert track.loudness == -8.5
+        assert track.analyzed_at == "2026-04-09T12:00:00"
+        assert track.analysis_error is None
+
 
 class TestSyncStateModel:
     """Tests for the SyncState SQLModel."""

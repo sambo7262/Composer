@@ -7,6 +7,16 @@ from plexapi.server import PlexServer
 
 def _map_track(t) -> dict:
     """Map a PlexAPI Track object to a dict with standard field names."""
+    # Extract file path from media parts (D-12)
+    file_path = None
+    try:
+        if hasattr(t, "media") and t.media:
+            parts = t.media[0].parts
+            if parts:
+                file_path = parts[0].file
+    except (IndexError, AttributeError):
+        pass
+
     return {
         "plex_rating_key": str(t.ratingKey),
         "title": t.title or "",
@@ -17,6 +27,7 @@ def _map_track(t) -> dict:
         "duration_ms": t.duration or 0,
         "added_at": t.addedAt.isoformat() if t.addedAt else None,
         "updated_at": t.updatedAt.isoformat() if t.updatedAt else None,
+        "file_path": file_path,
     }
 
 

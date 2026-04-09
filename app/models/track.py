@@ -20,6 +20,23 @@ class Track(SQLModel, table=True):
     updated_at: Optional[str] = Field(default=None)
     synced_at: Optional[str] = Field(default=None)
 
+    # File path from Plex media parts (D-12)
+    file_path: Optional[str] = Field(default=None)
+
+    # Audio features (all nullable -- NULL means not yet analyzed)
+    energy: Optional[float] = Field(default=None, index=True)
+    tempo: Optional[float] = Field(default=None)
+    danceability: Optional[float] = Field(default=None, index=True)
+    valence: Optional[float] = Field(default=None, index=True)
+    musical_key: Optional[str] = Field(default=None)
+    scale: Optional[str] = Field(default=None)
+    spectral_complexity: Optional[float] = Field(default=None)
+    loudness: Optional[float] = Field(default=None)
+
+    # Analysis tracking (AUDIO-04)
+    analyzed_at: Optional[str] = Field(default=None)
+    analysis_error: Optional[str] = Field(default=None)
+
 
 class SyncState(SQLModel, table=True):
     """Tracks the last sync timestamp and total track count."""

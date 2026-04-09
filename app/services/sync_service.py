@@ -62,6 +62,8 @@ def _upsert_tracks_sync(track_dicts: list[dict]) -> None:
                 existing.added_at = td["added_at"]
                 existing.updated_at = td["updated_at"]
                 existing.synced_at = now
+                if "file_path" in td:
+                    existing.file_path = td["file_path"]
                 session.add(existing)
             else:
                 track = Track(
@@ -75,6 +77,7 @@ def _upsert_tracks_sync(track_dicts: list[dict]) -> None:
                     added_at=td["added_at"],
                     updated_at=td["updated_at"],
                     synced_at=now,
+                    file_path=td.get("file_path"),
                 )
                 session.add(track)
         session.commit()
