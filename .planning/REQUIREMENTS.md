@@ -26,8 +26,8 @@ Requirements for initial release. Fully self-hosted — uses only local services
 ### Audio Features
 
 - [x] **AUDIO-01**: App extracts audio features (energy, tempo, danceability, valence) from local audio files using Essentia
-- [ ] **AUDIO-02**: Audio feature extraction runs as a background job with progress tracking and resume capability
-- [ ] **AUDIO-03**: When no audio features are available for a track, the app falls back to genre/year/artist as mood proxy
+- [x] **AUDIO-02**: Audio feature extraction runs as a background job with progress tracking and resume capability
+- [x] **AUDIO-03**: When no audio features are available for a track, the app falls back to genre/year/artist as mood proxy
 - [x] **AUDIO-04**: Extracted features are cached permanently in SQLite — each track only analyzed once
 
 ### Playlist Generation
@@ -120,8 +120,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SYNC-03 | Phase 2 | Complete |
 | SYNC-04 | Phase 2 | Complete |
 | AUDIO-01 | Phase 3 | Complete |
-| AUDIO-02 | Phase 3 | Pending |
-| AUDIO-03 | Phase 3 | Pending |
+| AUDIO-02 | Phase 3 | Complete |
+| AUDIO-03 | Phase 3 | Complete |
 | AUDIO-04 | Phase 3 | Complete |
 | PLAY-01 | Phase 4 | Pending |
 | PLAY-02 | Phase 4 | Pending |
