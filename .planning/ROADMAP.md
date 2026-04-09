@@ -63,7 +63,11 @@ Plans:
   2. Analysis can be stopped and resumed without re-analyzing previously completed tracks
   3. Tracks without audio features (analysis failed or pending) fall back to genre/year/artist for mood matching
   4. Extracted features (energy, tempo, danceability, valence) are cached permanently in SQLite -- each track analyzed only once
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 03-01-PLAN.md — Track model expansion, Plex file_path extraction, Essentia audio analyzer module
+- [ ] 03-02-PLAN.md — Analysis service with pause/resume state machine, API endpoints, sync auto-trigger
+- [ ] 03-03-PLAN.md — Analysis progress banner UI on library page with HTMX polling
 
 ### Phase 4: Playlist Generation
 **Goal**: User describes a mood in natural language and gets a playlist of matching tracks they can edit and push to Plex
@@ -110,7 +114,7 @@ Note: Phases 5 and 6 both depend on Phase 4 and could execute in parallel.
 |-------|---------------|--------|-----------|
 | 1. Foundation, Configuration & Deployment | 3/3 | Complete    | 2026-04-09 |
 | 2. Library Sync | 3/3 | Complete    | 2026-04-09 |
-| 3. Audio Feature Extraction | 0/TBD | Not started | - |
+| 3. Audio Feature Extraction | 0/3 | Planning complete | - |
 | 4. Playlist Generation | 0/TBD | Not started | - |
 | 5. Playlist Management & History | 0/TBD | Not started | - |
 | 6. Artist Discovery | 0/TBD | Not started | - |
