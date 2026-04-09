@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 
-from pyarr import LidarrAPI
+from pyarr import Lidarr
 
 
 async def test_lidarr_connection(url: str, api_key: str) -> dict:
     """Test Lidarr connectivity and return quality profiles."""
     try:
-        lidarr = LidarrAPI(host_url=url, api_key=api_key)
+        lidarr = Lidarr(host_url=url, api_key=api_key)
         profiles = await asyncio.to_thread(lidarr.get_quality_profile)
         return {
             "success": True,
