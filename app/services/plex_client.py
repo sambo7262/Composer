@@ -65,9 +65,11 @@ async def get_tracks_since(
     """
     plex = await asyncio.to_thread(PlexServer, url, token, timeout=30)
     section = await asyncio.to_thread(lambda: plex.library.sectionByID(int(library_id)))
+    # Plex expects date only (YYYY-MM-DD), not full ISO timestamp
+    date_only = since_date_str[:10]
     tracks = await asyncio.to_thread(
         section.searchTracks,
-        filters={"addedAt>>": since_date_str},
+        filters={"addedAt>>": date_only},
     )
     return [_map_track(t) for t in tracks], len(tracks)
 
