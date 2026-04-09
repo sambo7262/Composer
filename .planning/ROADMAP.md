@@ -48,9 +48,12 @@ Plans:
   2. Sync progress is visible in the UI with a progress indicator while the background job runs
   3. Subsequent syncs only import new or changed tracks (delta sync), completing much faster than initial sync
   4. Each synced track has title, artist, album, genre, year, duration, and Plex ratingKey stored locally
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 02-01-PLAN.md — Track model, Plex client extension, sync service core, Plex library bug fix
+- [ ] 02-02-PLAN.md — Sync API endpoints, progress banner, library browse page with HTMX
+- [ ] 02-03-PLAN.md — APScheduler integration, auto-sync on startup, settings page sync interval
 **UI hint**: yes
-
 ### Phase 3: Audio Feature Extraction
 **Goal**: Every track in the library has audio features extracted from local files, enabling mood-based filtering
 **Depends on**: Phase 2
@@ -106,7 +109,7 @@ Note: Phases 5 and 6 both depend on Phase 4 and could execute in parallel.
 | Phase | Plans Complete | Status | Completed |
 |-------|---------------|--------|-----------|
 | 1. Foundation, Configuration & Deployment | 3/3 | Complete    | 2026-04-09 |
-| 2. Library Sync | 0/TBD | Not started | - |
+| 2. Library Sync | 0/3 | Not started | - |
 | 3. Audio Feature Extraction | 0/TBD | Not started | - |
 | 4. Playlist Generation | 0/TBD | Not started | - |
 | 5. Playlist Management & History | 0/TBD | Not started | - |
