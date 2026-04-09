@@ -73,10 +73,16 @@ async def start_scheduler() -> None:
             schedule_sync(interval_hours)
 
             # Auto-sync on startup if Plex configured and no prior sync (D-03)
+            # Delay auto-sync by 10 seconds to let the app fully start and serve requests first
             sync_info = get_last_sync_info(session)
             if sync_info["last_sync_completed"] is None and is_service_configured(session, "plex"):
-                logger.info("No prior sync found and Plex is configured -- triggering auto-sync")
-                asyncio.create_task(run_sync())
+                logger.info("No prior sync found and Plex is configured -- scheduling auto-sync in 10s")
+
+                async def _delayed_auto_sync():
+                    await asyncio.sleep(10)
+                    await run_sync()
+
+                asyncio.create_task(_delayed_auto_sync())
     except Exception:
         # Schedule with default even if settings load fails
         schedule_sync(interval_hours)

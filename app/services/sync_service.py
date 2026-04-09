@@ -257,8 +257,8 @@ def get_last_sync_info(session: Session) -> dict:
     statement = select(SyncState)
     state = session.exec(statement).first()
 
-    track_count_result = session.exec(select(Track)).all()
-    track_count = len(track_count_result)
+    from sqlmodel import func
+    track_count = session.exec(select(func.count()).select_from(Track)).one()
 
     return {
         "last_sync_completed": state.last_sync_completed if state else None,
