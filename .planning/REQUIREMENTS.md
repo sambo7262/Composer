@@ -107,41 +107,41 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CONF-01 | — | Pending |
-| CONF-02 | — | Pending |
-| CONF-03 | — | Pending |
-| CONF-04 | — | Pending |
-| CONF-05 | — | Pending |
-| CONF-06 | — | Pending |
-| SYNC-01 | — | Pending |
-| SYNC-02 | — | Pending |
-| SYNC-03 | — | Pending |
-| SYNC-04 | — | Pending |
-| AUDIO-01 | — | Pending |
-| AUDIO-02 | — | Pending |
-| AUDIO-03 | — | Pending |
-| AUDIO-04 | — | Pending |
-| PLAY-01 | — | Pending |
-| PLAY-02 | — | Pending |
-| PLAY-03 | — | Pending |
-| PLAY-04 | — | Pending |
-| PLAY-05 | — | Pending |
-| PLAY-06 | — | Pending |
-| PLEX-01 | — | Pending |
-| PLEX-02 | — | Pending |
-| PLEX-03 | — | Pending |
-| HIST-01 | — | Pending |
-| HIST-02 | — | Pending |
-| DISC-01 | — | Pending |
-| DISC-02 | — | Pending |
-| DEPL-01 | — | Pending |
-| DEPL-02 | — | Pending |
+| CONF-01 | Phase 1 | Pending |
+| CONF-02 | Phase 1 | Pending |
+| CONF-03 | Phase 1 | Pending |
+| CONF-04 | Phase 1 | Pending |
+| CONF-05 | Phase 1 | Pending |
+| CONF-06 | Phase 1 | Pending |
+| DEPL-01 | Phase 1 | Pending |
+| DEPL-02 | Phase 1 | Pending |
+| SYNC-01 | Phase 2 | Pending |
+| SYNC-02 | Phase 2 | Pending |
+| SYNC-03 | Phase 2 | Pending |
+| SYNC-04 | Phase 2 | Pending |
+| AUDIO-01 | Phase 3 | Pending |
+| AUDIO-02 | Phase 3 | Pending |
+| AUDIO-03 | Phase 3 | Pending |
+| AUDIO-04 | Phase 3 | Pending |
+| PLAY-01 | Phase 4 | Pending |
+| PLAY-02 | Phase 4 | Pending |
+| PLAY-03 | Phase 4 | Pending |
+| PLAY-04 | Phase 4 | Pending |
+| PLAY-05 | Phase 4 | Pending |
+| PLAY-06 | Phase 4 | Pending |
+| PLEX-01 | Phase 5 | Pending |
+| PLEX-02 | Phase 5 | Pending |
+| PLEX-03 | Phase 5 | Pending |
+| HIST-01 | Phase 5 | Pending |
+| HIST-02 | Phase 5 | Pending |
+| DISC-01 | Phase 6 | Pending |
+| DISC-02 | Phase 6 | Pending |
 
 **Coverage:**
 - v1 requirements: 29 total
-- Mapped to phases: 0
-- Unmapped: 29 ⚠️
+- Mapped to phases: 29
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-09*
-*Last updated: 2026-04-09 after restoring Lidarr to v1 (local service)*
+*Last updated: 2026-04-09 after roadmap revision (DEPL-01/DEPL-02 moved to Phase 1)*
