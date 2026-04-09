@@ -1,11 +1,12 @@
-{% if state == "running" %}
+{% if analysis_state == "running" %}
 {# Running state: show progress bar with HTMX polling every 2s #}
 <div id="analysis-banner"
      hx-get="/api/analysis/status"
      hx-trigger="every 2s"
      hx-target="#analysis-banner"
      hx-swap="outerHTML"
-     class="mb-6 p-4 rounded-lg border border-accent/30 bg-accent/5">
+     class="mb-6 p-4 rounded-lg border border-accent/30 bg-accent/5"
+     x-data="{ showErrors: false }">
   <div class="flex items-center justify-between mb-2">
     <span class="text-text-primary text-[15px] font-medium">
       Analyzing... {{ analysis_status.analyzed_tracks | default(0) }} / {{ analysis_status.total_tracks | default(0) }} tracks
@@ -19,29 +20,41 @@
               hx-target="#analysis-banner"
               hx-swap="outerHTML"
               class="text-text-secondary hover:text-error text-[13px] underline transition-colors">
-        Pause
+        Stop
       </button>
     </div>
   </div>
   {% if analysis_status.current_track %}
-  <div class="text-text-secondary text-[12px] mb-2 truncate">{{ analysis_status.current_track }}</div>
+  <div class="text-text-secondary text-[12px] mb-2 truncate">Processing: {{ analysis_status.current_track }}</div>
   {% endif %}
   <div class="w-full bg-surface-elevated rounded-full h-2">
     <div class="bg-accent h-2 rounded-full transition-all duration-500"
          style="width: {{ ((analysis_status.analyzed_tracks / analysis_status.total_tracks) * 100) if analysis_status.total_tracks else 0 }}%"></div>
   </div>
   {% if analysis_status.failed_tracks > 0 %}
-  <div class="text-text-secondary text-[12px] mt-1">{{ analysis_status.failed_tracks }} failed</div>
+  <div class="mt-2">
+    <button @click="showErrors = !showErrors"
+            class="text-text-secondary hover:text-text-primary text-[12px] underline transition-colors">
+      {{ analysis_status.failed_tracks }} failed
+    </button>
+    <div x-show="showErrors" x-cloak class="mt-2 space-y-1 max-h-40 overflow-y-auto">
+      {% for err in analysis_status.errors %}
+      <div class="text-[11px] text-text-secondary bg-surface-elevated rounded px-2 py-1">
+        <span class="text-text-primary">{{ err.track }}</span> &mdash; {{ err.error }}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
   {% endif %}
 </div>
 
-{% elif state == "paused" %}
-{# Paused state: show resume button #}
+{% elif analysis_state == "paused" %}
+{# Paused state: show resume button, no polling #}
 <div id="analysis-banner" class="mb-6 p-4 rounded-lg border border-warning/30 bg-warning/5">
   <div class="flex items-center justify-between">
     <div class="flex items-center gap-2">
       <span class="text-text-primary text-[14px]">
-        Analysis paused &middot; {{ analysis_status.analyzed_tracks | default(0) }} / {{ analysis_status.total_tracks | default(0) }} tracks
+        Analysis paused &middot; {{ analysis_status.analyzed_tracks | default(0) }} / {{ analysis_status.total_tracks | default(0) }} analyzed
       </span>
     </div>
     <button hx-post="/api/analysis/start"
@@ -53,7 +66,7 @@
   </div>
 </div>
 
-{% elif state == "failed" %}
+{% elif analysis_state == "failed" %}
 {# Failed state: show error with retry #}
 <div id="analysis-banner" class="mb-6 p-4 rounded-lg border border-error/30 bg-error/5">
   <div class="flex items-center justify-between">
@@ -75,39 +88,67 @@
   </div>
 </div>
 
-{% elif state == "completed" %}
-{# Completed: show stats and re-analyze button #}
-<div id="analysis-banner" class="mb-6 flex items-center justify-between">
-  <div class="flex items-center gap-3">
-    <button hx-post="/api/analysis/start"
-            hx-target="#analysis-banner"
-            hx-swap="outerHTML"
-            class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-4 py-2 rounded-lg transition-colors text-[14px]">
-      Analyze
-    </button>
-    <span class="text-text-secondary text-[13px]">
-      {{ analyzed_count | default(0) }} analyzed
-      {% if error_count %} &middot; {{ error_count }} errors{% endif %}
-      {% if unanalyzed_count %} &middot; {{ unanalyzed_count }} pending{% endif %}
-    </span>
+{% elif analysis_state == "completed" %}
+{# Completed: show stats with expandable errors and re-analyze button #}
+<div id="analysis-banner" class="mb-6 p-4 rounded-lg border border-border bg-surface-primary"
+     x-data="{ showErrors: false }">
+  <div class="flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      {% if unanalyzed_count > 0 %}
+      <button hx-post="/api/analysis/start"
+              hx-target="#analysis-banner"
+              hx-swap="outerHTML"
+              class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-4 py-2 rounded-lg transition-colors text-[14px]">
+        Analyze Library
+      </button>
+      {% endif %}
+      <span class="text-text-secondary text-[13px]">
+        Analysis complete &middot; {{ analyzed_count | default(0) }} / {{ (analyzed_count | default(0)) + (unanalyzed_count | default(0)) }} tracks analyzed
+        {% if unanalyzed_count %} &middot; {{ unanalyzed_count }} pending{% endif %}
+      </span>
+    </div>
   </div>
+  {% if analysis_status.failed_tracks > 0 %}
+  <div class="mt-2">
+    <button @click="showErrors = !showErrors"
+            class="text-text-secondary hover:text-text-primary text-[12px] underline transition-colors">
+      {{ analysis_status.failed_tracks }} failed
+    </button>
+    <div x-show="showErrors" x-cloak class="mt-2 space-y-1 max-h-40 overflow-y-auto">
+      {% for err in analysis_status.errors %}
+      <div class="text-[11px] text-text-secondary bg-surface-elevated rounded px-2 py-1">
+        <span class="text-text-primary">{{ err.track }}</span> &mdash; {{ err.error }}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 {% else %}
-{# Idle: show analyze button with stats #}
+{# Idle state: show analyze button with context-dependent message #}
 <div id="analysis-banner" class="mb-6 flex items-center justify-between">
   <div class="flex items-center gap-3">
+    {% if unanalyzed_count > 0 %}
     <button hx-post="/api/analysis/start"
             hx-target="#analysis-banner"
             hx-swap="outerHTML"
             class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-4 py-2 rounded-lg transition-colors text-[14px]">
-      Analyze
+      Analyze Library
     </button>
     <span class="text-text-secondary text-[13px]">
-      {% if analyzed_count %}{{ analyzed_count }} analyzed{% endif %}
-      {% if unanalyzed_count %} &middot; {{ unanalyzed_count }} pending{% endif %}
-      {% if not analyzed_count and not unanalyzed_count %}No tracks to analyze{% endif %}
+      {{ unanalyzed_count }} tracks pending analysis
+      {% if analyzed_count %} &middot; {{ analyzed_count }} analyzed{% endif %}
     </span>
+    {% elif analyzed_count > 0 %}
+    <span class="text-text-secondary text-[13px]">
+      All {{ analyzed_count }} tracks analyzed
+    </span>
+    {% else %}
+    <span class="text-text-secondary text-[13px]">
+      Sync your library first to enable analysis
+    </span>
+    {% endif %}
   </div>
 </div>
 {% endif %}

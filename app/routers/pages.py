@@ -8,6 +8,7 @@ from sqlmodel import Session, select, func, col
 
 from app.database import get_session
 from app.models.track import Track
+from app.services.analysis_service import get_analysis_status
 from app.services.settings_service import get_setting, is_service_configured
 from app.services.sync_service import get_last_sync_info, get_sync_status
 
@@ -80,6 +81,18 @@ async def library_page(request: Request, session: Session = Depends(get_session)
     sync_status = get_sync_status()
     sync_info = get_last_sync_info(session)
 
+    # Get analysis status for the analysis banner
+    analysis_status = get_analysis_status()
+    analyzed_count = session.exec(
+        select(func.count()).select_from(Track).where(Track.analyzed_at.isnot(None))  # type: ignore[union-attr]
+    ).one()
+    unanalyzed_count = session.exec(
+        select(func.count()).select_from(Track).where(
+            Track.analyzed_at.is_(None),  # type: ignore[union-attr]
+            Track.file_path.isnot(None),  # type: ignore[union-attr]
+        )
+    ).one()
+
     # Query initial page of tracks (page 1, 50 per page, sorted by title asc)
     per_page = 50
     query = select(Track).order_by(col(Track.title).asc())
@@ -113,5 +126,9 @@ async def library_page(request: Request, session: Session = Depends(get_session)
             "state": sync_status.state.value,
             "last_synced": sync_info.get("last_sync_completed"),
             "track_count": sync_info.get("track_count", 0),
+            "analysis_status": analysis_status,
+            "analysis_state": analysis_status.state.value,
+            "analyzed_count": analyzed_count,
+            "unanalyzed_count": unanalyzed_count,
         },
     )

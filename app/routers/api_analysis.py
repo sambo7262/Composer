@@ -66,7 +66,7 @@ async def start_analysis(
             "partials/analysis_banner.html",
             {
                 "analysis_status": status,
-                "state": status.state.value,
+                "analysis_state": status.state.value,
                 **db_stats,
             },
         )
@@ -82,7 +82,7 @@ async def start_analysis(
         "partials/analysis_banner.html",
         {
             "analysis_status": status,
-            "state": "running",
+            "analysis_state": "running",
             **db_stats,
         },
     )
@@ -104,7 +104,7 @@ async def stop_analysis_endpoint(
         "partials/analysis_banner.html",
         {
             "analysis_status": status,
-            "state": "paused",
+            "analysis_state": "paused",
             **db_stats,
         },
     )
@@ -125,7 +125,7 @@ async def analysis_status(
         "partials/analysis_banner.html",
         {
             "analysis_status": status,
-            "state": status.state.value,
+            "analysis_state": status.state.value,
             **db_stats,
         },
     )
