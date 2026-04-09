@@ -13,7 +13,7 @@ Composer delivers mood-based playlist generation from a fully self-hosted music 
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation, Configuration & Deployment** - Docker container, CI/CD to Docker Hub, settings page, security patterns, Plex connection (completed 2026-04-09)
-- [ ] **Phase 2: Library Sync** - Full Plex music library synced to local SQLite with delta updates
+- [x] **Phase 2: Library Sync** - Full Plex music library synced to local SQLite with delta updates (completed 2026-04-09)
 - [ ] **Phase 3: Audio Feature Extraction** - Essentia analyzes local audio files for energy, tempo, danceability, valence
 - [ ] **Phase 4: Playlist Generation** - Mood-to-playlist pipeline: natural language in, curated playlist out, pushed to Plex
 - [ ] **Phase 5: Playlist Management & History** - Browse existing Plex playlists, analyze mood profiles, view generation history
@@ -48,7 +48,7 @@ Plans:
   2. Sync progress is visible in the UI with a progress indicator while the background job runs
   3. Subsequent syncs only import new or changed tracks (delta sync), completing much faster than initial sync
   4. Each synced track has title, artist, album, genre, year, duration, and Plex ratingKey stored locally
-**Plans:** 3 plans
+**Plans:** 3/3 plans complete
 Plans:
 - [x] 02-01-PLAN.md — Track model, Plex client extension, sync service core, Plex library bug fix
 - [x] 02-02-PLAN.md — Sync API endpoints, progress banner, library browse page with HTMX
@@ -109,7 +109,7 @@ Note: Phases 5 and 6 both depend on Phase 4 and could execute in parallel.
 | Phase | Plans Complete | Status | Completed |
 |-------|---------------|--------|-----------|
 | 1. Foundation, Configuration & Deployment | 3/3 | Complete    | 2026-04-09 |
-| 2. Library Sync | 0/3 | Not started | - |
+| 2. Library Sync | 3/3 | Complete    | 2026-04-09 |
 | 3. Audio Feature Extraction | 0/TBD | Not started | - |
 | 4. Playlist Generation | 0/TBD | Not started | - |
 | 5. Playlist Management & History | 0/TBD | Not started | - |
