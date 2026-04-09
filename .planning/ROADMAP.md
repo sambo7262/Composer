@@ -79,7 +79,11 @@ Plans:
   3. User can review the generated playlist and edit it -- adding, removing, and reordering tracks before finalizing
   4. User can push the finalized playlist to a specific Plex library as a named playlist
   5. The Ollama LLM interprets mood descriptions into structured audio feature criteria that drive track scoring
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 04-01-PLAN.md — Data models, Pydantic schemas, playlist scoring engine, nav update, Instructor dependency
+- [ ] 04-02-PLAN.md — Chat service with Instructor LLM pipeline, session state, API endpoints
+- [ ] 04-03-PLAN.md — Chat UI templates, playlist card with drag-drop, push-to-Plex, visual verification
 **UI hint**: yes
 
 ### Phase 5: Playlist Management & History
@@ -115,6 +119,6 @@ Note: Phases 5 and 6 both depend on Phase 4 and could execute in parallel.
 | 1. Foundation, Configuration & Deployment | 3/3 | Complete    | 2026-04-09 |
 | 2. Library Sync | 3/3 | Complete    | 2026-04-09 |
 | 3. Audio Feature Extraction | 3/3 | Complete    | 2026-04-09 |
-| 4. Playlist Generation | 0/TBD | Not started | - |
+| 4. Playlist Generation | 0/3 | Planned | - |
 | 5. Playlist Management & History | 0/TBD | Not started | - |
 | 6. Artist Discovery | 0/TBD | Not started | - |
