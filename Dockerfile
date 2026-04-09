@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Python dependencies (cached layer)
 WORKDIR /app
 COPY requirements.txt .
+# Note: essentia wheel (~14MB) is self-contained manylinux -- no additional apt packages needed
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Stage 2: Build Tailwind CSS
