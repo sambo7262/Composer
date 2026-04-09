@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-04-09T18:23:13.925Z"
+stopped_at: Completed 01-02-PLAN.md
+last_updated: "2026-04-09T18:30:43.810Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 3
-  completed_plans: 1
-  percent: 33
+  completed_plans: 2
+  percent: 67
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 1 (Foundation, Configuration & Deployment) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-04-09
 
@@ -53,6 +53,7 @@ Progress: [..........] 0%
 
 *Updated after each plan completion*
 | Phase 01 P01 | 7min | 2 tasks | 32 files |
+| Phase 01 P02 | 5min | 2 tasks | 17 files |
 
 ## Accumulated Context
 
@@ -68,6 +69,8 @@ Recent decisions affecting current work:
 - [Phase 01]: Lazy engine singleton pattern for database -- allows test isolation by resetting engine between tests
 - [Phase 01]: TemplateResponse uses new request-first parameter order (Starlette deprecation fix)
 - [Phase 01]: Local dev uses Python 3.9 with future annotations; Docker targets Python 3.12
+- [Phase 01]: HTMX test-and-configure pattern: form hx-post to test endpoint, connection_status partial swapped in, save replaces entire service card
+- [Phase 01]: Service card id={service}-card pattern enables HTMX swap targeting across test/save/reconfigure flows
 
 ### Pending Todos
 
@@ -79,6 +82,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T18:23:13.920Z
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-04-09T18:30:43.806Z
+Stopped at: Completed 01-02-PLAN.md
 Resume file: None
