@@ -16,7 +16,14 @@ async def test_ollama_connection(url: str) -> dict:
         logger.info("Testing Ollama connection at %s/v1", url)
         client = OpenAI(base_url=f"{url}/v1", api_key="ollama")
         models_response = await asyncio.to_thread(client.models.list)
-        models = [m.id for m in models_response.data]
+        models = [m.id for m in (models_response.data or [])]
+        if not models:
+            logger.info("Ollama connected but no models found — user needs to pull a model")
+            return {
+                "success": True,
+                "models": [],
+                "warning": "Connected, but no models found. Pull a model first: docker exec composer-ollama ollama pull llama3.1:8b",
+            }
         logger.info("Ollama connection successful, found %d models: %s", len(models), models)
         return {"success": True, "models": models}
     except Exception as e:
