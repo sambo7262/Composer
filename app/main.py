@@ -1,0 +1,28 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from app.database import init_db
+from app.routers import api_health, pages
+from app.services.encryption import get_encryptor
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: initialize database and encryption key. Shutdown: cleanup."""
+    init_db()
+    get_encryptor()  # Generate encryption key on first startup
+    yield
+
+
+app = FastAPI(title="Composer", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+templates = Jinja2Templates(directory="app/templates")
+
+# Include routers
+app.include_router(api_health.router)
+app.include_router(pages.router)

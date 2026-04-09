@@ -21,9 +21,11 @@ def tmp_data_dir(tmp_path):
     config.DATABASE_URL = f"sqlite:///{tmp_path}/composer.db"
     config.ENCRYPTION_KEY_PATH = os.path.join(str(tmp_path), ".encryption.key")
 
-    # Reset the encryption singleton so it picks up the new key path
+    # Reset singletons so they pick up the new config paths
     import app.services.encryption as enc_module
+    from app.database import reset_engine
     enc_module._encryptor = None
+    reset_engine()
 
     yield tmp_path
 
@@ -32,6 +34,7 @@ def tmp_data_dir(tmp_path):
     config.DATABASE_URL = original_db_url
     config.ENCRYPTION_KEY_PATH = original_key_path
     enc_module._encryptor = None
+    reset_engine()
 
 
 @pytest.fixture

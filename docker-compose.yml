@@ -1,0 +1,35 @@
+# Composer + Ollama - Single command: docker compose up -d
+#
+# Before starting:
+#   1. Edit the /path/to/plex/media/music volume to your actual Plex music library path
+#   2. Optionally set COMPOSER_PORT env var to change the default port (8085)
+#
+# All service configuration (Plex token, Ollama URL, Lidarr API key) is done
+# in-app via the web UI at http://localhost:8085/settings -- no env vars needed.
+
+services:
+  composer:
+    build: .
+    # image: username/composer:latest  # Uncomment when pulling from Docker Hub
+    container_name: composer
+    ports:
+      - "${COMPOSER_PORT:-8085}:8085"
+    volumes:
+      - composer_data:/app/data
+      - /path/to/plex/media/music:/music:ro  # Edit this path to your Plex music library
+    restart: unless-stopped
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: composer-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  composer_data:
+  ollama_data:
