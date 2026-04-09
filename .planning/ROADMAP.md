@@ -52,7 +52,7 @@ Plans:
 Plans:
 - [x] 02-01-PLAN.md — Track model, Plex client extension, sync service core, Plex library bug fix
 - [x] 02-02-PLAN.md — Sync API endpoints, progress banner, library browse page with HTMX
-- [ ] 02-03-PLAN.md — APScheduler integration, auto-sync on startup, settings page sync interval
+- [x] 02-03-PLAN.md — APScheduler integration, auto-sync on startup, settings page sync interval
 **UI hint**: yes
 ### Phase 3: Audio Feature Extraction
 **Goal**: Every track in the library has audio features extracted from local files, enabling mood-based filtering
