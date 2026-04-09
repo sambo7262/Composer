@@ -216,6 +216,19 @@ async def run_analysis() -> None:
         track_info = await asyncio.to_thread(_get_unanalyzed_track_ids)
         _analysis_status.total_tracks = len(track_info)
 
+        # Throttle delay between tracks (seconds) — reduces CPU pressure so the
+        # NAS stays responsive during multi-day analysis runs. Configurable via
+        # settings extra_config["analysis_delay_seconds"], default 2s.
+        delay_seconds = 2.0
+        try:
+            from app.services.settings_service import get_setting
+            with Session(engine) as _s:
+                _setting = get_setting(_s, "plex")
+                if _setting and _setting.extra_config:
+                    delay_seconds = float(_setting.extra_config.get("analysis_delay_seconds", 2.0))
+        except Exception:
+            pass
+
         for track_id, artist, title in track_info:
             # Check if paused (D-03)
             if _analysis_status.state == AnalysisStateEnum.PAUSED:
@@ -227,6 +240,9 @@ async def run_analysis() -> None:
             result = await asyncio.to_thread(
                 _analyze_single_track_sync, track_id, plex_music_root
             )
+
+            # Throttle: give the CPU a break between tracks
+            await asyncio.sleep(delay_seconds)
 
             if result["success"]:
                 _analysis_status.analyzed_tracks += 1
