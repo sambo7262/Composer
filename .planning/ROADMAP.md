@@ -67,7 +67,7 @@ Plans:
 Plans:
 - [x] 03-01-PLAN.md — Track model expansion, Plex file_path extraction, Essentia audio analyzer module
 - [x] 03-02-PLAN.md — Analysis service with pause/resume state machine, API endpoints, sync auto-trigger
-- [ ] 03-03-PLAN.md — Analysis progress banner UI on library page with HTMX polling
+- [x] 03-03-PLAN.md — Analysis progress banner UI on library page with HTMX polling
 
 ### Phase 4: Playlist Generation
 **Goal**: User describes a mood in natural language and gets a playlist of matching tracks they can edit and push to Plex
