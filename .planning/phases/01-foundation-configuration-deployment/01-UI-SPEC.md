@@ -50,13 +50,13 @@ Exceptions: Touch target minimum height of 44px for all interactive buttons (Tes
 | Role | Size | Weight | Line Height | Usage |
 |------|------|--------|-------------|-------|
 | Body | 15px | 400 (regular) | 1.5 | Form labels, descriptions, status text, connection results |
-| Label | 13px | 500 (medium) | 1.4 | Input labels, field hints, masked credential placeholders |
+| Label | 13px | 400 (regular) | 1.4 | Input labels, field hints, masked credential placeholders |
 | Heading | 22px | 600 (semibold) | 1.2 | Page titles ("Settings"), section headings ("Plex Server", "Ollama", "Lidarr") |
 | Display | 28px | 600 (semibold) | 1.2 | Welcome page title only ("Welcome to Composer") |
 
 **Font stack:** `'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif`
 
-**Note:** 3 effective sizes for Phase 1 (Body 15px, Heading 22px, Display 28px). Label 13px is the fourth size, used sparingly for secondary text. Two weights only: 400 and 600 (with 500 used only on label elements as an intermediate).
+**Note:** 3 effective sizes for Phase 1 (Body 15px, Heading 22px, Display 28px). Label 13px is the fourth size, used sparingly for secondary text. Two weights only: 400 and 600.
 
 ---
 
@@ -262,6 +262,7 @@ Every visual state the UI must handle in Phase 1:
 | Error identification | Error messages use `color-error` AND text description (not color alone) |
 | Button states | Disabled buttons show `text-muted` color and `cursor-not-allowed` |
 | Loading states | Spinner has `aria-label="Testing connection"` and button shows "Testing..." text |
+| Gear icon nav link | `aria-label="Settings"` on the `<a>` element wrapping the gear icon |
 
 ---
 
