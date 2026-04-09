@@ -3,8 +3,19 @@
 {% block title %}Settings - Composer{% endblock %}
 
 {% block content %}
-<h1 class="text-[22px] font-semibold mb-8">Settings</h1>
-<p class="text-text-secondary text-[15px]">
-    Service configuration will be implemented in Plan 02.
-</p>
+<h1 class="text-[22px] font-semibold mb-6">Settings</h1>
+
+<div class="flex flex-col gap-4">
+  {% with service="plex", heading="Plex Server", description="Connect to your Plex Media Server to access your music library.", configured=plex_configured, enabled=True, setting=plex_setting %}
+    {% include "partials/service_card.html" %}
+  {% endwith %}
+
+  {% with service="ollama", heading="Ollama", description="Connect to Ollama for AI-powered mood interpretation. Optional -- you can add this later.", configured=ollama_configured, enabled=plex_configured, setting=ollama_setting %}
+    {% include "partials/service_card.html" %}
+  {% endwith %}
+
+  {% with service="lidarr", heading="Lidarr", description="Connect to Lidarr for artist discovery and library management. Optional -- you can add this later.", configured=lidarr_configured, enabled=plex_configured, setting=lidarr_setting %}
+    {% include "partials/service_card.html" %}
+  {% endwith %}
+</div>
 {% endblock %}

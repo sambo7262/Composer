@@ -9,22 +9,9 @@
     <script defer src="/static/js/alpine.min.js"></script>
 </head>
 <body class="bg-surface-primary text-text-primary font-sans min-h-screen">
-    <!-- Nav bar: 56px height, surface-card bg, bottom border -->
-    <nav class="w-full h-14 bg-surface-card border-b border-border">
-        <div class="max-w-[720px] mx-auto h-full flex items-center justify-between px-4">
-            <a href="/" class="text-[22px] font-semibold text-text-primary hover:text-accent no-underline">
-                Composer
-            </a>
-            <a href="/settings" aria-label="Settings" class="text-text-secondary hover:text-text-primary transition-colors">
-                <!-- Lucide Settings (gear) icon - 24x24 -->
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
-                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
-                    <circle cx="12" cy="12" r="3"/>
-                </svg>
-            </a>
-        </div>
-    </nav>
+    {% block nav %}
+    {% include "partials/nav.html" %}
+    {% endblock %}
 
     <main class="max-w-[720px] mx-auto pt-12 px-4">
         {% block content %}{% endblock %}

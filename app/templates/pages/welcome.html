@@ -2,14 +2,18 @@
 
 {% block title %}Welcome to Composer{% endblock %}
 
+{% block nav %}
+<!-- No nav bar on welcome page (clean entry point per UI-SPEC) -->
+{% endblock %}
+
 {% block content %}
-<div class="flex flex-col items-center justify-center min-h-[60vh] text-center">
+<div class="flex flex-col items-center justify-center min-h-[80vh] text-center">
     <h1 class="text-[28px] font-semibold mb-4">Welcome to Composer</h1>
     <p class="text-text-secondary text-[15px] mb-8 max-w-md">
         Connect your services to start generating mood-based playlists from your music library.
     </p>
     <a href="/settings"
-       class="inline-block bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-6 py-3 rounded-lg transition-colors min-h-[44px] flex items-center">
+       class="inline-flex items-center bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-6 py-3 rounded-lg transition-colors min-h-[44px]">
         Connect Plex Server
     </a>
 </div>

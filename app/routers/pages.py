@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from sqlmodel import Session
 
 from app.database import get_session
-from app.services.settings_service import get_all_settings, is_service_configured
+from app.services.settings_service import get_setting, is_service_configured
 
 router = APIRouter(tags=["pages"])
 
@@ -36,20 +36,26 @@ async def home(request: Request, session: Session = Depends(get_session)):
 
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, session: Session = Depends(get_session)):
-    """Settings page -- placeholder for Plan 02 full implementation."""
+    """Settings page with three service configuration cards."""
     templates = get_templates()
     plex_configured = is_service_configured(session, "plex")
     ollama_configured = is_service_configured(session, "ollama")
     lidarr_configured = is_service_configured(session, "lidarr")
-    all_settings = get_all_settings(session)
+
+    plex_setting = get_setting(session, "plex")
+    ollama_setting = get_setting(session, "ollama")
+    lidarr_setting = get_setting(session, "lidarr")
 
     return templates.TemplateResponse(
         request,
         "pages/settings.html",
         {
+            "active_page": "settings",
             "plex_configured": plex_configured,
             "ollama_configured": ollama_configured,
             "lidarr_configured": lidarr_configured,
-            "settings": all_settings,
+            "plex_setting": plex_setting,
+            "ollama_setting": ollama_setting,
+            "lidarr_setting": lidarr_setting,
         },
     )
