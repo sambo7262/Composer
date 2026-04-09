@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from math import ceil
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
-from sqlmodel import Session
+from sqlmodel import Session, select, func, col
 
 from app.database import get_session
+from app.models.track import Track
 from app.services.settings_service import get_setting, is_service_configured
+from app.services.sync_service import get_last_sync_info, get_sync_status
 
 router = APIRouter(tags=["pages"])
 
@@ -57,5 +61,51 @@ async def settings_page(request: Request, session: Session = Depends(get_session
             "plex_setting": plex_setting,
             "ollama_setting": ollama_setting,
             "lidarr_setting": lidarr_setting,
+        },
+    )
+
+
+@router.get("/library", response_class=HTMLResponse)
+async def library_page(request: Request, session: Session = Depends(get_session)):
+    """Library browse page with track table, sync banner, and search."""
+    templates = get_templates()
+
+    # Get sync status for the banner
+    sync_status = get_sync_status()
+    sync_info = get_last_sync_info(session)
+
+    # Query initial page of tracks (page 1, 50 per page, sorted by title asc)
+    per_page = 50
+    query = select(Track).order_by(col(Track.title).asc())
+
+    # Count total tracks
+    count_query = select(func.count()).select_from(Track)
+    total = session.exec(count_query).one()
+
+    tracks = session.exec(query.offset(0).limit(per_page)).all()
+
+    total_pages = ceil(total / per_page) if per_page > 0 and total > 0 else 1
+    has_prev = False
+    has_next = 1 < total_pages
+
+    return templates.TemplateResponse(
+        request,
+        "pages/library.html",
+        {
+            "active_page": "library",
+            "tracks": tracks,
+            "page": 1,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": total_pages,
+            "has_prev": has_prev,
+            "has_next": has_next,
+            "search": "",
+            "sort": "title",
+            "order": "asc",
+            "sync_status": sync_status,
+            "state": sync_status.state.value,
+            "last_synced": sync_info.get("last_sync_completed"),
+            "track_count": sync_info.get("track_count", 0),
         },
     )

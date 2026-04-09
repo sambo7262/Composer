@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Library - Composer{% endblock %}
+
+{% block content %}
+<div class="pb-12">
+  <h1 class="text-[28px] font-semibold text-text-primary mb-6">Library</h1>
+
+  {# Sync banner: shows Sync Now button, progress, or last synced status #}
+  {% include "partials/sync_banner.html" %}
+
+  {# Search input with HTMX debounce #}
+  <div class="mb-6">
+    <input type="search" name="search"
+           value="{{ search | default('') }}"
+           hx-get="/api/library/tracks"
+           hx-trigger="input changed delay:300ms, search"
+           hx-target="#track-table"
+           hx-swap="outerHTML"
+           hx-include="this"
+           placeholder="Search tracks, artists, albums..."
+           class="w-full bg-surface-elevated border border-border rounded-lg px-4 py-2 text-text-primary placeholder-text-secondary focus:border-border-focus focus:ring-1 focus:ring-border-focus text-[15px]">
+  </div>
+
+  {# Track table: loaded with initial data, updated via HTMX #}
+  {% include "partials/track_table.html" %}
+</div>
+{% endblock %}
