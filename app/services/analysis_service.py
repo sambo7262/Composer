@@ -88,9 +88,14 @@ def _detect_plex_music_root_sync() -> str:
             if len(paths) >= 2:
                 try:
                     common = os.path.commonpath(paths)
+                    logger.info("Auto-detected Plex music root: %s (from %d sample paths, e.g. %s)", common, len(paths), paths[0])
                     return common
                 except ValueError:
                     pass
+        elif len(tracks) == 1 and tracks[0].file_path:
+            # Single track — use parent directory as root
+            path = tracks[0].file_path
+            logger.info("Single track sample path: %s", path)
 
         # Fallback: check settings for configured plex_music_root
         try:
@@ -124,11 +129,13 @@ def _analyze_single_track_sync(track_id: int, plex_music_root: str) -> dict:
 
             # Check file exists
             if not os.path.isfile(remapped_path):
-                track.analysis_error = f"File not found: {track.title}"
+                error_msg = f"File not found: {remapped_path} (plex_path={track.file_path}, root={plex_music_root})"
+                logger.warning(error_msg)
+                track.analysis_error = error_msg
                 session.add(track)
                 session.commit()
                 elapsed = time.monotonic() - start
-                return {"success": False, "error": f"File not found: {track.title}", "features": None, "elapsed": elapsed}
+                return {"success": False, "error": error_msg, "features": None, "elapsed": elapsed}
 
             # T-03-05: Check file size
             file_size = os.path.getsize(remapped_path)
