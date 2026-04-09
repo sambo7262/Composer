@@ -45,10 +45,52 @@ def get_session() -> Generator[Session, None, None]:
         yield session
 
 
+def _migrate_add_columns(engine) -> None:
+    """Add any missing columns to existing tables (lightweight schema migration)."""
+    import sqlite3
+    url = str(engine.url)
+    db_path = url.replace("sqlite:///", "")
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Get existing columns for the track table
+    cursor.execute("PRAGMA table_info(track)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    # Columns added in Phase 3 (audio feature extraction)
+    new_columns = {
+        "file_path": "TEXT",
+        "energy": "REAL",
+        "tempo": "REAL",
+        "danceability": "REAL",
+        "valence": "REAL",
+        "musical_key": "TEXT",
+        "scale": "TEXT",
+        "spectral_complexity": "REAL",
+        "loudness": "REAL",
+        "analyzed_at": "TEXT",
+        "analysis_error": "TEXT",
+    }
+
+    for col_name, col_type in new_columns.items():
+        if col_name not in existing_cols:
+            cursor.execute(f"ALTER TABLE track ADD COLUMN {col_name} {col_type}")
+
+    conn.commit()
+    conn.close()
+
+
 def init_db() -> None:
-    """Create all database tables."""
+    """Create all database tables and migrate schema if needed."""
     # Import models to register them with SQLModel metadata
     from app.models.settings import ServiceConfig  # noqa: F401
     from app.models.track import Track, SyncState  # noqa: F401
 
-    SQLModel.metadata.create_all(get_engine())
+    engine = get_engine()
+    SQLModel.metadata.create_all(engine)
+
+    # Add any missing columns to existing tables
+    try:
+        _migrate_add_columns(engine)
+    except Exception:
+        pass  # Table may not exist yet on first run — create_all handles it
