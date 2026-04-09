@@ -12,9 +12,9 @@ Requirements for initial release. Fully self-hosted — uses only local services
 - [ ] **CONF-01**: User can configure Plex server URL and token via in-app settings page
 - [ ] **CONF-02**: User can configure Ollama endpoint URL and model selection via in-app settings page
 - [ ] **CONF-03**: User can configure Lidarr URL, API key, and default quality profile via in-app settings page
-- [ ] **CONF-04**: Settings are stored securely and never displayed in UI or exposed in API responses after initial entry
-- [ ] **CONF-05**: App deploys as a single Docker container with a compose YAML file (includes Ollama service)
-- [ ] **CONF-06**: Plex media directory is mounted as a read-only volume for Essentia audio analysis
+- [x] **CONF-04**: Settings are stored securely and never displayed in UI or exposed in API responses after initial entry
+- [x] **CONF-05**: App deploys as a single Docker container with a compose YAML file (includes Ollama service)
+- [x] **CONF-06**: Plex media directory is mounted as a read-only volume for Essentia audio analysis
 
 ### Library Sync
 
@@ -110,9 +110,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CONF-01 | Phase 1 | Pending |
 | CONF-02 | Phase 1 | Pending |
 | CONF-03 | Phase 1 | Pending |
-| CONF-04 | Phase 1 | Pending |
-| CONF-05 | Phase 1 | Pending |
-| CONF-06 | Phase 1 | Pending |
+| CONF-04 | Phase 1 | Complete |
+| CONF-05 | Phase 1 | Complete |
+| CONF-06 | Phase 1 | Complete |
 | DEPL-01 | Phase 1 | Pending |
 | DEPL-02 | Phase 1 | Pending |
 | SYNC-01 | Phase 2 | Pending |

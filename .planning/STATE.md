@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 1 UI-SPEC approved
-last_updated: "2026-04-09T18:10:44.304Z"
-last_activity: 2026-04-09 -- Phase 1 planning complete
+stopped_at: Completed 01-01-PLAN.md
+last_updated: "2026-04-09T18:23:13.925Z"
+last_activity: 2026-04-09
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 3
-  completed_plans: 0
-  percent: 0
+  completed_plans: 1
+  percent: 33
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Turn a vibe description into a curated playlist from your own library -- intelligently, without manual curation.
-**Current focus:** Phase 1: Foundation, Configuration & Deployment
+**Current focus:** Phase 1 — Foundation, Configuration & Deployment
 
 ## Current Position
 
-Phase: 1 of 6 (Foundation, Configuration & Deployment)
-Plan: 0 of TBD in current phase
+Phase: 1 (Foundation, Configuration & Deployment) — EXECUTING
+Plan: 2 of 3
 Status: Ready to execute
-Last activity: 2026-04-09 -- Phase 1 planning complete
+Last activity: 2026-04-09
 
 Progress: [..........] 0%
 
@@ -52,6 +52,7 @@ Progress: [..........] 0%
 - Trend: -
 
 *Updated after each plan completion*
+| Phase 01 P01 | 7min | 2 tasks | 32 files |
 
 ## Accumulated Context
 
@@ -64,6 +65,9 @@ Recent decisions affecting current work:
 - [Roadmap]: Stack: Python 3.12 + FastAPI + SQLModel + SQLite + Jinja2/HTMX/Alpine.js/Tailwind CSS
 - [Roadmap]: Phases 5 and 6 can run in parallel (both depend on Phase 4, not each other)
 - [Revision]: Moved DEPL-01/DEPL-02 into Phase 1 so Docker Hub deployment is available from the start -- user iterates by pulling and rebuilding on NAS
+- [Phase 01]: Lazy engine singleton pattern for database -- allows test isolation by resetting engine between tests
+- [Phase 01]: TemplateResponse uses new request-first parameter order (Starlette deprecation fix)
+- [Phase 01]: Local dev uses Python 3.9 with future annotations; Docker targets Python 3.12
 
 ### Pending Todos
 
@@ -75,6 +79,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T17:46:58.713Z
-Stopped at: Phase 1 UI-SPEC approved
-Resume file: .planning/phases/01-foundation-configuration-deployment/01-UI-SPEC.md
+Last session: 2026-04-09T18:23:13.920Z
+Stopped at: Completed 01-01-PLAN.md
+Resume file: None

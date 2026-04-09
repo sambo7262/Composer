@@ -34,7 +34,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   6. Docker image is automatically built via GitHub Actions on push/tag and published to Docker Hub
 **Plans:** 3 plans
 Plans:
-- [ ] 01-01-PLAN.md — Project foundation: database, encryption, models, app factory, Docker files, dark theme
+- [x] 01-01-PLAN.md — Project foundation: database, encryption, models, app factory, Docker files, dark theme
 - [ ] 01-02-PLAN.md — Settings page: test-and-configure flows for Plex/Ollama/Lidarr, welcome page, progressive setup
 - [ ] 01-03-PLAN.md — CI/CD: GitHub Actions multi-platform Docker build and Docker Hub publish
 **UI hint**: yes
