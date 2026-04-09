@@ -1,0 +1,11 @@
+[project]
+name = "composer"
+version = "0.1.0"
+description = "A self-hosted web app that generates mood-based playlists from your personal music library"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+# Dev dependencies: pytest, pytest-asyncio, httpx (for FastAPI TestClient)
