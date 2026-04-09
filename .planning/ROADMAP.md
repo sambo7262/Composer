@@ -51,7 +51,7 @@ Plans:
 **Plans:** 3 plans
 Plans:
 - [x] 02-01-PLAN.md — Track model, Plex client extension, sync service core, Plex library bug fix
-- [ ] 02-02-PLAN.md — Sync API endpoints, progress banner, library browse page with HTMX
+- [x] 02-02-PLAN.md — Sync API endpoints, progress banner, library browse page with HTMX
 - [ ] 02-03-PLAN.md — APScheduler integration, auto-sync on startup, settings page sync interval
 **UI hint**: yes
 ### Phase 3: Audio Feature Extraction
