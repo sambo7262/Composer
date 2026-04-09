@@ -184,6 +184,12 @@ async def run_sync() -> None:
         # Check for delta sync possibility
         last_completed = await asyncio.to_thread(_get_last_sync_completed_sync)
 
+        # Get total track count first so progress display works immediately
+        _, library_total = await get_library_tracks(
+            url, token, library_id, container_start=0, container_size=1
+        )
+        _sync_status.total_tracks = library_total
+
         if last_completed:
             # Try delta sync first
             delta_tracks, delta_count = await get_tracks_since(
@@ -194,16 +200,10 @@ async def run_sync() -> None:
                 await _upsert_tracks(delta_tracks)
                 _sync_status.synced_tracks = delta_count
 
-                # Get total from a quick check
-                _, total = await get_library_tracks(
-                    url, token, library_id, container_start=0, container_size=1
-                )
-                _sync_status.total_tracks = total
-
                 now = datetime.now(timezone.utc).isoformat()
                 _sync_status.state = SyncStateEnum.COMPLETED
                 _sync_status.last_synced = now
-                await asyncio.to_thread(_update_sync_state_sync, total)
+                await asyncio.to_thread(_update_sync_state_sync, library_total)
 
                 # D-01: Auto-trigger analysis after delta sync
                 try:
@@ -214,11 +214,7 @@ async def run_sync() -> None:
 
                 return
             else:
-                # Delta returned 0 -- check if library actually has tracks
-                _, total = await get_library_tracks(
-                    url, token, library_id, container_start=0, container_size=1
-                )
-                if total == 0:
+                if library_total == 0:
                     # Library genuinely empty
                     _sync_status.state = SyncStateEnum.COMPLETED
                     _sync_status.total_tracks = 0
