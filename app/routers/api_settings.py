@@ -11,8 +11,10 @@ from app.services.lidarr_client import test_lidarr_connection
 from app.services.settings_service import (
     get_all_settings,
     get_setting,
+    is_service_configured,
     save_setting,
 )
+from app.services.sync_scheduler import update_sync_schedule
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -75,6 +77,9 @@ async def save_plex(
         {"library_id": library_id, "library_name": library_name},
     )
     setting = get_setting(session, "plex")
+    sync_interval = 24
+    if setting and setting.extra_config:
+        sync_interval = setting.extra_config.get("sync_interval_hours", 24)
     templates = get_templates()
 
     return templates.TemplateResponse(
@@ -87,6 +92,62 @@ async def save_plex(
             "configured": True,
             "enabled": True,
             "setting": setting,
+            "sync_interval": sync_interval,
+        },
+    )
+
+
+# --- Plex sync schedule endpoint ---
+
+
+@router.post("/plex/sync-schedule", response_class=HTMLResponse)
+async def update_plex_sync_schedule(
+    request: Request,
+    sync_interval_hours: int = Form(...),
+    session: Session = Depends(get_session),
+):
+    """Update the Plex sync schedule interval (D-04).
+
+    Validates interval against allowlist [6, 12, 24] (T-02-09 mitigation).
+    """
+    # T-02-09: Validate against allowlist
+    allowed_intervals = [6, 12, 24]
+    if sync_interval_hours not in allowed_intervals:
+        sync_interval_hours = 24  # safe default
+
+    # Load current Plex setting and update extra_config
+    setting = get_setting(session, "plex")
+    if not setting:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Plex is not configured")
+
+    # Preserve existing extra_config, update sync_interval_hours
+    extra_config = setting.extra_config or {}
+    extra_config["sync_interval_hours"] = sync_interval_hours
+
+    # Re-save with updated extra_config (need credential for save_setting)
+    from app.services.settings_service import get_decrypted_credential
+    credential = get_decrypted_credential(session, "plex") or ""
+    save_setting(session, "plex", setting.url, credential, extra_config)
+
+    # Update the running scheduler
+    update_sync_schedule(sync_interval_hours)
+
+    # Return updated card
+    updated_setting = get_setting(session, "plex")
+    templates = get_templates()
+
+    return templates.TemplateResponse(
+        request,
+        "partials/service_card.html",
+        {
+            "service": "plex",
+            "heading": "Plex Server",
+            "description": "Connect to your Plex Media Server to access your music library.",
+            "configured": True,
+            "enabled": True,
+            "setting": updated_setting,
+            "sync_interval": sync_interval_hours,
         },
     )
 

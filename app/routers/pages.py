@@ -50,6 +50,11 @@ async def settings_page(request: Request, session: Session = Depends(get_session
     ollama_setting = get_setting(session, "ollama")
     lidarr_setting = get_setting(session, "lidarr")
 
+    # Extract sync interval from Plex extra_config (default 24h)
+    sync_interval = 24
+    if plex_setting and plex_setting.extra_config:
+        sync_interval = plex_setting.extra_config.get("sync_interval_hours", 24)
+
     return templates.TemplateResponse(
         request,
         "pages/settings.html",
@@ -61,6 +66,7 @@ async def settings_page(request: Request, session: Session = Depends(get_session
             "plex_setting": plex_setting,
             "ollama_setting": ollama_setting,
             "lidarr_setting": lidarr_setting,
+            "sync_interval": sync_interval,
         },
     )
 

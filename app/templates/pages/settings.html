@@ -6,7 +6,7 @@
 <h1 class="text-[22px] font-semibold mb-6">Settings</h1>
 
 <div class="flex flex-col gap-4">
-  {% with service="plex", heading="Plex Server", description="Connect to your Plex Media Server to access your music library.", configured=plex_configured, enabled=True, setting=plex_setting %}
+  {% with service="plex", heading="Plex Server", description="Connect to your Plex Media Server to access your music library.", configured=plex_configured, enabled=True, setting=plex_setting, sync_interval=sync_interval %}
     {% include "partials/service_card.html" %}
   {% endwith %}
 
