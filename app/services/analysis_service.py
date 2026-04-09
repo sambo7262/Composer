@@ -78,9 +78,31 @@ def _detect_plex_music_root_sync() -> str:
     Queries first 10 tracks with file_path not null, finds longest common path prefix.
     Falls back to settings plex_music_root or "/" if insufficient data.
     """
+    # Strategy: check settings for explicit plex_music_root first,
+    # then sample DIVERSE tracks (different artists) for reliable auto-detection.
     engine = get_engine()
     with Session(engine) as session:
-        statement = select(Track).where(Track.file_path.isnot(None)).limit(10)  # type: ignore[union-attr]
+        # Priority 1: User-configured root in settings
+        try:
+            from app.services.settings_service import get_setting
+            setting = get_setting(session, "plex")
+            if setting and setting.extra_config:
+                root = setting.extra_config.get("plex_music_root")
+                if root:
+                    logger.info("Using configured Plex music root: %s", root)
+                    return root
+        except Exception:
+            pass
+
+        # Priority 2: Auto-detect from diverse sample of tracks (different artists)
+        # Use DISTINCT artists to ensure we sample broadly, not from one album
+        from sqlalchemy import distinct, func as sa_func
+        statement = (
+            select(Track)
+            .where(Track.file_path.isnot(None))  # type: ignore[union-attr]
+            .group_by(Track.artist)
+            .limit(50)
+        )
         tracks = session.exec(statement).all()
 
         if len(tracks) >= 2:
@@ -88,26 +110,12 @@ def _detect_plex_music_root_sync() -> str:
             if len(paths) >= 2:
                 try:
                     common = os.path.commonpath(paths)
-                    logger.info("Auto-detected Plex music root: %s (from %d sample paths, e.g. %s)", common, len(paths), paths[0])
+                    logger.info("Auto-detected Plex music root: %s (from %d diverse artists, e.g. %s)", common, len(paths), paths[0])
                     return common
                 except ValueError:
                     pass
-        elif len(tracks) == 1 and tracks[0].file_path:
-            # Single track — use parent directory as root
-            path = tracks[0].file_path
-            logger.info("Single track sample path: %s", path)
 
-        # Fallback: check settings for configured plex_music_root
-        try:
-            from app.services.settings_service import get_setting
-            setting = get_setting(session, "plex")
-            if setting and setting.extra_config:
-                root = setting.extra_config.get("plex_music_root")
-                if root:
-                    return root
-        except Exception:
-            pass
-
+    logger.warning("Could not detect Plex music root — falling back to /")
     return "/"
 
 
