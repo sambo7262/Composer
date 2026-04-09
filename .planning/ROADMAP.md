@@ -50,7 +50,7 @@ Plans:
   4. Each synced track has title, artist, album, genre, year, duration, and Plex ratingKey stored locally
 **Plans:** 3 plans
 Plans:
-- [ ] 02-01-PLAN.md — Track model, Plex client extension, sync service core, Plex library bug fix
+- [x] 02-01-PLAN.md — Track model, Plex client extension, sync service core, Plex library bug fix
 - [ ] 02-02-PLAN.md — Sync API endpoints, progress banner, library browse page with HTMX
 - [ ] 02-03-PLAN.md — APScheduler integration, auto-sync on startup, settings page sync interval
 **UI hint**: yes

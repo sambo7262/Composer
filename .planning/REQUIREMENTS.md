@@ -18,10 +18,10 @@ Requirements for initial release. Fully self-hosted — uses only local services
 
 ### Library Sync
 
-- [ ] **SYNC-01**: App syncs user's full Plex music library to a local SQLite database with paginated fetching
-- [ ] **SYNC-02**: After initial sync, app performs delta sync — only importing new or changed tracks
+- [x] **SYNC-01**: App syncs user's full Plex music library to a local SQLite database with paginated fetching
+- [x] **SYNC-02**: After initial sync, app performs delta sync — only importing new or changed tracks
 - [ ] **SYNC-03**: Library sync runs as a background job with progress indicator visible in the UI
-- [ ] **SYNC-04**: Sync captures track metadata: title, artist, album, genre, year, duration, Plex ratingKey
+- [x] **SYNC-04**: Sync captures track metadata: title, artist, album, genre, year, duration, Plex ratingKey
 
 ### Audio Features
 
@@ -115,10 +115,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CONF-06 | Phase 1 | Complete |
 | DEPL-01 | Phase 1 | Complete |
 | DEPL-02 | Phase 1 | Complete |
-| SYNC-01 | Phase 2 | Pending |
-| SYNC-02 | Phase 2 | Pending |
+| SYNC-01 | Phase 2 | Complete |
+| SYNC-02 | Phase 2 | Complete |
 | SYNC-03 | Phase 2 | Pending |
-| SYNC-04 | Phase 2 | Pending |
+| SYNC-04 | Phase 2 | Complete |
 | AUDIO-01 | Phase 3 | Pending |
 | AUDIO-02 | Phase 3 | Pending |
 | AUDIO-03 | Phase 3 | Pending |
