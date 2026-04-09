@@ -57,8 +57,8 @@ Requirements for initial release. Fully self-hosted — uses only local services
 
 ### Deployment
 
-- [ ] **DEPL-01**: Docker image is built via GitHub Actions CI/CD pipeline
-- [ ] **DEPL-02**: Docker image is published to Docker Hub for easy pulling into compose stacks
+- [x] **DEPL-01**: Docker image is built via GitHub Actions CI/CD pipeline
+- [x] **DEPL-02**: Docker image is published to Docker Hub for easy pulling into compose stacks
 
 ## v2 Requirements
 
@@ -113,8 +113,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CONF-04 | Phase 1 | Complete |
 | CONF-05 | Phase 1 | Complete |
 | CONF-06 | Phase 1 | Complete |
-| DEPL-01 | Phase 1 | Pending |
-| DEPL-02 | Phase 1 | Pending |
+| DEPL-01 | Phase 1 | Complete |
+| DEPL-02 | Phase 1 | Complete |
 | SYNC-01 | Phase 2 | Pending |
 | SYNC-02 | Phase 2 | Pending |
 | SYNC-03 | Phase 2 | Pending |
