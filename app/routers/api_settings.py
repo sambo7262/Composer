@@ -6,7 +6,7 @@ from sqlmodel import Session
 
 from app.database import get_session
 from app.services.plex_client import test_plex_connection
-from app.services.ollama_client import test_ollama_connection
+from app.services.llm_client import test_anthropic_connection
 from app.services.lidarr_client import test_lidarr_connection
 from app.services.settings_service import (
     get_all_settings,
@@ -152,52 +152,52 @@ async def update_plex_sync_schedule(
     )
 
 
-# --- Ollama endpoints ---
+# --- Anthropic endpoints ---
 
 
-@router.post("/ollama/test", response_class=HTMLResponse)
-async def test_ollama(
+@router.post("/anthropic/test", response_class=HTMLResponse)
+async def test_anthropic(
     request: Request,
-    url: str = Form(...),
+    api_key: str = Form(...),
 ):
-    """Test Ollama connection. Returns HTMX partial with result."""
-    result = await test_ollama_connection(url)
+    """Test Anthropic API connection. Returns HTMX partial with result."""
+    result = await test_anthropic_connection(api_key)
     templates = get_templates()
 
     return templates.TemplateResponse(
         request,
         "partials/connection_status.html",
         {
-            "service": "ollama",
+            "service": "anthropic",
             "success": result["success"],
             "options": result.get("models", []),
             "option_label": "Model",
             "option_name": "model",
             "error": result.get("error"),
-            "url": url,
+            "api_key": api_key,
         },
     )
 
 
-@router.post("/ollama/save", response_class=HTMLResponse)
-async def save_ollama(
+@router.post("/anthropic/save", response_class=HTMLResponse)
+async def save_anthropic(
     request: Request,
-    url: str = Form(...),
+    api_key: str = Form(...),
     model: str = Form(...),
     session: Session = Depends(get_session),
 ):
-    """Save Ollama configuration."""
-    save_setting(session, "ollama", url, "", {"model": model})
-    setting = get_setting(session, "ollama")
+    """Save Anthropic configuration."""
+    save_setting(session, "anthropic", "https://api.anthropic.com", api_key, {"model_name": model})
+    setting = get_setting(session, "anthropic")
     templates = get_templates()
 
     return templates.TemplateResponse(
         request,
         "partials/service_card.html",
         {
-            "service": "ollama",
-            "heading": "Ollama",
-            "description": "Connect to Ollama for AI-powered mood interpretation. Optional -- you can add this later.",
+            "service": "anthropic",
+            "heading": "Anthropic",
+            "description": "Connect to Anthropic Claude for AI-powered playlist generation.",
             "configured": True,
             "enabled": True,
             "setting": setting,
@@ -292,9 +292,9 @@ async def reconfigure_service(
             "heading": "Plex Server",
             "description": "Connect to your Plex Media Server to access your music library.",
         },
-        "ollama": {
-            "heading": "Ollama",
-            "description": "Connect to Ollama for AI-powered mood interpretation. Optional -- you can add this later.",
+        "anthropic": {
+            "heading": "Anthropic",
+            "description": "Connect to Anthropic Claude for AI-powered playlist generation.",
         },
         "lidarr": {
             "heading": "Lidarr",

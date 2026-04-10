@@ -1,0 +1,18 @@
+<form hx-post="/api/settings/anthropic/test" hx-target="#anthropic-result" hx-indicator="#anthropic-spinner">
+  <div class="space-y-4">
+    <div>
+      <label for="anthropic-key" class="block text-[13px] text-text-secondary mb-1">API Key</label>
+      <input type="password" id="anthropic-key" name="api_key" placeholder="sk-ant-..."
+             class="w-full bg-surface-elevated border border-border rounded px-4 py-2 text-text-primary placeholder-text-muted focus:border-border-focus focus:ring-1 focus:ring-border-focus focus:outline-none">
+    </div>
+    <p class="text-[12px] text-text-muted">Get your API key at <a href="https://console.anthropic.com/settings/keys" target="_blank" class="text-accent hover:underline">console.anthropic.com</a></p>
+    <div class="flex items-center gap-3">
+      <button type="submit"
+              class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-6 py-2 rounded-lg transition-colors min-h-[44px]">
+        Test Connection
+      </button>
+      {% include "partials/spinner.html" %}
+    </div>
+  </div>
+</form>
+<div id="anthropic-result"></div>

@@ -14,7 +14,7 @@
 
     {% if service == "plex" %}
     <p class="text-text-secondary text-[15px] mb-3">Connected to {{ server_name }}. Select your music library below.</p>
-    {% elif service == "ollama" %}
+    {% elif service == "anthropic" %}
     <p class="text-text-secondary text-[15px] mb-3">Connected. Select a model below.</p>
     {% elif service == "lidarr" %}
     <p class="text-text-secondary text-[15px] mb-3">Connected. Select a default quality profile below.</p>
@@ -33,8 +33,8 @@
             {% endfor %}
           </select>
         </div>
-      {% elif service == "ollama" %}
-        <input type="hidden" name="url" value="{{ url }}">
+      {% elif service == "anthropic" %}
+        <input type="hidden" name="api_key" value="{{ api_key }}">
         <div class="mb-3">
           <label for="{{ service }}-option" class="block text-[13px] text-text-secondary mb-1">{{ option_label }}</label>
           <select id="{{ service }}-option" name="model"

@@ -16,7 +16,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
-from openai import OpenAI
 from sqlmodel import Session
 
 from plexapi.server import PlexServer
@@ -24,6 +23,7 @@ from plexapi.server import PlexServer
 from app.models.playlist import Playlist, PlaylistTrack
 from app.models.schemas import FeatureCriteria
 from app.models.track import Track
+from app.services.llm_client import get_anthropic_client, chat_completion
 from app.services.playlist_engine import filter_candidates, format_candidates_for_llm
 from app.services.settings_service import get_setting, get_decrypted_credential
 
@@ -88,19 +88,7 @@ def clear_session(session_id: str) -> None:
     _sessions.pop(session_id, None)
 
 
-def _get_ollama_client(db_session: Session) -> tuple[OpenAI, str]:
-    """Get a plain OpenAI client (no Instructor) configured for Ollama."""
-    setting = get_setting(db_session, "ollama")
-    if setting is None or not setting.is_configured:
-        raise ValueError("Ollama is not configured. Set up Ollama in Settings first.")
-
-    url = setting.url.rstrip("/")
-    model_name = "llama3.2:3b"
-    if setting.extra_config and setting.extra_config.get("model_name"):
-        model_name = setting.extra_config["model_name"]
-
-    client = OpenAI(base_url=f"{url}/v1", api_key="ollama")
-    return client, model_name
+    # _get_ollama_client removed — now using Anthropic via llm_client.py
 
 
 def _parse_criteria(text: str) -> FeatureCriteria:
@@ -211,7 +199,7 @@ async def process_message(
         }
 
     try:
-        client, model_name = _get_ollama_client(db_session)
+        api_key, model_name = get_anthropic_client(db_session)
     except ValueError as exc:
         error_msg = str(exc)
         chat_session.messages.append({"role": "assistant", "content": error_msg})
@@ -223,21 +211,17 @@ async def process_message(
             "error": True,
         }
 
-    # Phase 1: Mood interpretation — plain text, no JSON mode
+    # Phase 1: Mood interpretation via Anthropic
     try:
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            *chat_session.messages[-6:],  # Keep last 3 exchanges for context
-        ]
+        messages = chat_session.messages[-6:]  # Keep last 3 exchanges
 
-        response = await asyncio.to_thread(
-            client.chat.completions.create,
+        llm_text = await chat_completion(
+            api_key=api_key,
             model=model_name,
+            system=SYSTEM_PROMPT,
             messages=messages,
-            temperature=0.7,
             max_tokens=300,
         )
-        llm_text = response.choices[0].message.content or ""
         criteria = _parse_criteria(llm_text)
         logger.info(
             "Mood interpreted: energy=[%.1f,%.1f] tempo=[%.0f,%.0f] genres=%s",
@@ -301,14 +285,13 @@ async def process_message(
     )
 
     try:
-        curation_response = await asyncio.to_thread(
-            client.chat.completions.create,
+        curation_text = await chat_completion(
+            api_key=api_key,
             model=model_name,
+            system="You are a playlist curator selecting and ordering tracks.",
             messages=[{"role": "user", "content": curation_prompt}],
-            temperature=0.7,
             max_tokens=500,
         )
-        curation_text = curation_response.choices[0].message.content or ""
 
         valid_candidate_ids = {track.id for track, _ in candidates}
         validated_ids = _parse_picks(curation_text, valid_candidate_ids)

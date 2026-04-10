@@ -34,14 +34,14 @@ async def home(request: Request, session: Session = Depends(get_session)):
             "pages/welcome.html",
         )
 
-    ollama_configured = is_service_configured(session, "ollama")
+    anthropic_configured = is_service_configured(session, "anthropic")
 
     return templates.TemplateResponse(
         request,
         "pages/chat.html",
         {
             "active_page": "compose",
-            "ollama_configured": ollama_configured,
+            "anthropic_configured": anthropic_configured,
             "session_id": str(uuid.uuid4()),
         },
     )
@@ -52,11 +52,11 @@ async def settings_page(request: Request, session: Session = Depends(get_session
     """Settings page with three service configuration cards."""
     templates = get_templates()
     plex_configured = is_service_configured(session, "plex")
-    ollama_configured = is_service_configured(session, "ollama")
+    anthropic_configured = is_service_configured(session, "anthropic")
     lidarr_configured = is_service_configured(session, "lidarr")
 
     plex_setting = get_setting(session, "plex")
-    ollama_setting = get_setting(session, "ollama")
+    anthropic_setting = get_setting(session, "anthropic")
     lidarr_setting = get_setting(session, "lidarr")
 
     # Extract sync interval from Plex extra_config (default 24h)
@@ -70,10 +70,10 @@ async def settings_page(request: Request, session: Session = Depends(get_session
         {
             "active_page": "settings",
             "plex_configured": plex_configured,
-            "ollama_configured": ollama_configured,
+            "anthropic_configured": anthropic_configured,
             "lidarr_configured": lidarr_configured,
             "plex_setting": plex_setting,
-            "ollama_setting": ollama_setting,
+            "anthropic_setting": anthropic_setting,
             "lidarr_setting": lidarr_setting,
             "sync_interval": sync_interval,
         },

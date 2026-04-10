@@ -10,7 +10,7 @@
     {% include "partials/service_card.html" %}
   {% endwith %}
 
-  {% with service="ollama", heading="Ollama", description="Connect to Ollama for AI-powered mood interpretation. Optional -- you can add this later.", configured=ollama_configured, enabled=plex_configured, setting=ollama_setting %}
+  {% with service="anthropic", heading="Anthropic", description="Connect to Anthropic Claude for AI-powered playlist generation.", configured=anthropic_configured, enabled=plex_configured, setting=anthropic_setting %}
     {% include "partials/service_card.html" %}
   {% endwith %}
 
