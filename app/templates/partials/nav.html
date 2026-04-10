@@ -1,10 +1,14 @@
 <!-- Nav bar: 56px height, surface-card bg, bottom border -->
 <nav class="w-full h-14 bg-surface-card border-b border-border">
     <div class="max-w-[720px] mx-auto h-full flex items-center justify-between px-4">
-        <a href="/" class="text-[22px] font-semibold text-text-primary hover:text-accent no-underline">
+        <span class="text-[22px] font-semibold text-text-primary">
             Composer
-        </a>
+        </span>
         <div class="flex items-center gap-4">
+            <a href="/"
+               class="text-[15px] {% if active_page == 'compose' %}text-text-primary border-b-2 border-accent{% else %}text-text-secondary hover:text-text-primary{% endif %} transition-colors no-underline pb-1">
+                Compose
+            </a>
             <a href="/library"
                class="text-[15px] {% if active_page == 'library' %}text-text-primary border-b-2 border-accent{% else %}text-text-secondary hover:text-text-primary{% endif %} transition-colors no-underline pb-1">
                 Library

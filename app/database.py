@@ -85,6 +85,7 @@ def init_db() -> None:
     # Import models to register them with SQLModel metadata
     from app.models.settings import ServiceConfig  # noqa: F401
     from app.models.track import Track, SyncState  # noqa: F401
+    from app.models.playlist import Playlist, PlaylistTrack  # noqa: F401
 
     engine = get_engine()
     SQLModel.metadata.create_all(engine)

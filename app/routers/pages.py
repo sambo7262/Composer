@@ -23,7 +23,7 @@ def get_templates():
 
 @router.get("/", response_class=HTMLResponse)
 async def home(request: Request, session: Session = Depends(get_session)):
-    """Root page. Shows welcome if Plex not configured, else home."""
+    """Root page. Shows welcome if Plex not configured, else compose chat."""
     templates = get_templates()
     plex_configured = is_service_configured(session, "plex")
 
@@ -33,9 +33,15 @@ async def home(request: Request, session: Session = Depends(get_session)):
             "pages/welcome.html",
         )
 
+    ollama_configured = is_service_configured(session, "ollama")
+
     return templates.TemplateResponse(
         request,
-        "pages/home.html",
+        "pages/chat.html",
+        {
+            "active_page": "compose",
+            "ollama_configured": ollama_configured,
+        },
     )
 
 
