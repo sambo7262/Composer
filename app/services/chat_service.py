@@ -54,16 +54,19 @@ Example response:
 CRITERIA: energy=0.3-0.6 tempo=70-110 dance=0.2-0.5 valence=0.4-0.7 genres=jazz,soul,r&b exclude=metal,punk
 I'm looking for mellow, warm tracks with a relaxed groove — think Sunday morning coffee vibes with some soul and jazz."""
 
-CURATION_PROMPT = """Pick exactly {track_count} tracks from this list for a "{context}" playlist. Order them for a smooth listening flow.
+CURATION_PROMPT = """Pick exactly {track_count} tracks from this list for a "{context}" playlist.
 
 Candidates (ID|Title|Artist|Genre):
 {candidates}
 
-Respond with TWO parts:
-PART 1 - On the FIRST line, list the track IDs in order:
-PICKS: ID1,ID2,ID3,...
+IMPORTANT: Your response MUST start with a PICKS line. No text before it.
+Format: PICKS: 123,456,789,...
 
-PART 2 - Brief explanation of your selections."""
+Then after the PICKS line, write a brief explanation.
+
+Example:
+PICKS: 42,17,89,203,55
+I selected these tracks because they flow well together, starting mellow and building gradually."""
 
 
 @dataclass
@@ -246,6 +249,7 @@ async def process_message(
     candidates = filter_candidates(
         db_session, criteria, track_count=track_count, candidate_limit=300
     )
+    logger.info("Phase 2: found %d candidates from library", len(candidates))
 
     if not candidates:
         no_tracks_msg = (
@@ -293,12 +297,15 @@ async def process_message(
             max_tokens=500,
         )
 
+        logger.info("Phase 3 curation response (first 200 chars): %s", curation_text[:200])
+
         valid_candidate_ids = {track.id for track, _ in candidates}
         validated_ids = _parse_picks(curation_text, valid_candidate_ids)
+        logger.info("Phase 3: parsed %d valid track IDs from LLM picks", len(validated_ids))
 
         # If LLM picks failed, fall back to top scored candidates
         if len(validated_ids) < 3:
-            logger.warning("LLM curation returned too few picks, using top scored candidates")
+            logger.warning("LLM curation returned too few picks (%d), using top %d scored candidates", len(validated_ids), track_count)
             validated_ids = [track.id for track, _ in candidates[:track_count]]
 
         # Extract explanation from curation response
