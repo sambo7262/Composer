@@ -36,8 +36,8 @@ Requirements for initial release. Fully self-hosted — uses only local services
 - [x] **PLAY-02**: Ollama LLM interprets the user's mood description into structured audio feature criteria (energy, tempo, valence, danceability ranges)
 - [x] **PLAY-03**: App scores library tracks against mood criteria using weighted distance and returns best matches
 - [x] **PLAY-04**: User can specify how many tracks to include in a generated playlist
-- [ ] **PLAY-05**: User can review a generated playlist and edit it (add, remove, reorder tracks) before pushing to Plex
-- [ ] **PLAY-06**: User can push a finalized playlist to a specific Plex library as a named playlist
+- [x] **PLAY-05**: User can review a generated playlist and edit it (add, remove, reorder tracks) before pushing to Plex
+- [x] **PLAY-06**: User can push a finalized playlist to a specific Plex library as a named playlist
 
 ### Plex Playlists
 
@@ -127,8 +127,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PLAY-02 | Phase 4 | Complete |
 | PLAY-03 | Phase 4 | Complete |
 | PLAY-04 | Phase 4 | Complete |
-| PLAY-05 | Phase 4 | Pending |
-| PLAY-06 | Phase 4 | Pending |
+| PLAY-05 | Phase 4 | Complete |
+| PLAY-06 | Phase 4 | Complete |
 | PLEX-01 | Phase 5 | Pending |
 | PLEX-02 | Phase 5 | Pending |
 | PLEX-03 | Phase 5 | Pending |
