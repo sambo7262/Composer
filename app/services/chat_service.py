@@ -1,8 +1,7 @@
-"""Chat service: orchestrates the two-phase LLM pipeline for playlist generation.
+"""Chat service: orchestrates the LLM pipeline for playlist generation.
 
-Phase 1: Instructor interprets mood description into FeatureCriteria (PLAY-02)
-Phase 2: Playlist engine filters/scores candidates from library
-Phase 3: Instructor curates final track selection from candidates
+Uses plain text LLM prompts (no Instructor/JSON mode) for fast inference on
+low-power hardware. Parses structured data from LLM responses with regex.
 
 Session state tracks conversation history and current playlist (D-08, D-13).
 """
@@ -10,54 +9,66 @@ Session state tracks conversation history and current playlist (D-08, D-13).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
+from openai import OpenAI
 from sqlmodel import Session
 
 from plexapi.server import PlexServer
 
 from app.models.playlist import Playlist, PlaylistTrack
-from app.models.schemas import FeatureCriteria, TrackSelection
+from app.models.schemas import FeatureCriteria
 from app.models.track import Track
-from app.services.ollama_client import get_instructor_client
 from app.services.playlist_engine import filter_candidates, format_candidates_for_llm
+from app.services.settings_service import get_setting, get_decrypted_credential
 
 logger = logging.getLogger(__name__)
 
-# Module-level session store (singleton pattern, consistent with sync_service/analysis_service)
+# Module-level session store
 _sessions: dict[str, ChatSession] = {}
 
-# System prompt for mood interpretation (<500 tokens per research guidance)
-SYSTEM_PROMPT = """You are a music playlist curator. You interpret mood and vibe descriptions into audio feature criteria to search a personal music library.
+# System prompt — plain text, asks for a simple format
+SYSTEM_PROMPT = """You are a music playlist curator. You interpret mood and vibe descriptions to search a personal music library.
 
-Audio feature ranges:
-- energy: 0.0 (calm, ambient) to 1.0 (intense, aggressive)
-- tempo: 40 BPM (very slow) to 220 BPM (very fast)
-- danceability: 0.0 (not danceable) to 1.0 (very danceable)
-- valence: 0.0 (sad, dark, melancholy) to 1.0 (happy, bright, uplifting)
+When the user describes a mood, respond with TWO parts:
 
-You can also filter by genre names and artist names. Use exclude_genres to remove unwanted styles.
+PART 1 - On the FIRST line, write a criteria line in this exact format:
+CRITERIA: energy=LOW-HIGH tempo=LOW-HIGH dance=LOW-HIGH valence=LOW-HIGH genres=GENRE1,GENRE2 exclude=GENRE1,GENRE2
 
-When interpreting a mood, set appropriate min/max ranges for each feature. Use wider ranges for vague requests and narrower ranges for specific ones. Always provide a brief explanation of your interpretation."""
+Where:
+- energy: 0.0 (calm) to 1.0 (intense)
+- tempo: 40 (slow) to 220 (fast) in BPM
+- dance: 0.0 (not danceable) to 1.0 (very danceable)
+- valence: 0.0 (sad/dark) to 1.0 (happy/bright)
+- genres: comma-separated genre names to include (or "any" for all)
+- exclude: comma-separated genres to exclude (or "none")
 
-CURATION_PROMPT_TEMPLATE = """You are selecting tracks for a playlist from the candidates below. Pick exactly {track_count} tracks that best match the mood and order them for a cohesive listening experience.
+PART 2 - After the criteria line, write a brief friendly explanation of how you interpreted their mood.
 
-Current request context: {context}
+Example response:
+CRITERIA: energy=0.3-0.6 tempo=70-110 dance=0.2-0.5 valence=0.4-0.7 genres=jazz,soul,r&b exclude=metal,punk
+I'm looking for mellow, warm tracks with a relaxed groove — think Sunday morning coffee vibes with some soul and jazz."""
 
-Candidates (ID|Title|Artist|Genre|Energy|Tempo|Dance|Valence):
+CURATION_PROMPT = """Pick exactly {track_count} tracks from this list for a "{context}" playlist. Order them for a smooth listening flow.
+
+Candidates (ID|Title|Artist|Genre):
 {candidates}
 
-Select exactly {track_count} tracks by their ID. If fewer candidates are available, select all of them. Order them for a smooth listening flow. Explain your selections briefly."""
+Respond with TWO parts:
+PART 1 - On the FIRST line, list the track IDs in order:
+PICKS: ID1,ID2,ID3,...
+
+PART 2 - Brief explanation of your selections."""
 
 
 @dataclass
 class ChatSession:
     """In-memory session state for a chat conversation."""
-
     session_id: str
     messages: list[dict] = field(default_factory=list)
     current_playlist: list[int] = field(default_factory=list)
@@ -65,17 +76,8 @@ class ChatSession:
 
 
 def get_or_create_session(session_id: Optional[str] = None) -> ChatSession:
-    """Get an existing session or create a new one.
-
-    Args:
-        session_id: Existing session ID. If None or not found, creates new.
-
-    Returns:
-        ChatSession instance.
-    """
     if session_id and session_id in _sessions:
         return _sessions[session_id]
-
     new_id = session_id or str(uuid.uuid4())
     session = ChatSession(session_id=new_id)
     _sessions[new_id] = session
@@ -83,20 +85,96 @@ def get_or_create_session(session_id: Optional[str] = None) -> ChatSession:
 
 
 def clear_session(session_id: str) -> None:
-    """Remove a session from the store."""
     _sessions.pop(session_id, None)
 
 
-def _sanitize_error(error_msg: str) -> str:
-    """Sanitize error messages to prevent leaking sensitive info (T-04-05).
+def _get_ollama_client(db_session: Session) -> tuple[OpenAI, str]:
+    """Get a plain OpenAI client (no Instructor) configured for Ollama."""
+    setting = get_setting(db_session, "ollama")
+    if setting is None or not setting.is_configured:
+        raise ValueError("Ollama is not configured. Set up Ollama in Settings first.")
 
-    Strips URLs, tokens, file paths, and other potentially sensitive data.
-    """
-    # Remove anything that looks like a URL with credentials
+    url = setting.url.rstrip("/")
+    model_name = "llama3.2:3b"
+    if setting.extra_config and setting.extra_config.get("model_name"):
+        model_name = setting.extra_config["model_name"]
+
+    client = OpenAI(base_url=f"{url}/v1", api_key="ollama")
+    return client, model_name
+
+
+def _parse_criteria(text: str) -> FeatureCriteria:
+    """Parse a CRITERIA line from LLM plain text response."""
+    # Find the CRITERIA line
+    criteria_match = re.search(r'CRITERIA:\s*(.+)', text, re.IGNORECASE)
+    if not criteria_match:
+        # Fallback: return broad defaults
+        return FeatureCriteria(
+            energy_min=0.0, energy_max=1.0,
+            tempo_min=60, tempo_max=180,
+            danceability_min=0.0, danceability_max=1.0,
+            valence_min=0.0, valence_max=1.0,
+            genres=[], artists=[], exclude_genres=[],
+            explanation=text[:200],
+        )
+
+    line = criteria_match.group(1)
+
+    def _parse_range(key: str, default_min: float, default_max: float) -> tuple[float, float]:
+        match = re.search(rf'{key}=([\d.]+)-([\d.]+)', line, re.IGNORECASE)
+        if match:
+            return float(match.group(1)), float(match.group(2))
+        return default_min, default_max
+
+    def _parse_list(key: str) -> list[str]:
+        match = re.search(rf'{key}=([\w\s,&]+?)(?:\s+\w+=|$)', line, re.IGNORECASE)
+        if match:
+            val = match.group(1).strip()
+            if val.lower() in ("any", "none", ""):
+                return []
+            return [g.strip() for g in val.split(",") if g.strip()]
+        return []
+
+    e_min, e_max = _parse_range("energy", 0.0, 1.0)
+    t_min, t_max = _parse_range("tempo", 60, 180)
+    d_min, d_max = _parse_range("dance", 0.0, 1.0)
+    v_min, v_max = _parse_range("valence", 0.0, 1.0)
+    genres = _parse_list("genres")
+    excludes = _parse_list("exclude")
+
+    # Extract explanation (everything after the CRITERIA line)
+    explanation = text[criteria_match.end():].strip()
+    if not explanation:
+        explanation = "Based on your mood description."
+
+    return FeatureCriteria(
+        energy_min=e_min, energy_max=e_max,
+        tempo_min=t_min, tempo_max=t_max,
+        danceability_min=d_min, danceability_max=d_max,
+        valence_min=v_min, valence_max=v_max,
+        genres=genres, artists=[], exclude_genres=excludes,
+        explanation=explanation[:300],
+    )
+
+
+def _parse_picks(text: str, valid_ids: set[int]) -> list[int]:
+    """Parse a PICKS line from LLM plain text response."""
+    picks_match = re.search(r'PICKS:\s*(.+)', text, re.IGNORECASE)
+    if not picks_match:
+        # Fallback: try to find any numbers in the response
+        numbers = re.findall(r'\b(\d+)\b', text)
+        ids = [int(n) for n in numbers if int(n) in valid_ids]
+        return ids
+
+    ids_str = picks_match.group(1)
+    numbers = re.findall(r'\d+', ids_str)
+    ids = [int(n) for n in numbers if int(n) in valid_ids]
+    return ids
+
+
+def _sanitize_error(error_msg: str) -> str:
     sanitized = re.sub(r"https?://[^\s]+", "[url-redacted]", error_msg)
-    # Remove file paths
     sanitized = re.sub(r"/[a-zA-Z0-9_/.-]+\.(py|db|sqlite|conf|env)", "[path-redacted]", sanitized)
-    # Truncate to reasonable length
     return sanitized[:300]
 
 
@@ -106,28 +184,18 @@ async def process_message(
     track_count: int,
     db_session: Session,
 ) -> dict:
-    """Process a chat message through the two-phase LLM pipeline.
+    """Process a chat message through the LLM pipeline.
 
-    Phase 1: Mood interpretation -> FeatureCriteria (via Instructor)
-    Phase 2: Candidate filtering (via playlist_engine)
-    Phase 3: LLM curation -> TrackSelection (via Instructor)
-
-    Args:
-        session_id: Chat session identifier.
-        user_message: The user's message text.
-        track_count: Number of tracks to include in playlist.
-        db_session: Database session for queries.
-
-    Returns:
-        Dict with keys: tracks, explanation, criteria, session_id, error (if any).
+    Phase 1: Plain text mood interpretation -> parse CRITERIA
+    Phase 2: Candidate filtering via playlist_engine
+    Phase 3: Plain text LLM curation -> parse PICKS
     """
     chat_session = get_or_create_session(session_id)
     chat_session.track_count = track_count
 
-    # Append user message to conversation history
     chat_session.messages.append({"role": "user", "content": user_message})
 
-    # Check for Plex playlist request (D-10 Flow 2 -- deferred to Phase 5)
+    # Check for Plex playlist request (deferred to Phase 5)
     plex_keywords = ["existing playlist", "plex playlist", "modify playlist", "edit playlist"]
     if any(kw in user_message.lower() for kw in plex_keywords):
         decline_msg = (
@@ -143,7 +211,7 @@ async def process_message(
         }
 
     try:
-        instructor_client, model_name = get_instructor_client(db_session)
+        client, model_name = _get_ollama_client(db_session)
     except ValueError as exc:
         error_msg = str(exc)
         chat_session.messages.append({"role": "assistant", "content": error_msg})
@@ -155,41 +223,33 @@ async def process_message(
             "error": True,
         }
 
-    # Build context for refinement messages (D-13 smart edits)
-    playlist_context = ""
-    if chat_session.current_playlist:
-        playlist_context = (
-            f"\n\nCurrent playlist has {len(chat_session.current_playlist)} tracks "
-            f"(IDs: {chat_session.current_playlist[:10]}{'...' if len(chat_session.current_playlist) > 10 else ''})."
-            f" The user may want to modify this playlist."
-        )
-
-    # Phase 1: Mood interpretation via Instructor
+    # Phase 1: Mood interpretation — plain text, no JSON mode
     try:
-        interpretation_messages = [
-            {"role": "system", "content": SYSTEM_PROMPT + playlist_context},
-            *chat_session.messages,
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            *chat_session.messages[-6:],  # Keep last 3 exchanges for context
         ]
 
-        criteria: FeatureCriteria = await asyncio.to_thread(
-            instructor_client.chat.completions.create,
+        response = await asyncio.to_thread(
+            client.chat.completions.create,
             model=model_name,
-            response_model=FeatureCriteria,
-            messages=interpretation_messages,
-            max_retries=2,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=300,
         )
+        llm_text = response.choices[0].message.content or ""
+        criteria = _parse_criteria(llm_text)
         logger.info(
-            "Mood interpreted: energy=[%.1f,%.1f] tempo=[%.0f,%.0f] valence=[%.1f,%.1f] genres=%s",
+            "Mood interpreted: energy=[%.1f,%.1f] tempo=[%.0f,%.0f] genres=%s",
             criteria.energy_min, criteria.energy_max,
             criteria.tempo_min, criteria.tempo_max,
-            criteria.valence_min, criteria.valence_max,
             criteria.genres,
         )
     except Exception as exc:
         error_msg = _sanitize_error(str(exc))
-        friendly = f"I had trouble understanding that mood. Could you try describing it differently? (Error: {error_msg})"
+        friendly = f"I had trouble understanding that mood. Could you try again? (Error: {error_msg})"
         chat_session.messages.append({"role": "assistant", "content": friendly})
-        logger.error("Phase 1 (mood interpretation) failed: %s", error_msg)
+        logger.error("Phase 1 failed: %s", error_msg)
         return {
             "tracks": [],
             "explanation": friendly,
@@ -198,16 +258,16 @@ async def process_message(
             "error": True,
         }
 
-    # Phase 2: Candidate filtering via playlist engine
+    # Phase 2: Candidate filtering
     candidates = filter_candidates(
         db_session, criteria, track_count=track_count, candidate_limit=300
     )
 
     if not candidates:
         no_tracks_msg = (
-            f"I interpreted your mood as: {criteria.explanation}\n\n"
-            "Unfortunately, I couldn't find any matching tracks in your library. "
-            "Try a broader mood description or check that your library has been synced and analyzed."
+            f"{criteria.explanation}\n\n"
+            "I couldn't find matching tracks in your library. "
+            "Try a broader mood description."
         )
         chat_session.messages.append({"role": "assistant", "content": no_tracks_msg})
         return {
@@ -217,70 +277,72 @@ async def process_message(
             "session_id": chat_session.session_id,
         }
 
-    # Check if enough high-quality matches
-    good_matches = sum(1 for _, score in candidates if score <= 0.5)
-    low_quality_warning = ""
-    if good_matches < track_count * 0.5:
-        low_quality_warning = (
-            " Note: Your library has limited tracks matching this exact mood. "
-            "Some selections may be approximate matches."
-        )
+    # If we have fewer candidates than requested, just use them all
+    if len(candidates) <= track_count:
+        validated_ids = [track.id for track, _ in candidates]
+        chat_session.current_playlist = validated_ids
+        explanation = f"{criteria.explanation}\n\nHere are the {len(validated_ids)} tracks that match."
+        chat_session.messages.append({"role": "assistant", "content": explanation})
+        candidate_map = {track.id: track for track, _ in candidates}
+        ordered_tracks = [candidate_map[tid] for tid in validated_ids if tid in candidate_map]
+        return {
+            "tracks": ordered_tracks,
+            "explanation": explanation,
+            "criteria": criteria,
+            "session_id": chat_session.session_id,
+        }
 
-    # Phase 3: LLM curation via Instructor
-    candidates_text = format_candidates_for_llm(candidates, limit=300)
-    curation_prompt = CURATION_PROMPT_TEMPLATE.format(
+    # Phase 3: LLM curation — plain text, no JSON mode
+    candidates_text = format_candidates_for_llm(candidates, limit=100)
+    curation_prompt = CURATION_PROMPT.format(
         track_count=min(track_count, len(candidates)),
-        context=criteria.explanation,
+        context=criteria.explanation[:100],
         candidates=candidates_text,
     )
 
     try:
-        curation_messages = [
-            {"role": "system", "content": "You are a playlist curator selecting and ordering tracks."},
-            {"role": "user", "content": curation_prompt},
-        ]
-
-        selection: TrackSelection = await asyncio.to_thread(
-            instructor_client.chat.completions.create,
+        curation_response = await asyncio.to_thread(
+            client.chat.completions.create,
             model=model_name,
-            response_model=TrackSelection,
-            messages=curation_messages,
-            max_retries=2,
+            messages=[{"role": "user", "content": curation_prompt}],
+            temperature=0.7,
+            max_tokens=500,
         )
+        curation_text = curation_response.choices[0].message.content or ""
+
+        valid_candidate_ids = {track.id for track, _ in candidates}
+        validated_ids = _parse_picks(curation_text, valid_candidate_ids)
+
+        # If LLM picks failed, fall back to top scored candidates
+        if len(validated_ids) < 3:
+            logger.warning("LLM curation returned too few picks, using top scored candidates")
+            validated_ids = [track.id for track, _ in candidates[:track_count]]
+
+        # Extract explanation from curation response
+        curation_explanation = curation_text
+        picks_match = re.search(r'PICKS:', curation_text, re.IGNORECASE)
+        if picks_match:
+            curation_explanation = curation_text[picks_match.end():].strip()
+            # Skip past the IDs line
+            curation_explanation = re.sub(r'^[\d,\s]+', '', curation_explanation).strip()
+
     except Exception as exc:
         error_msg = _sanitize_error(str(exc))
-        friendly = (
-            f"I found {len(candidates)} matching tracks but had trouble curating the final playlist. "
-            f"(Error: {error_msg})"
-        )
-        chat_session.messages.append({"role": "assistant", "content": friendly})
-        logger.error("Phase 3 (curation) failed: %s", error_msg)
-        return {
-            "tracks": [],
-            "explanation": friendly,
-            "criteria": criteria,
-            "session_id": chat_session.session_id,
-            "error": True,
-        }
-
-    # Validate track IDs (T-04-03: prevent LLM hallucination attacks)
-    valid_candidate_ids = {track.id for track, _ in candidates}
-    validated_ids = [tid for tid in selection.track_ids if tid in valid_candidate_ids]
-
-    if len(validated_ids) < len(selection.track_ids):
-        removed = len(selection.track_ids) - len(validated_ids)
-        logger.warning("Removed %d invalid track IDs from LLM selection", removed)
+        logger.warning("Phase 3 (curation) failed, using top scored: %s", error_msg)
+        validated_ids = [track.id for track, _ in candidates[:track_count]]
+        curation_explanation = ""
 
     # Update session state
-    chat_session.current_playlist = validated_ids
+    chat_session.current_playlist = validated_ids[:track_count]
 
-    # Build explanation
-    explanation = f"{criteria.explanation}\n\n{selection.explanation}{low_quality_warning}"
+    explanation = criteria.explanation
+    if curation_explanation:
+        explanation += f"\n\n{curation_explanation}"
+
     chat_session.messages.append({"role": "assistant", "content": explanation})
 
-    # Fetch full Track objects in playlist order
-    candidate_map: dict[int, Track] = {track.id: track for track, _ in candidates}
-    ordered_tracks = [candidate_map[tid] for tid in validated_ids if tid in candidate_map]
+    candidate_map = {track.id: track for track, _ in candidates}
+    ordered_tracks = [candidate_map[tid] for tid in chat_session.current_playlist if tid in candidate_map]
 
     return {
         "tracks": ordered_tracks,
@@ -296,23 +358,7 @@ async def push_playlist_to_plex(
     name: str,
     rating_keys: list[str],
 ) -> dict:
-    """Push a playlist to Plex using batch fetch (PLAY-06).
-
-    Uses comma-separated ratingKeys to avoid N+1 fetches (research Pitfall 6).
-
-    Args:
-        plex_url: Plex server URL.
-        plex_token: Decrypted Plex auth token.
-        name: Playlist name.
-        rating_keys: List of Plex ratingKey values for tracks.
-
-    Returns:
-        Dict with success status, title, and track_count.
-
-    Raises:
-        ValueError: If rating_keys is empty.
-        Exception: On PlexAPI errors (sanitized by caller).
-    """
+    """Push a playlist to Plex using batch fetch."""
     if not rating_keys:
         raise ValueError("No tracks to push")
 
@@ -332,26 +378,14 @@ def save_playlist_to_history(
     mood_description: str,
     track_ids: list[int],
 ) -> Playlist:
-    """Save a generated playlist to the history database (D-17).
-
-    Creates a Playlist record and PlaylistTrack records for each track.
-
-    Args:
-        db_session: Database session.
-        name: Playlist name.
-        mood_description: Description of the mood (first user message).
-        track_ids: Ordered list of track IDs.
-
-    Returns:
-        The created Playlist record.
-    """
+    """Save a generated playlist to the history database."""
     playlist = Playlist(
         name=name,
         mood_description=mood_description[:500],
         track_count=len(track_ids),
     )
     db_session.add(playlist)
-    db_session.flush()  # Get the playlist.id
+    db_session.flush()
 
     for position, track_id in enumerate(track_ids):
         pt = PlaylistTrack(
