@@ -2,10 +2,47 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
+import instructor
 from openai import OpenAI
 
+from app.services.settings_service import get_setting
+
+if TYPE_CHECKING:
+    from sqlmodel import Session
+
 logger = logging.getLogger(__name__)
+
+
+def get_instructor_client(session: Session) -> tuple[instructor.Instructor, str]:
+    """Create an Instructor-wrapped OpenAI client configured for Ollama.
+
+    Reads Ollama settings (URL, model name) from the database.
+    Uses JSON mode for universal Ollama compatibility (not TOOLS mode).
+
+    Args:
+        session: Database session for reading settings.
+
+    Returns:
+        Tuple of (instructor_client, model_name).
+
+    Raises:
+        ValueError: If Ollama is not configured.
+    """
+    setting = get_setting(session, "ollama")
+    if setting is None or not setting.is_configured:
+        raise ValueError("Ollama is not configured. Set up Ollama in Settings first.")
+
+    url = setting.url.rstrip("/")
+    model_name = "llama3.1:8b"  # default
+    if setting.extra_config and setting.extra_config.get("model_name"):
+        model_name = setting.extra_config["model_name"]
+
+    client = OpenAI(base_url=f"{url}/v1", api_key="ollama")
+    instructor_client = instructor.from_openai(client, mode=instructor.Mode.JSON)
+
+    return instructor_client, model_name
 
 
 async def test_ollama_connection(url: str) -> dict:
