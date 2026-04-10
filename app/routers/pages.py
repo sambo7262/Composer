@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from math import ceil
 
 from fastapi import APIRouter, Depends, Request
@@ -41,6 +42,7 @@ async def home(request: Request, session: Session = Depends(get_session)):
         {
             "active_page": "compose",
             "ollama_configured": ollama_configured,
+            "session_id": str(uuid.uuid4()),
         },
     )
 

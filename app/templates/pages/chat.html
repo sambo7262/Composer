@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block title %}Compose - Composer{% endblock %}
+
+{% block content %}
+<div x-data="{started: false, trackCount: 20}" class="pb-12">
+
+  {# Chat input at TOP of page (D-02) #}
+  <form hx-post="/api/chat/message"
+        hx-target="#chat-messages"
+        hx-swap="beforeend"
+        hx-indicator="#chat-loading"
+        hx-on::after-request="this.querySelector('input[name=message]').value=''; $dispatch('chat-started')"
+        class="mb-4"
+        @chat-started.window="started = true">
+    <input type="hidden" name="session_id" value="{{ session_id }}">
+    <input type="hidden" name="track_count" :value="trackCount">
+
+    <div class="flex gap-2">
+      <input type="text" name="message"
+             placeholder="Describe a mood or vibe..."
+             autocomplete="off"
+             required
+             class="flex-1 bg-surface-elevated border border-border rounded-lg px-4 py-3 text-text-primary placeholder-text-secondary focus:border-border-focus focus:ring-1 focus:ring-border-focus text-[15px] min-h-[44px]">
+      <button type="submit"
+              class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-5 py-3 rounded-lg transition-colors text-[15px] min-h-[44px] whitespace-nowrap">
+        Send
+      </button>
+    </div>
+
+    {# Track count slider (D-14) #}
+    <div class="flex items-center gap-3 mt-3">
+      <label class="text-text-secondary text-[13px] whitespace-nowrap">Tracks:</label>
+      <input type="range" min="5" max="50" step="5"
+             x-model="trackCount"
+             class="flex-1 h-2 bg-surface-elevated rounded-full appearance-none cursor-pointer accent-accent">
+      <span x-text="trackCount" class="text-text-secondary text-[13px] w-6 text-right"></span>
+    </div>
+  </form>
+
+  {# Mood presets - empty state only (D-04) #}
+  <div x-show="!started" x-transition class="mb-6">
+    <div class="flex flex-wrap gap-2">
+      {% for preset in ["Chill", "Energetic", "Focus", "Late Night", "Workout"] %}
+      <button hx-post="/api/chat/message"
+              hx-target="#chat-messages"
+              hx-swap="beforeend"
+              hx-indicator="#chat-loading"
+              hx-vals='{"session_id": "{{ session_id }}", "message": "{{ preset }} vibes", "track_count": "20"}'
+              @click="started = true"
+              class="bg-surface-elevated hover:bg-surface-card border border-border text-text-secondary hover:text-text-primary px-4 py-2 rounded-full text-[14px] transition-colors min-h-[44px]">
+        {{ preset }}
+      </button>
+      {% endfor %}
+    </div>
+  </div>
+
+  {# Loading indicator #}
+  <div id="chat-loading" class="htmx-indicator flex items-center gap-2 py-4">
+    <div class="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
+    <span class="text-text-secondary text-[14px]">Thinking...</span>
+  </div>
+
+  {# Chat messages area (D-03) #}
+  <div id="chat-messages" class="space-y-4 pb-8">
+    {# Empty state prompt #}
+    <div x-show="!started" x-transition class="text-center py-16">
+      <p class="text-text-secondary text-[16px]">What are you in the mood for?</p>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

@@ -1,0 +1,114 @@
+{# Interactive playlist card with drag-drop reorder, track removal, and push-to-Plex.
+   Context: tracks (list of Track objects), session_id
+   Uses Alpine.js Sort plugin for drag-and-drop (PLAY-05).
+   Jinja2 auto-escaping ON -- no |safe on user content (T-04-07).
+#}
+
+<div x-data="{
+       tracks: [{% for t in tracks %}{ id: {{ t.id }}, title: '{{ t.title|e }}', artist: '{{ t.artist|e }}', duration: {{ t.duration or 0 }} }{% if not loop.last %},{% endif %}{% endfor %}],
+       pushed: false,
+       pushing: false,
+       pushError: ''
+     }"
+     class="mt-4 bg-surface-elevated rounded-xl border border-border overflow-hidden">
+
+  {# Header #}
+  <div class="px-4 py-3 border-b border-border flex items-center justify-between">
+    <span class="text-text-secondary text-[13px]">
+      <span x-text="tracks.length"></span> tracks
+    </span>
+  </div>
+
+  {# Track list with Sort plugin for drag-and-drop (D-12) #}
+  <ul x-sort="(item, position) => {
+        const trackId = item.getAttribute('data-track-id');
+        htmx.ajax('POST', '/api/chat/reorder', {
+          values: { session_id: '{{ session_id }}', track_id: trackId, position: position },
+          swap: 'none'
+        });
+      }"
+      class="divide-y divide-border">
+    <template x-for="(track, index) in tracks" :key="track.id">
+      <li x-sort:item
+          :data-track-id="track.id"
+          class="flex items-center gap-3 px-4 py-3 hover:bg-surface-card/50 transition-colors group">
+
+        {# Drag handle - 44px touch target (mobile-first) #}
+        <span x-sort:handle
+              class="flex items-center justify-center w-[44px] h-[44px] -ml-2 cursor-grab active:cursor-grabbing text-text-secondary hover:text-text-primary touch-manipulation">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="6" x2="21" y2="6"/>
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </span>
+
+        {# Track number #}
+        <span class="text-text-secondary text-[13px] w-5 text-right" x-text="index + 1"></span>
+
+        {# Track info #}
+        <div class="flex-1 min-w-0">
+          <p class="text-text-primary text-[14px] truncate" x-text="track.title"></p>
+          <p class="text-text-secondary text-[12px] truncate" x-text="track.artist"></p>
+        </div>
+
+        {# Duration #}
+        <span class="text-text-secondary text-[12px] whitespace-nowrap"
+              x-text="track.duration ? Math.floor(track.duration / 60) + ':' + String(track.duration % 60).padStart(2, '0') : ''">
+        </span>
+
+        {# Remove button - 44px touch target (mobile-first) #}
+        <button @click="
+                  const tid = track.id;
+                  tracks = tracks.filter(t => t.id !== tid);
+                  htmx.ajax('POST', '/api/chat/remove-track', {
+                    values: { session_id: '{{ session_id }}', track_id: tid },
+                    swap: 'none'
+                  });
+                "
+                class="flex items-center justify-center w-[44px] h-[44px] -mr-2 text-text-secondary hover:text-error transition-colors touch-manipulation opacity-0 group-hover:opacity-100 focus:opacity-100"
+                aria-label="Remove track">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </li>
+    </template>
+  </ul>
+
+  {# Push to Plex section (D-15) #}
+  <div class="px-4 py-3 border-t border-border">
+    <div x-show="!pushed" class="flex gap-2">
+      <input type="text" x-ref="playlistName"
+             placeholder="Name this playlist..."
+             class="flex-1 bg-surface-primary border border-border rounded-lg px-3 py-2 text-text-primary placeholder-text-secondary focus:border-border-focus focus:ring-1 focus:ring-border-focus text-[14px] min-h-[44px]">
+      <button @click="
+                const name = $refs.playlistName.value.trim();
+                if (!name) { pushError = 'Please enter a playlist name'; return; }
+                pushing = true;
+                pushError = '';
+                htmx.ajax('POST', '/api/chat/push-to-plex', {
+                  values: { session_id: '{{ session_id }}', playlist_name: name },
+                  target: '#chat-messages',
+                  swap: 'beforeend'
+                }).then(() => { pushed = true; pushing = false; })
+                 .catch(() => { pushError = 'Failed to push playlist'; pushing = false; });
+              "
+              :disabled="pushing"
+              class="bg-accent hover:bg-accent-hover disabled:opacity-50 text-surface-primary font-semibold px-4 py-2 rounded-lg transition-colors text-[14px] min-h-[44px] whitespace-nowrap">
+        <span x-show="!pushing">Push to Plex</span>
+        <span x-show="pushing" class="flex items-center gap-2">
+          <span class="w-3 h-3 border-2 border-surface-primary border-t-transparent rounded-full animate-spin"></span>
+          Pushing...
+        </span>
+      </button>
+    </div>
+    <div x-show="pushed" class="text-center py-2">
+      <span class="text-accent text-[14px] font-medium">Pushed to Plex!</span>
+    </div>
+    <p x-show="pushError" x-text="pushError" class="text-error text-[13px] mt-1"></p>
+  </div>
+</div>
