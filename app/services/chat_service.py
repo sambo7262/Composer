@@ -18,6 +18,9 @@ from typing import Optional
 
 from sqlmodel import Session
 
+from plexapi.server import PlexServer
+
+from app.models.playlist import Playlist, PlaylistTrack
 from app.models.schemas import FeatureCriteria, TrackSelection
 from app.models.track import Track
 from app.services.ollama_client import get_instructor_client
@@ -285,3 +288,79 @@ async def process_message(
         "criteria": criteria,
         "session_id": chat_session.session_id,
     }
+
+
+async def push_playlist_to_plex(
+    plex_url: str,
+    plex_token: str,
+    name: str,
+    rating_keys: list[str],
+) -> dict:
+    """Push a playlist to Plex using batch fetch (PLAY-06).
+
+    Uses comma-separated ratingKeys to avoid N+1 fetches (research Pitfall 6).
+
+    Args:
+        plex_url: Plex server URL.
+        plex_token: Decrypted Plex auth token.
+        name: Playlist name.
+        rating_keys: List of Plex ratingKey values for tracks.
+
+    Returns:
+        Dict with success status, title, and track_count.
+
+    Raises:
+        ValueError: If rating_keys is empty.
+        Exception: On PlexAPI errors (sanitized by caller).
+    """
+    if not rating_keys:
+        raise ValueError("No tracks to push")
+
+    def _create():
+        plex = PlexServer(plex_url, plex_token, timeout=30)
+        key_str = ",".join(str(k) for k in rating_keys)
+        tracks = plex.fetchItems(f"/library/metadata/{key_str}")
+        playlist = plex.createPlaylist(title=name, items=tracks)
+        return {"success": True, "title": playlist.title, "track_count": len(tracks)}
+
+    return await asyncio.to_thread(_create)
+
+
+def save_playlist_to_history(
+    db_session: Session,
+    name: str,
+    mood_description: str,
+    track_ids: list[int],
+) -> Playlist:
+    """Save a generated playlist to the history database (D-17).
+
+    Creates a Playlist record and PlaylistTrack records for each track.
+
+    Args:
+        db_session: Database session.
+        name: Playlist name.
+        mood_description: Description of the mood (first user message).
+        track_ids: Ordered list of track IDs.
+
+    Returns:
+        The created Playlist record.
+    """
+    playlist = Playlist(
+        name=name,
+        mood_description=mood_description[:500],
+        track_count=len(track_ids),
+    )
+    db_session.add(playlist)
+    db_session.flush()  # Get the playlist.id
+
+    for position, track_id in enumerate(track_ids):
+        pt = PlaylistTrack(
+            playlist_id=playlist.id,
+            track_id=track_id,
+            position=position,
+        )
+        db_session.add(pt)
+
+    db_session.commit()
+    db_session.refresh(playlist)
+    return playlist

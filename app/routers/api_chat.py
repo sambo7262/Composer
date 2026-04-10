@@ -17,7 +17,10 @@ from app.services.chat_service import (
     clear_session,
     get_or_create_session,
     process_message,
+    push_playlist_to_plex,
+    save_playlist_to_history,
 )
+from app.services.settings_service import get_setting, get_decrypted_credential
 
 logger = logging.getLogger(__name__)
 
@@ -161,3 +164,134 @@ async def new_conversation(
         clear_session(_validate_session_id(session_id))
 
     return HTMLResponse(content="")
+
+
+@router.post("/push-to-plex", response_class=HTMLResponse)
+async def push_to_plex(
+    request: Request,
+    session_id: str = Form(...),
+    playlist_name: str = Form(...),
+    db_session: Session = Depends(get_session),
+):
+    """Push the current playlist to Plex and save to history (D-15, D-16, PLAY-06).
+
+    Validates playlist name (T-04-09), creates playlist on Plex via batch fetch,
+    saves to history database (D-17), returns success/error message partial.
+    """
+    templates = get_templates()
+    validated_session_id = _validate_session_id(session_id)
+
+    # Validate playlist name (T-04-09)
+    name = playlist_name.strip()
+    if not name:
+        error_html = templates.get_template("partials/chat_message.html").render(
+            role="assistant",
+            content="Please enter a name for the playlist.",
+            has_error=True,
+        )
+        return HTMLResponse(content=error_html, status_code=400)
+
+    if len(name) > 200:
+        error_html = templates.get_template("partials/chat_message.html").render(
+            role="assistant",
+            content="Playlist name must be under 200 characters.",
+            has_error=True,
+        )
+        return HTMLResponse(content=error_html, status_code=400)
+
+    # Validate session has a playlist
+    session = get_or_create_session(validated_session_id)
+    if not session.current_playlist:
+        error_html = templates.get_template("partials/chat_message.html").render(
+            role="assistant",
+            content="No playlist to push. Generate a playlist first by describing a mood.",
+            has_error=True,
+        )
+        return HTMLResponse(content=error_html, status_code=400)
+
+    # Get Plex settings
+    plex_setting = get_setting(db_session, "plex")
+    if not plex_setting or not plex_setting.is_configured:
+        error_html = templates.get_template("partials/chat_message.html").render(
+            role="assistant",
+            content="Plex is not configured. Go to Settings to set up your Plex connection.",
+            has_error=True,
+        )
+        return HTMLResponse(content=error_html, status_code=400)
+
+    plex_url = plex_setting.url
+    plex_token = get_decrypted_credential(db_session, "plex")
+    if not plex_token:
+        error_html = templates.get_template("partials/chat_message.html").render(
+            role="assistant",
+            content="Plex token not found. Please reconfigure Plex in Settings.",
+            has_error=True,
+        )
+        return HTMLResponse(content=error_html, status_code=400)
+
+    # Get rating keys for tracks in the playlist
+    from sqlmodel import select
+    from app.models.track import Track
+
+    tracks = db_session.exec(
+        select(Track).where(Track.id.in_(session.current_playlist))  # type: ignore[union-attr]
+    ).all()
+    track_map = {t.id: t for t in tracks}
+    rating_keys = [
+        track_map[tid].plex_rating_key
+        for tid in session.current_playlist
+        if tid in track_map
+    ]
+
+    if not rating_keys:
+        error_html = templates.get_template("partials/chat_message.html").render(
+            role="assistant",
+            content="Could not find tracks in the library. Try generating a new playlist.",
+            has_error=True,
+        )
+        return HTMLResponse(content=error_html, status_code=400)
+
+    # Push to Plex
+    try:
+        result = await push_playlist_to_plex(plex_url, plex_token, name, rating_keys)
+    except Exception as exc:
+        # Sanitize error to prevent token leaks (T-04-08)
+        import re
+        error_msg = str(exc)
+        error_msg = re.sub(r"https?://[^\s]+", "[url-redacted]", error_msg)
+        error_msg = re.sub(r"X-Plex-Token=[^\s&]+", "[token-redacted]", error_msg)
+        logger.error("Push to Plex failed: %s", error_msg[:200])
+
+        error_html = templates.get_template("partials/chat_message.html").render(
+            role="assistant",
+            content=f"Failed to push playlist to Plex. Please check your Plex connection and try again.",
+            has_error=True,
+        )
+        return HTMLResponse(content=error_html, status_code=500)
+
+    # Save to history (D-17)
+    mood_description = ""
+    if session.messages:
+        for msg in session.messages:
+            if msg.get("role") == "user":
+                mood_description = msg.get("content", "")
+                break
+
+    try:
+        save_playlist_to_history(
+            db_session=db_session,
+            name=name,
+            mood_description=mood_description,
+            track_ids=session.current_playlist,
+        )
+    except Exception as exc:
+        logger.warning("Failed to save playlist history: %s", str(exc)[:200])
+        # Don't fail the push -- Plex playlist was already created successfully
+
+    # Success message (D-16) -- conversation continues
+    track_count = result.get("track_count", len(rating_keys))
+    success_html = templates.get_template("partials/chat_message.html").render(
+        role="assistant",
+        content=f"Playlist '{name}' pushed to Plex with {track_count} tracks! You can keep refining or start a new playlist.",
+    )
+    return HTMLResponse(content=success_html)
