@@ -81,7 +81,7 @@ Plans:
   5. The Ollama LLM interprets mood descriptions into structured audio feature criteria that drive track scoring
 **Plans:** 3 plans
 Plans:
-- [ ] 04-01-PLAN.md — Data models, Pydantic schemas, playlist scoring engine, nav update, Instructor dependency
+- [x] 04-01-PLAN.md — Data models, Pydantic schemas, playlist scoring engine, nav update, Instructor dependency
 - [ ] 04-02-PLAN.md — Chat service with Instructor LLM pipeline, session state, API endpoints
 - [ ] 04-03-PLAN.md — Chat UI templates, playlist card with drag-drop, push-to-Plex, visual verification
 **UI hint**: yes
