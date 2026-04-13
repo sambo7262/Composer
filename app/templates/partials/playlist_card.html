@@ -4,12 +4,7 @@
    Jinja2 auto-escaping ON -- no |safe on user content (T-04-07).
 #}
 
-<div x-data="{
-       tracks: [{% for t in tracks %}{ id: {{ t.id }}, title: {{ t.title|tojson }}, artist: {{ t.artist|tojson }}, duration: {{ (t.duration_ms or 0) // 1000 }} }{% if not loop.last %},{% endif %}{% endfor %}],
-       pushed: false,
-       pushing: false,
-       pushError: ''
-     }"
+<div x-data='{"tracks": [{% for t in tracks %}{"id": {{ t.id }}, "title": {{ t.title|tojson }}, "artist": {{ t.artist|tojson }}, "duration": {{ (t.duration_ms or 0) // 1000 }}}{% if not loop.last %},{% endif %}{% endfor %}], "pushed": false, "pushing": false, "pushError": ""}'
      class="mt-4 bg-surface-elevated rounded-xl border border-border overflow-hidden">
 
   {# Header #}
