@@ -95,13 +95,23 @@ async def chat_message(
     )
 
     # Render assistant response partial
-    assistant_html = templates.get_template("partials/chat_message.html").render(
-        role="assistant",
-        content=result.get("explanation", ""),
-        tracks=result.get("tracks", []),
-        session_id=result.get("session_id", validated_session_id),
-        has_error=result.get("error", False),
-    )
+    try:
+        assistant_html = templates.get_template("partials/chat_message.html").render(
+            role="assistant",
+            content=result.get("explanation", ""),
+            tracks=result.get("tracks", []),
+            session_id=result.get("session_id", validated_session_id),
+            has_error=result.get("error", False),
+        )
+    except Exception as render_exc:
+        logger.error("Template render failed: %s", str(render_exc)[:300])
+        assistant_html = templates.get_template("partials/chat_message.html").render(
+            role="assistant",
+            content=result.get("explanation", "") + f"\n\n(Playlist card failed to render: {str(render_exc)[:100]})",
+            tracks=[],
+            session_id=result.get("session_id", validated_session_id),
+            has_error=True,
+        )
 
     return HTMLResponse(content=user_html + assistant_html)
 
