@@ -292,9 +292,9 @@ async def process_message(
         curation_text = await chat_completion(
             api_key=api_key,
             model=model_name,
-            system="You are a playlist curator selecting and ordering tracks.",
+            system="You are a playlist curator. Always start your response with PICKS: followed by track IDs. No other text before PICKS.",
             messages=[{"role": "user", "content": curation_prompt}],
-            max_tokens=500,
+            max_tokens=1000,
         )
 
         logger.info("Phase 3 curation response (first 200 chars): %s", curation_text[:200])
