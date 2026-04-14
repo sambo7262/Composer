@@ -29,58 +29,56 @@
     <template x-for="(track, index) in tracks" :key="track.id">
       <li x-sort:item
           :data-track-id="track.id"
-          class="flex items-center gap-3 px-4 py-3 hover:bg-surface-card/50 transition-colors group">
+          class="px-4 py-3 hover:bg-surface-card/50 transition-colors group">
 
-        {# Drag handle - 44px touch target (mobile-first) #}
-        <span x-sort:handle
-              class="flex items-center justify-center w-[44px] h-[44px] -ml-2 cursor-grab active:cursor-grabbing text-text-secondary hover:text-text-primary touch-manipulation">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="3" y1="6" x2="21" y2="6"/>
-            <line x1="3" y1="12" x2="21" y2="12"/>
-            <line x1="3" y1="18" x2="21" y2="18"/>
-          </svg>
-        </span>
-
-        {# Track number #}
-        <span class="text-text-secondary text-[13px] w-5 text-right" x-text="index + 1"></span>
-
-        {# Track info #}
-        <div class="flex-1 min-w-0">
-          <p class="text-text-primary text-[14px] truncate" x-text="track.title"></p>
-          <p class="text-text-secondary text-[12px] truncate" x-text="track.artist"></p>
-          <div x-show="showStats" x-transition class="flex flex-wrap gap-2 mt-1">
-            <span class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded" x-text="'E:' + track.energy"></span>
-            <span class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded" x-text="'T:' + track.tempo + 'bpm'"></span>
-            <span class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded" x-text="'D:' + track.dance"></span>
-            <span class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded" x-text="'V:' + track.valence"></span>
-            <span x-show="track.genre" class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded truncate max-w-[120px]" x-text="track.genre"></span>
-            <span x-show="!track.analyzed" class="text-[10px] text-warning bg-warning/10 px-1.5 py-0.5 rounded">metadata only</span>
-          </div>
+        {# Row 1: drag handle, number, title, duration, remove #}
+        <div class="flex items-center gap-2">
+          <span x-sort:handle
+                class="flex items-center justify-center w-8 h-8 cursor-grab active:cursor-grabbing text-text-secondary hover:text-text-primary touch-manipulation flex-shrink-0">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="3" y1="6" x2="21" y2="6"/>
+              <line x1="3" y1="12" x2="21" y2="12"/>
+              <line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
+          </span>
+          <span class="text-text-secondary text-[13px] w-5 text-right flex-shrink-0" x-text="index + 1"></span>
+          <span class="text-text-primary text-[14px] font-medium flex-1" x-text="track.title"></span>
+          <span class="text-text-secondary text-[12px] whitespace-nowrap flex-shrink-0"
+                x-text="track.duration ? Math.floor(track.duration / 60) + ':' + String(track.duration % 60).padStart(2, '0') : ''">
+          </span>
+          <button @click="
+                    const tid = track.id;
+                    tracks = tracks.filter(t => t.id !== tid);
+                    htmx.ajax('POST', '/api/chat/remove-track', {
+                      values: { session_id: '{{ session_id }}', track_id: tid },
+                      swap: 'none'
+                    });
+                  "
+                  class="flex items-center justify-center w-8 h-8 text-text-secondary hover:text-error transition-colors touch-manipulation flex-shrink-0"
+                  aria-label="Remove track">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
         </div>
 
-        {# Duration #}
-        <span class="text-text-secondary text-[12px] whitespace-nowrap"
-              x-text="track.duration ? Math.floor(track.duration / 60) + ':' + String(track.duration % 60).padStart(2, '0') : ''">
-        </span>
+        {# Row 2: artist + genre #}
+        <div class="ml-[52px] mt-0.5">
+          <span class="text-text-secondary text-[12px]" x-text="track.artist"></span>
+          <span x-show="track.genre" class="text-text-muted text-[11px] ml-2" x-text="'· ' + track.genre"></span>
+        </div>
 
-        {# Remove button - 44px touch target (mobile-first) #}
-        <button @click="
-                  const tid = track.id;
-                  tracks = tracks.filter(t => t.id !== tid);
-                  htmx.ajax('POST', '/api/chat/remove-track', {
-                    values: { session_id: '{{ session_id }}', track_id: tid },
-                    swap: 'none'
-                  });
-                "
-                class="flex items-center justify-center w-[44px] h-[44px] -mr-2 text-text-secondary hover:text-error transition-colors touch-manipulation opacity-0 group-hover:opacity-100 focus:opacity-100"
-                aria-label="Remove track">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18"/>
-            <line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
+        {# Row 3: stats (toggled) #}
+        <div x-show="showStats" x-transition class="ml-[52px] mt-1 flex flex-wrap gap-1.5">
+          <span class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded" x-text="'Energy ' + track.energy"></span>
+          <span class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded" x-text="track.tempo + ' BPM'"></span>
+          <span class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded" x-text="'Dance ' + track.dance"></span>
+          <span class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded" x-text="'Valence ' + track.valence"></span>
+          <span x-show="!track.analyzed" class="text-[10px] text-accent bg-accent/10 px-1.5 py-0.5 rounded">metadata only</span>
+        </div>
       </li>
     </template>
   </ul>

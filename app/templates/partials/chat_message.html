@@ -13,7 +13,7 @@
 
 {% elif role == "assistant" %}
 <div class="chat-message flex justify-start">
-  <div class="max-w-[85%] {% if has_error %}bg-error/10 border border-error/30{% else %}bg-surface-card border border-border{% endif %} rounded-2xl rounded-bl-md px-4 py-3">
+  <div class="w-full {% if has_error %}bg-error/10 border border-error/30{% else %}bg-surface-card border border-border{% endif %} rounded-2xl rounded-bl-md px-4 py-3">
     <p class="text-[15px] leading-relaxed text-text-primary whitespace-pre-line">{{ content }}</p>
 
     {% if criteria %}
