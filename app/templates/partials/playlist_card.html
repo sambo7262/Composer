@@ -4,7 +4,7 @@
    Jinja2 auto-escaping ON -- no |safe on user content (T-04-07).
 #}
 
-<div x-data='{"tracks": [{% for t in tracks %}{"id": {{ t.id }}, "title": {{ t.title|tojson }}, "artist": {{ t.artist|tojson }}, "duration": {{ (t.duration_ms or 0) // 1000 }}}{% if not loop.last %},{% endif %}{% endfor %}], "pushed": false, "pushing": false, "pushError": ""}'
+<div x-data='{"tracks": [{% for t in tracks %}{"id": {{ t.id }}, "title": {{ t.title|tojson }}, "artist": {{ t.artist|tojson }}, "genre": {{ (t.genre or "")|tojson }}, "energy": {{ "%.2f"|format(t.energy or 0) }}, "tempo": {{ "%.0f"|format(t.tempo or 0) }}, "dance": {{ "%.2f"|format(t.danceability or 0) }}, "valence": {{ "%.2f"|format(t.valence or 0) }}, "duration": {{ (t.duration_ms or 0) // 1000 }}, "analyzed": {{ "true" if t.analyzed_at else "false" }}}{% if not loop.last %},{% endif %}{% endfor %}], "pushed": false, "pushing": false, "pushError": "", "showStats": false}'
      class="mt-4 bg-surface-elevated rounded-xl border border-border overflow-hidden">
 
   {# Header #}
@@ -12,6 +12,9 @@
     <span class="text-text-secondary text-[13px]">
       <span x-text="tracks.length"></span> tracks
     </span>
+    <button @click="showStats = !showStats" class="text-text-secondary hover:text-text-primary text-[12px] transition-colors">
+      <span x-text="showStats ? 'Hide Stats' : 'Show Stats'"></span>
+    </button>
   </div>
 
   {# Track list with Sort plugin for drag-and-drop (D-12) #}
@@ -46,6 +49,14 @@
         <div class="flex-1 min-w-0">
           <p class="text-text-primary text-[14px] truncate" x-text="track.title"></p>
           <p class="text-text-secondary text-[12px] truncate" x-text="track.artist"></p>
+          <div x-show="showStats" x-transition class="flex flex-wrap gap-2 mt-1">
+            <span class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded" x-text="'E:' + track.energy"></span>
+            <span class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded" x-text="'T:' + track.tempo + 'bpm'"></span>
+            <span class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded" x-text="'D:' + track.dance"></span>
+            <span class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded" x-text="'V:' + track.valence"></span>
+            <span x-show="track.genre" class="text-[10px] text-text-muted bg-surface-primary px-1.5 py-0.5 rounded truncate max-w-[120px]" x-text="track.genre"></span>
+            <span x-show="!track.analyzed" class="text-[10px] text-warning bg-warning/10 px-1.5 py-0.5 rounded">metadata only</span>
+          </div>
         </div>
 
         {# Duration #}

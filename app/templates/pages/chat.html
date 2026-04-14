@@ -55,6 +55,26 @@
     </div>
   </div>
 
+  {# New Session button - shows after conversation starts #}
+  <div x-show="started" x-transition class="mb-4">
+    <button @click="
+              started = false;
+              document.getElementById('chat-messages').innerHTML = '<div x-show=&quot;!started&quot; x-transition class=&quot;text-center py-16&quot;><p class=&quot;text-text-secondary text-[16px]&quot;>What are you in the mood for?</p></div>';
+              htmx.ajax('POST', '/api/chat/new', {
+                values: { session_id: '{{ session_id }}' },
+                swap: 'none'
+              });
+            "
+            class="text-text-secondary hover:text-text-primary text-[13px] transition-colors flex items-center gap-1">
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="1 4 1 10 7 10"/>
+        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+      </svg>
+      New Session
+    </button>
+  </div>
+
   {# Loading indicator #}
   <div id="chat-loading" class="htmx-indicator flex items-center gap-2 py-4">
     <div class="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>

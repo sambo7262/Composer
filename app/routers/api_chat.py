@@ -102,6 +102,7 @@ async def chat_message(
             tracks=result.get("tracks", []),
             session_id=result.get("session_id", validated_session_id),
             has_error=result.get("error", False),
+            criteria=result.get("criteria"),
         )
     except Exception as render_exc:
         logger.error("Template render failed: %s", str(render_exc)[:300])
@@ -111,6 +112,7 @@ async def chat_message(
             tracks=[],
             session_id=result.get("session_id", validated_session_id),
             has_error=True,
+            criteria=None,
         )
 
     return HTMLResponse(content=user_html + assistant_html)
