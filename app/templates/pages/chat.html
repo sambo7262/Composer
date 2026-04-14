@@ -3,90 +3,145 @@
 {% block title %}Compose - Composer{% endblock %}
 
 {% block content %}
-<div x-data="{started: false, trackCount: 20}" class="pb-12">
+<div x-data="{started: false, trackCount: 20, includeLive: true}" class="flex flex-col" :class="started ? 'h-[calc(100vh-80px)]' : ''">
 
-  {# Chat input at TOP of page (D-02) #}
-  <form hx-post="/api/chat/message"
-        hx-target="#chat-messages"
-        hx-swap="beforeend"
-        hx-indicator="#chat-loading"
-        hx-on::after-request="this.querySelector('input[name=message]').value=''; $dispatch('chat-started')"
-        class="mb-4"
-        @chat-started.window="started = true">
-    <input type="hidden" name="session_id" value="{{ session_id }}">
-    <input type="hidden" name="track_count" :value="trackCount">
+  {# Top input area - shown before session starts #}
+  <div x-show="!started" x-transition>
+    <form hx-post="/api/chat/message"
+          hx-target="#chat-messages"
+          hx-swap="beforeend"
+          hx-indicator="#chat-loading"
+          hx-on::after-request="this.querySelector('input[name=message]').value=''; $dispatch('chat-started')"
+          class="mb-4"
+          @chat-started.window="started = true">
+      <input type="hidden" name="session_id" value="{{ session_id }}">
+      <input type="hidden" name="track_count" :value="trackCount">
+      <input type="hidden" name="include_live" :value="includeLive ? 'yes' : 'no'">
 
-    <div class="flex gap-2">
-      <input type="text" name="message"
-             placeholder="Describe a mood or vibe..."
-             autocomplete="off"
-             required
-             class="flex-1 bg-surface-elevated border border-border rounded-lg px-4 py-3 text-text-primary placeholder-text-secondary focus:border-border-focus focus:ring-1 focus:ring-border-focus text-[15px] min-h-[44px]">
-      <button type="submit"
-              class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-5 py-3 rounded-lg transition-colors text-[15px] min-h-[44px] whitespace-nowrap">
-        Send
-      </button>
+      <div class="flex gap-2">
+        <input type="text" name="message"
+               placeholder="Describe a mood or vibe..."
+               autocomplete="off"
+               required
+               class="flex-1 bg-surface-elevated border border-border rounded-lg px-4 py-3 text-text-primary placeholder-text-secondary focus:border-border-focus focus:ring-1 focus:ring-border-focus text-[15px] min-h-[44px]">
+        <button type="submit"
+                class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-5 py-3 rounded-lg transition-colors text-[15px] min-h-[44px] whitespace-nowrap">
+          Send
+        </button>
+      </div>
+
+      {# Options row: track count + live tracks toggle #}
+      <div class="flex items-center gap-4 mt-3">
+        <div class="flex items-center gap-2 flex-1">
+          <label class="text-text-secondary text-[13px] whitespace-nowrap">Tracks:</label>
+          <input type="range" min="5" max="50" step="5"
+                 x-model="trackCount"
+                 class="flex-1 h-2 bg-surface-elevated rounded-full appearance-none cursor-pointer accent-accent">
+          <span x-text="trackCount" class="text-text-secondary text-[13px] w-6 text-right"></span>
+        </div>
+        <label class="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" x-model="includeLive"
+                 class="w-4 h-4 rounded border-border bg-surface-elevated accent-accent">
+          <span class="text-text-secondary text-[13px] whitespace-nowrap">Include live</span>
+        </label>
+      </div>
+    </form>
+
+    {# Mood presets #}
+    <div class="mb-6">
+      <div class="flex flex-wrap gap-2">
+        {% for preset in ["Chill", "Energetic", "Focus", "Late Night", "Workout"] %}
+        <button hx-post="/api/chat/message"
+                hx-target="#chat-messages"
+                hx-swap="beforeend"
+                hx-indicator="#chat-loading"
+                hx-vals='{"session_id": "{{ session_id }}", "message": "{{ preset }} vibes", "track_count": "20", "include_live": "yes"}'
+                @click="started = true"
+                class="bg-surface-elevated hover:bg-surface-card border border-border text-text-secondary hover:text-text-primary px-4 py-2 rounded-full text-[14px] transition-colors min-h-[44px]">
+          {{ preset }}
+        </button>
+        {% endfor %}
+      </div>
     </div>
 
-    {# Track count slider (D-14) #}
-    <div class="flex items-center gap-3 mt-3">
-      <label class="text-text-secondary text-[13px] whitespace-nowrap">Tracks:</label>
-      <input type="range" min="5" max="50" step="5"
-             x-model="trackCount"
-             class="flex-1 h-2 bg-surface-elevated rounded-full appearance-none cursor-pointer accent-accent">
-      <span x-text="trackCount" class="text-text-secondary text-[13px] w-6 text-right"></span>
-    </div>
-  </form>
-
-  {# Mood presets - empty state only (D-04) #}
-  <div x-show="!started" x-transition class="mb-6">
-    <div class="flex flex-wrap gap-2">
-      {% for preset in ["Chill", "Energetic", "Focus", "Late Night", "Workout"] %}
-      <button hx-post="/api/chat/message"
-              hx-target="#chat-messages"
-              hx-swap="beforeend"
-              hx-indicator="#chat-loading"
-              hx-vals='{"session_id": "{{ session_id }}", "message": "{{ preset }} vibes", "track_count": "20"}'
-              @click="started = true"
-              class="bg-surface-elevated hover:bg-surface-card border border-border text-text-secondary hover:text-text-primary px-4 py-2 rounded-full text-[14px] transition-colors min-h-[44px]">
-        {{ preset }}
-      </button>
-      {% endfor %}
-    </div>
-  </div>
-
-  {# New Session button - shows after conversation starts #}
-  <div x-show="started" x-transition class="mb-4">
-    <button @click="
-              started = false;
-              document.getElementById('chat-messages').innerHTML = '<div x-show=&quot;!started&quot; x-transition class=&quot;text-center py-16&quot;><p class=&quot;text-text-secondary text-[16px]&quot;>What are you in the mood for?</p></div>';
-              htmx.ajax('POST', '/api/chat/new', {
-                values: { session_id: '{{ session_id }}' },
-                swap: 'none'
-              });
-            "
-            class="text-text-secondary hover:text-text-primary text-[13px] transition-colors flex items-center gap-1">
-      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
-           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="1 4 1 10 7 10"/>
-        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
-      </svg>
-      New Session
-    </button>
-  </div>
-
-  {# Loading indicator #}
-  <div id="chat-loading" class="htmx-indicator flex items-center gap-2 py-4">
-    <div class="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
-    <span class="text-text-secondary text-[14px]">Thinking...</span>
-  </div>
-
-  {# Chat messages area (D-03) #}
-  <div id="chat-messages" class="space-y-4 pb-8">
-    {# Empty state prompt #}
-    <div x-show="!started" x-transition class="text-center py-16">
+    {# Empty state #}
+    <div class="text-center py-16">
       <p class="text-text-secondary text-[16px]">What are you in the mood for?</p>
     </div>
+  </div>
+
+  {# Chat messages area - scrollable when session active #}
+  <div x-show="started" x-transition class="flex-1 overflow-y-auto pb-4" id="chat-scroll">
+    {# New Session button #}
+    <div class="mb-3">
+      <button @click="
+                started = false;
+                document.getElementById('chat-messages').innerHTML = '';
+                htmx.ajax('POST', '/api/chat/new', {
+                  values: { session_id: '{{ session_id }}' },
+                  swap: 'none'
+                });
+              "
+              class="text-text-secondary hover:text-text-primary text-[13px] transition-colors flex items-center gap-1">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="1 4 1 10 7 10"/>
+          <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+        </svg>
+        New Session
+      </button>
+    </div>
+
+    <div id="chat-messages" class="space-y-4">
+    </div>
+
+    {# Loading indicator #}
+    <div id="chat-loading" class="htmx-indicator flex items-center gap-2 py-4">
+      <div class="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
+      <span class="text-text-secondary text-[14px]">Thinking...</span>
+    </div>
+  </div>
+
+  {# Bottom input bar - shown after session starts (chat-style) #}
+  <div x-show="started" x-transition
+       class="sticky bottom-0 bg-surface-primary border-t border-border pt-3 pb-4 -mx-4 px-4">
+    <form hx-post="/api/chat/message"
+          hx-target="#chat-messages"
+          hx-swap="beforeend"
+          hx-indicator="#chat-loading"
+          hx-on::after-request="this.querySelector('input[name=message]').value=''; document.getElementById('chat-scroll').scrollTop = document.getElementById('chat-scroll').scrollHeight;">
+      <input type="hidden" name="session_id" value="{{ session_id }}">
+      <input type="hidden" name="track_count" :value="trackCount">
+      <input type="hidden" name="include_live" :value="includeLive ? 'yes' : 'no'">
+
+      <div class="flex gap-2">
+        <input type="text" name="message"
+               placeholder="Refine, ask for changes, or describe a new mood..."
+               autocomplete="off"
+               required
+               class="flex-1 bg-surface-elevated border border-border rounded-lg px-3 py-2.5 text-text-primary placeholder-text-secondary focus:border-border-focus focus:ring-1 focus:ring-border-focus text-[14px] min-h-[44px]">
+        <button type="submit"
+                class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-4 py-2.5 rounded-lg transition-colors text-[14px] min-h-[44px]">
+          Send
+        </button>
+      </div>
+
+      {# Compact options row #}
+      <div class="flex items-center gap-3 mt-2">
+        <div class="flex items-center gap-1.5 flex-1">
+          <label class="text-text-muted text-[11px]">Tracks:</label>
+          <input type="range" min="5" max="50" step="5"
+                 x-model="trackCount"
+                 class="flex-1 h-1.5 bg-surface-elevated rounded-full appearance-none cursor-pointer accent-accent">
+          <span x-text="trackCount" class="text-text-muted text-[11px] w-5 text-right"></span>
+        </div>
+        <label class="flex items-center gap-1 cursor-pointer">
+          <input type="checkbox" x-model="includeLive"
+                 class="w-3.5 h-3.5 rounded border-border bg-surface-elevated accent-accent">
+          <span class="text-text-muted text-[11px]">Live</span>
+        </label>
+      </div>
+    </form>
   </div>
 
 </div>

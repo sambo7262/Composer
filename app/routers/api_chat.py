@@ -57,6 +57,7 @@ async def chat_message(
     message: str = Form(...),
     session_id: str = Form(default=""),
     track_count: int = Form(default=20),
+    include_live: str = Form(default="yes"),
     db_session: Session = Depends(get_session),
 ):
     """Process a chat message and return HTML partials for HTMX swap.
@@ -71,12 +72,19 @@ async def chat_message(
     # Clamp track_count to reasonable range
     track_count = max(1, min(track_count, 100))
 
+    # Append live track preference to message for LLM context
+    live_pref = include_live.lower() == "yes"
+    effective_message = message
+    if not live_pref:
+        effective_message = message + " (studio recordings only, no live tracks)"
+
     try:
         result = await process_message(
             session_id=validated_session_id,
-            user_message=message,
+            user_message=effective_message,
             track_count=track_count,
             db_session=db_session,
+            exclude_live=not live_pref,
         )
     except Exception as exc:
         logger.error("Chat message processing failed: %s", str(exc)[:200])

@@ -174,11 +174,12 @@ async def process_message(
     user_message: str,
     track_count: int,
     db_session: Session,
+    exclude_live: bool = False,
 ) -> dict:
     """Process a chat message through the LLM pipeline.
 
     Phase 1: Plain text mood interpretation -> parse CRITERIA
-    Phase 2: Candidate filtering via playlist_engine
+    Phase 2: Candidate filtering via playlist_engine (with dedup + live filter)
     Phase 3: Plain text LLM curation -> parse PICKS
     """
     chat_session = get_or_create_session(session_id)
@@ -249,7 +250,28 @@ async def process_message(
     candidates = filter_candidates(
         db_session, criteria, track_count=track_count, candidate_limit=300
     )
-    logger.info("Phase 2: found %d candidates from library", len(candidates))
+    logger.info("Phase 2: found %d raw candidates from library", len(candidates))
+
+    # Filter out live tracks if requested
+    if exclude_live:
+        live_keywords = ["live", "concert", "unplugged", "acoustic live", "live at", "live in", "live from"]
+        candidates = [
+            (track, score) for track, score in candidates
+            if not any(kw in (track.title or "").lower() or kw in (track.album or "").lower() for kw in live_keywords)
+        ]
+        logger.info("After live track filter: %d candidates", len(candidates))
+
+    # Deduplicate: keep best-scored version of each title+artist combo
+    seen = {}
+    deduped = []
+    for track, score in candidates:
+        key = (track.title.lower().strip(), track.artist.lower().strip())
+        if key not in seen:
+            seen[key] = True
+            deduped.append((track, score))
+    if len(deduped) < len(candidates):
+        logger.info("Deduplication removed %d duplicate tracks", len(candidates) - len(deduped))
+    candidates = deduped
 
     if not candidates:
         no_tracks_msg = (
