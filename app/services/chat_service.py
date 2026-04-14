@@ -313,6 +313,26 @@ async def process_message(
         logger.info("Album diversity filter removed %d tracks (max %d per album)", len(candidates) - len(diverse), MAX_PER_ALBUM)
     candidates = diverse
 
+    # Artist diversity: cap tracks per artist to ensure variety
+    # Allow more from requested artists, fewer from others
+    requested_artists_lower = [a.lower() for a in (criteria.artists or [])]
+    MAX_PER_REQUESTED_ARTIST = max(5, track_count // 5)  # ~5 for 30 tracks
+    MAX_PER_OTHER_ARTIST = max(3, track_count // 8)  # ~3-4 for 30 tracks
+    artist_counts = {}
+    artist_diverse = []
+    for track, score in candidates:
+        artist_key = (track.artist or "unknown").lower().strip()
+        count = artist_counts.get(artist_key, 0)
+        is_requested = any(a in artist_key for a in requested_artists_lower) if requested_artists_lower else False
+        cap = MAX_PER_REQUESTED_ARTIST if is_requested else MAX_PER_OTHER_ARTIST
+        if count < cap:
+            artist_diverse.append((track, score))
+            artist_counts[artist_key] = count + 1
+    if len(artist_diverse) < len(candidates):
+        logger.info("Artist diversity filter removed %d tracks (requested cap=%d, other cap=%d)",
+                     len(candidates) - len(artist_diverse), MAX_PER_REQUESTED_ARTIST, MAX_PER_OTHER_ARTIST)
+    candidates = artist_diverse
+
     if not candidates:
         no_tracks_msg = (
             f"{criteria.explanation}\n\n"
