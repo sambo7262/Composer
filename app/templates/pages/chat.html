@@ -11,7 +11,7 @@
           hx-target="#chat-messages"
           hx-swap="beforeend"
           hx-indicator="#chat-loading"
-          hx-on::after-request="this.querySelector('input[name=message]').value=''; $dispatch('chat-started')"
+          hx-on::after-request="this.querySelector('input[name=message]').value=''; this.dispatchEvent(new CustomEvent('chat-started', {bubbles: true}))"
           class="mb-4"
           @chat-started.window="started = true">
       <input type="hidden" name="session_id" value="{{ session_id }}">
