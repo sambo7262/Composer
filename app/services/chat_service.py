@@ -73,6 +73,26 @@ PICKS: 42,17,89,203,55
 This playlist flows from mellow Radiohead deep cuts into upbeat Tame Impala grooves, building energy gradually for a perfect afternoon session."""
 
 
+REFINEMENT_PROMPT = """The user has an existing playlist and wants to modify it.
+
+Current playlist:
+{current_playlist}
+
+User's request: {user_request}
+
+Respond with an ACTION line on the FIRST line, then a brief explanation.
+
+Actions:
+- ADD: find new tracks to add. Format: ADD: artists=ARTIST1,ARTIST2 count=N
+- REMOVE: remove tracks by artist or description. Format: REMOVE: artists=ARTIST1,ARTIST2
+- REPLACE: swap some tracks. Format: REPLACE: remove_artists=ARTIST1 add_artists=ARTIST2 count=N
+- REBUILD: start over with new criteria. Format: REBUILD
+
+Example:
+ADD: artists=Jungle,Tycho count=5
+Adding 3 Jungle tracks and 2 Tycho tracks to complement the existing dreamy vibe."""
+
+
 @dataclass
 class ChatSession:
     """In-memory session state for a chat conversation."""
@@ -220,28 +240,136 @@ async def process_message(
             "error": True,
         }
 
-    # Build context about current playlist for refinement messages
-    playlist_context = ""
+    # Check if this is a refinement of an existing playlist
     if chat_session.current_playlist:
-        # Fetch current playlist track details for the LLM
         from sqlmodel import select
-        current_tracks = db_session.exec(
+        current_tracks_db = db_session.exec(
             select(Track).where(Track.id.in_(chat_session.current_playlist))  # type: ignore[union-attr]
         ).all()
-        track_map = {t.id: t for t in current_tracks}
-        current_summary = []
-        for tid in chat_session.current_playlist[:30]:
-            t = track_map.get(tid)
-            if t:
-                current_summary.append(f"- {t.artist} - {t.title}")
-        playlist_context = (
-            f"\n\nCURRENT PLAYLIST ({len(chat_session.current_playlist)} tracks):\n"
-            + "\n".join(current_summary)
-            + "\n\nThe user may want to MODIFY this playlist. When they ask to add/remove/replace, "
-            "adjust your CRITERIA to find the requested artists/tracks while keeping the overall mood similar."
+        track_map_current = {t.id: t for t in current_tracks_db}
+        current_summary = "\n".join(
+            f"- {track_map_current[tid].artist} - {track_map_current[tid].title}"
+            for tid in chat_session.current_playlist if tid in track_map_current
         )
 
-    # Phase 1: Mood interpretation via Anthropic
+        # Ask LLM to classify the refinement intent
+        try:
+            refinement_prompt = REFINEMENT_PROMPT.format(
+                current_playlist=current_summary,
+                user_request=user_message,
+            )
+            action_text = await chat_completion(
+                api_key=api_key,
+                model=model_name,
+                system="You classify playlist modification requests. Always respond with an ACTION line first.",
+                messages=[{"role": "user", "content": refinement_prompt}],
+                max_tokens=200,
+            )
+            logger.info("Refinement classification: %s", action_text[:100])
+
+            action_line = action_text.split("\n")[0].strip().upper()
+
+            # Handle ADD action — keep existing playlist, search for new tracks only
+            if action_line.startswith("ADD:"):
+                add_match = re.search(r'artists?=([\w\s,&\']+?)(?:\s+count=(\d+)|\s*$)', action_text, re.IGNORECASE)
+                add_artists = []
+                add_count = 5
+                if add_match:
+                    add_artists = [a.strip() for a in add_match.group(1).split(",") if a.strip()]
+                    if add_match.group(2):
+                        add_count = int(add_match.group(2))
+
+                # Search for tracks from the requested artists
+                all_tracks_db = db_session.exec(select(Track)).all()
+                existing_ids = set(chat_session.current_playlist)
+                new_candidates = []
+                for track in all_tracks_db:
+                    if track.id in existing_ids:
+                        continue
+                    track_artist = (track.artist or "").lower()
+                    if add_artists and any(a.lower() in track_artist for a in add_artists):
+                        new_candidates.append(track)
+
+                # Apply dedup and album cap
+                seen = set()
+                deduped_new = []
+                album_counts = {}
+                for t in new_candidates:
+                    title_key = (t.title.lower().strip(), t.artist.lower().strip())
+                    album_key = ((t.album or "").lower().strip(), t.artist.lower().strip())
+                    if title_key in seen:
+                        continue
+                    if album_counts.get(album_key, 0) >= 3:
+                        continue
+                    seen.add(title_key)
+                    album_counts[album_key] = album_counts.get(album_key, 0) + 1
+                    deduped_new.append(t)
+
+                # Limit per artist based on request
+                artist_alloc = {}
+                if add_artists:
+                    # Try to distribute count across requested artists
+                    per_artist = max(1, add_count // len(add_artists))
+                    for a in add_artists:
+                        artist_alloc[a.lower()] = per_artist
+
+                final_new = []
+                artist_used = {}
+                for t in deduped_new:
+                    t_artist = (t.artist or "").lower()
+                    for a_name, a_limit in artist_alloc.items():
+                        if a_name in t_artist:
+                            if artist_used.get(a_name, 0) < a_limit:
+                                final_new.append(t)
+                                artist_used[a_name] = artist_used.get(a_name, 0) + 1
+                            break
+                    if len(final_new) >= add_count:
+                        break
+
+                # Combine existing + new
+                existing_tracks = [track_map_current[tid] for tid in chat_session.current_playlist if tid in track_map_current]
+                all_playlist_tracks = existing_tracks + final_new
+                chat_session.current_playlist = [t.id for t in all_playlist_tracks]
+
+                new_names = ", ".join(f"{t.artist} - {t.title}" for t in final_new[:5])
+                explanation_text = action_text.split("\n", 1)[1].strip() if "\n" in action_text else ""
+                explanation = f"Added {len(final_new)} tracks: {new_names}\n\n{explanation_text}" if final_new else "Couldn't find matching tracks to add."
+                chat_session.messages.append({"role": "assistant", "content": explanation})
+
+                return {
+                    "tracks": all_playlist_tracks,
+                    "explanation": explanation,
+                    "criteria": None,
+                    "session_id": chat_session.session_id,
+                }
+
+            elif action_line.startswith("REMOVE:"):
+                remove_match = re.search(r'artists?=([\w\s,&\']+)', action_text, re.IGNORECASE)
+                if remove_match:
+                    remove_artists = [a.strip().lower() for a in remove_match.group(1).split(",")]
+                    kept = [tid for tid in chat_session.current_playlist
+                            if tid in track_map_current and
+                            not any(a in (track_map_current[tid].artist or "").lower() for a in remove_artists)]
+                    removed_count = len(chat_session.current_playlist) - len(kept)
+                    chat_session.current_playlist = kept
+                    kept_tracks = [track_map_current[tid] for tid in kept if tid in track_map_current]
+                    explanation = f"Removed {removed_count} tracks from {', '.join(remove_artists)}."
+                    chat_session.messages.append({"role": "assistant", "content": explanation})
+                    return {
+                        "tracks": kept_tracks,
+                        "explanation": explanation,
+                        "criteria": None,
+                        "session_id": chat_session.session_id,
+                    }
+
+            # REBUILD or unrecognized action — fall through to full pipeline
+            logger.info("Refinement action: REBUILD or unrecognized, running full pipeline")
+
+        except Exception as exc:
+            logger.warning("Refinement classification failed, falling back to full pipeline: %s", str(exc)[:200])
+
+    # Phase 1: Mood interpretation via Anthropic (full pipeline - new playlist or rebuild)
+    playlist_context = ""
     try:
         messages = chat_session.messages[-6:]  # Keep last 3 exchanges
 
@@ -277,6 +405,13 @@ async def process_message(
         db_session, criteria, track_count=track_count, candidate_limit=300
     )
     logger.info("Phase 2: found %d raw candidates from library", len(candidates))
+
+    # Filter out very short tracks (interludes, intros, skits < 60 seconds)
+    MIN_DURATION_MS = 60000  # 1 minute
+    candidates = [
+        (track, score) for track, score in candidates
+        if (track.duration_ms or 0) >= MIN_DURATION_MS
+    ]
 
     # Filter out live tracks if requested
     if exclude_live:
