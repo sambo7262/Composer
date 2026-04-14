@@ -47,6 +47,7 @@ def get_session() -> Generator[Session, None, None]:
 
 def _migrate_add_columns(engine) -> None:
     """Add any missing columns to existing tables (lightweight schema migration)."""
+    import logging
     import sqlite3
     url = str(engine.url)
     db_path = url.replace("sqlite:///", "")
@@ -75,6 +76,15 @@ def _migrate_add_columns(engine) -> None:
     for col_name, col_type in new_columns.items():
         if col_name not in existing_cols:
             cursor.execute(f"ALTER TABLE track ADD COLUMN {col_name} {col_type}")
+
+    # One-time migration: normalize energy values from raw [0, ~0.3] to [0, 1]
+    # Detect if migration needed: if any analyzed track has energy < 0.5 and energy > 0,
+    # it's likely raw (unnormalized). A value of 0.1 raw = 0.33 normalized.
+    cursor.execute("SELECT COUNT(*) FROM track WHERE energy IS NOT NULL AND energy > 0 AND energy < 0.35 AND analyzed_at IS NOT NULL")
+    raw_energy_count = cursor.fetchone()[0]
+    if raw_energy_count > 0:
+        cursor.execute("UPDATE track SET energy = MIN(energy / 0.3, 1.0) WHERE energy IS NOT NULL AND analyzed_at IS NOT NULL")
+        logging.getLogger(__name__).info("Normalized energy values for %d tracks (raw -> [0,1])", raw_energy_count)
 
     conn.commit()
     conn.close()

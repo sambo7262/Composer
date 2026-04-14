@@ -145,6 +145,9 @@ def extract_features(file_path: str) -> dict:
         spectral_centroid = features["lowlevel.spectral_centroid.mean"]
         pitch_salience = features["lowlevel.pitch_salience.mean"]
 
+        # Normalize energy from Essentia's spectral_rms [0, ~0.3] to [0, 1]
+        energy = min(energy / 0.3, 1.0)
+
         # Normalize danceability from Essentia's [0, ~3] to [0, 1]
         danceability = min(raw_danceability / 3.0, 1.0)
 
