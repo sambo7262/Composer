@@ -10,7 +10,7 @@
     <form hx-post="/api/chat/message"
           hx-target="#chat-messages"
           hx-swap="beforeend"
-          hx-indicator="#chat-loading"
+          hx-indicator="#chat-loading-top"
           hx-on::after-request="this.querySelector('input[name=message]').value=''; this.dispatchEvent(new CustomEvent('chat-started', {bubbles: true}))"
           class="mb-4"
           @chat-started.window="started = true">
@@ -54,7 +54,7 @@
         <button hx-post="/api/chat/message"
                 hx-target="#chat-messages"
                 hx-swap="beforeend"
-                hx-indicator="#chat-loading"
+                hx-indicator="#chat-loading-top"
                 hx-vals='{"session_id": "{{ session_id }}", "message": "{{ preset }} vibes", "track_count": "20", "include_live": "yes"}'
                 @click="started = true"
                 class="bg-surface-elevated hover:bg-surface-card border border-border text-text-secondary hover:text-text-primary px-4 py-2 rounded-full text-[14px] transition-colors min-h-[44px]">
@@ -62,6 +62,12 @@
         </button>
         {% endfor %}
       </div>
+    </div>
+
+    {# Loading indicator for top form #}
+    <div id="chat-loading-top" class="htmx-indicator flex items-center gap-2 py-4">
+      <div class="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
+      <span class="text-text-secondary text-[14px]">Thinking...</span>
     </div>
 
     {# Empty state #}

@@ -62,11 +62,12 @@ Candidates (ID|Title|Artist|Genre):
 IMPORTANT: Your response MUST start with a PICKS line. No text before it.
 Format: PICKS: 123,456,789,...
 
-Then after the PICKS line, write a brief explanation.
+Then after the PICKS line, write a brief 2-3 sentence explanation of the overall mood and flow.
+Do NOT reference track IDs or numbers in your explanation — use artist names and song titles instead.
 
 Example:
 PICKS: 42,17,89,203,55
-I selected these tracks because they flow well together, starting mellow and building gradually."""
+This playlist flows from mellow Radiohead deep cuts into upbeat Tame Impala grooves, building energy gradually for a perfect afternoon session."""
 
 
 @dataclass
