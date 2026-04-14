@@ -145,8 +145,21 @@ def extract_features(file_path: str) -> dict:
         spectral_centroid = features["lowlevel.spectral_centroid.mean"]
         pitch_salience = features["lowlevel.pitch_salience.mean"]
 
-        # Normalize energy from Essentia's spectral_rms [0, ~0.3] to [0, 1]
-        energy = min(energy / 0.3, 1.0)
+        # Compute perceived energy as a weighted combination of multiple features.
+        # spectral_rms alone is unreliable (mastering-dependent). Combining loudness,
+        # tempo, spectral complexity, and RMS gives a much better energy estimate.
+        rms_norm = min(energy / 0.3, 1.0)  # raw spectral_rms normalized
+        loudness_norm = min(max((loudness + 20) / 15, 0.0), 1.0)  # LUFS: -20=quiet(0), -5=loud(1)
+        tempo_norm = min(max((bpm - 60) / 140, 0.0), 1.0)  # 60bpm=0, 200bpm=1
+        complexity_norm = min(max(spectral_complexity / 20, 0.0), 1.0)  # typical range 0-20
+
+        energy = (
+            0.35 * loudness_norm
+            + 0.25 * rms_norm
+            + 0.25 * tempo_norm
+            + 0.15 * complexity_norm
+        )
+        energy = round(min(max(energy, 0.0), 1.0), 4)
 
         # Normalize danceability from Essentia's [0, ~3] to [0, 1]
         danceability = min(raw_danceability / 3.0, 1.0)

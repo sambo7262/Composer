@@ -77,14 +77,23 @@ def _migrate_add_columns(engine) -> None:
         if col_name not in existing_cols:
             cursor.execute(f"ALTER TABLE track ADD COLUMN {col_name} {col_type}")
 
-    # One-time migration: normalize energy values from raw [0, ~0.3] to [0, 1]
-    # Detect if migration needed: if any analyzed track has energy < 0.5 and energy > 0,
-    # it's likely raw (unnormalized). A value of 0.1 raw = 0.33 normalized.
-    cursor.execute("SELECT COUNT(*) FROM track WHERE energy IS NOT NULL AND energy > 0 AND energy < 0.35 AND analyzed_at IS NOT NULL")
-    raw_energy_count = cursor.fetchone()[0]
-    if raw_energy_count > 0:
-        cursor.execute("UPDATE track SET energy = MIN(energy / 0.3, 1.0) WHERE energy IS NOT NULL AND analyzed_at IS NOT NULL")
-        logging.getLogger(__name__).info("Normalized energy values for %d tracks (raw -> [0,1])", raw_energy_count)
+    # Recalculate energy as weighted combination of loudness, tempo, complexity.
+    # Old energy was spectral_rms-only which is unreliable (mastering-dependent).
+    # New formula uses loudness (35%), existing energy/rms (25%), tempo (25%), complexity (15%).
+    # The existing energy column was already normalized to [0,1] by prior migration,
+    # so we use it directly as the rms component.
+    cursor.execute("""
+        UPDATE track SET energy = ROUND(MIN(MAX(
+            0.35 * MIN(MAX((COALESCE(loudness, -20) + 20) / 15.0, 0.0), 1.0)
+            + 0.25 * COALESCE(energy, 0.0)
+            + 0.25 * MIN(MAX((COALESCE(tempo, 100) - 60) / 140.0, 0.0), 1.0)
+            + 0.15 * MIN(MAX(COALESCE(spectral_complexity, 0) / 20.0, 0.0), 1.0)
+        , 0.0), 1.0), 4)
+        WHERE analyzed_at IS NOT NULL AND loudness IS NOT NULL
+    """)
+    updated = cursor.rowcount
+    if updated > 0:
+        logging.getLogger(__name__).info("Recalculated weighted energy for %d tracks", updated)
 
     conn.commit()
     conn.close()
