@@ -159,10 +159,20 @@ def filter_candidates(
     statement = select(Track)
     all_tracks = session.exec(statement).all()
 
+    # Separate requested artists' tracks (always include, regardless of genre filter)
+    requested_artists = [a.lower() for a in (criteria.artists or [])]
+
     # Apply genre filters
     candidates = []
+    artist_tracks = []
     for track in all_tracks:
         track_genre = (track.genre or "").lower()
+        track_artist = (track.artist or "").lower()
+
+        # Always include tracks from specifically requested artists
+        if requested_artists and any(a in track_artist for a in requested_artists):
+            artist_tracks.append(track)
+            continue
 
         # Include filter: if genres specified, track must match at least one
         if criteria.genres:
@@ -178,6 +188,12 @@ def filter_candidates(
 
     # Score each candidate
     scored = [(track, score_track(track, criteria)) for track in candidates]
+
+    # Score requested artist tracks with a bonus (subtract 0.1 from score to prioritize them)
+    ARTIST_BONUS = 0.1
+    for track in artist_tracks:
+        score = max(score_track(track, criteria) - ARTIST_BONUS, 0.0)
+        scored.append((track, score))
 
     # Sort by score ascending (lower = better match)
     scored.sort(key=lambda x: x[1])

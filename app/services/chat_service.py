@@ -38,7 +38,7 @@ SYSTEM_PROMPT = """You are a music playlist curator. You interpret mood and vibe
 When the user describes a mood, respond with TWO parts:
 
 PART 1 - On the FIRST line, write a criteria line in this exact format:
-CRITERIA: energy=LOW-HIGH tempo=LOW-HIGH dance=LOW-HIGH valence=LOW-HIGH genres=GENRE1,GENRE2 exclude=GENRE1,GENRE2
+CRITERIA: energy=LOW-HIGH tempo=LOW-HIGH dance=LOW-HIGH valence=LOW-HIGH genres=GENRE1,GENRE2 exclude=GENRE1,GENRE2 artists=ARTIST1,ARTIST2
 
 Where:
 - energy: 0.0 (calm) to 1.0 (intense)
@@ -47,11 +47,14 @@ Where:
 - valence: 0.0 (sad/dark) to 1.0 (happy/bright)
 - genres: comma-separated genre names to include (or "any" for all)
 - exclude: comma-separated genres to exclude (or "none")
+- artists: comma-separated artist names the user specifically requested (or "any")
+
+IMPORTANT: When the user asks to ADD a specific artist or band, use WIDE feature ranges (energy=0.0-1.0 etc.) so the search can find that artist's tracks regardless of their audio profile. Only narrow the ranges when the user describes a specific mood.
 
 PART 2 - After the criteria line, write a brief friendly explanation of how you interpreted their mood.
 
 Example response:
-CRITERIA: energy=0.3-0.6 tempo=70-110 dance=0.2-0.5 valence=0.4-0.7 genres=jazz,soul,r&b exclude=metal,punk
+CRITERIA: energy=0.3-0.6 tempo=70-110 dance=0.2-0.5 valence=0.4-0.7 genres=jazz,soul,r&b exclude=metal,punk artists=any
 I'm looking for mellow, warm tracks with a relaxed groove — think Sunday morning coffee vibes with some soul and jazz."""
 
 CURATION_PROMPT = """Pick exactly {track_count} tracks from this list for a "{context}" playlist.
@@ -133,6 +136,7 @@ def _parse_criteria(text: str) -> FeatureCriteria:
     v_min, v_max = _parse_range("valence", 0.0, 1.0)
     genres = _parse_list("genres")
     excludes = _parse_list("exclude")
+    artists = _parse_list("artists")
 
     # Extract explanation (everything after the CRITERIA line)
     explanation = text[criteria_match.end():].strip()
@@ -144,7 +148,7 @@ def _parse_criteria(text: str) -> FeatureCriteria:
         tempo_min=t_min, tempo_max=t_max,
         danceability_min=d_min, danceability_max=d_max,
         valence_min=v_min, valence_max=v_max,
-        genres=genres, artists=[], exclude_genres=excludes,
+        genres=genres, artists=artists, exclude_genres=excludes,
         explanation=explanation[:300],
     )
 
@@ -216,6 +220,27 @@ async def process_message(
             "error": True,
         }
 
+    # Build context about current playlist for refinement messages
+    playlist_context = ""
+    if chat_session.current_playlist:
+        # Fetch current playlist track details for the LLM
+        from sqlmodel import select
+        current_tracks = db_session.exec(
+            select(Track).where(Track.id.in_(chat_session.current_playlist))  # type: ignore[union-attr]
+        ).all()
+        track_map = {t.id: t for t in current_tracks}
+        current_summary = []
+        for tid in chat_session.current_playlist[:30]:
+            t = track_map.get(tid)
+            if t:
+                current_summary.append(f"- {t.artist} - {t.title}")
+        playlist_context = (
+            f"\n\nCURRENT PLAYLIST ({len(chat_session.current_playlist)} tracks):\n"
+            + "\n".join(current_summary)
+            + "\n\nThe user may want to MODIFY this playlist. When they ask to add/remove/replace, "
+            "adjust your CRITERIA to find the requested artists/tracks while keeping the overall mood similar."
+        )
+
     # Phase 1: Mood interpretation via Anthropic
     try:
         messages = chat_session.messages[-6:]  # Keep last 3 exchanges
@@ -223,7 +248,7 @@ async def process_message(
         llm_text = await chat_completion(
             api_key=api_key,
             model=model_name,
-            system=SYSTEM_PROMPT,
+            system=SYSTEM_PROMPT + playlist_context,
             messages=messages,
             max_tokens=300,
         )
@@ -263,16 +288,30 @@ async def process_message(
         logger.info("After live track filter: %d candidates", len(candidates))
 
     # Deduplicate: keep best-scored version of each title+artist combo
-    seen = {}
+    seen_titles = {}
     deduped = []
     for track, score in candidates:
         key = (track.title.lower().strip(), track.artist.lower().strip())
-        if key not in seen:
-            seen[key] = True
+        if key not in seen_titles:
+            seen_titles[key] = True
             deduped.append((track, score))
     if len(deduped) < len(candidates):
         logger.info("Deduplication removed %d duplicate tracks", len(candidates) - len(deduped))
     candidates = deduped
+
+    # Album diversity: limit max tracks per album to avoid flooding from one release
+    MAX_PER_ALBUM = 3
+    album_counts = {}
+    diverse = []
+    for track, score in candidates:
+        album_key = ((track.album or "unknown").lower().strip(), (track.artist or "").lower().strip())
+        count = album_counts.get(album_key, 0)
+        if count < MAX_PER_ALBUM:
+            diverse.append((track, score))
+            album_counts[album_key] = count + 1
+    if len(diverse) < len(candidates):
+        logger.info("Album diversity filter removed %d tracks (max %d per album)", len(candidates) - len(diverse), MAX_PER_ALBUM)
+    candidates = diverse
 
     if not candidates:
         no_tracks_msg = (
