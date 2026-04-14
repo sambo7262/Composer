@@ -23,8 +23,8 @@ from app.services.audio_analyzer import extract_features, remap_plex_path
 
 logger = logging.getLogger(__name__)
 
-# T-03-05: Max file size for analysis (100 MB)
-MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024
+# T-03-05: Max file size for analysis (500 MB — covers high-res FLAC and long tracks)
+MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024
 
 
 class AnalysisStateEnum(str, Enum):
