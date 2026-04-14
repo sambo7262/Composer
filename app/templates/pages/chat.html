@@ -70,8 +70,8 @@
     </div>
   </div>
 
-  {# Chat messages area - scrollable when session active #}
-  <div x-show="started" x-transition class="flex-1 overflow-y-auto pb-4" id="chat-scroll">
+  {# Chat messages area - always in DOM so HTMX can target it, visibility controlled by Alpine #}
+  <div :class="started ? 'flex-1 overflow-y-auto pb-4' : 'hidden'" id="chat-scroll">
     {# New Session button #}
     <div class="mb-3">
       <button @click="
@@ -103,7 +103,7 @@
   </div>
 
   {# Bottom input bar - shown after session starts (chat-style) #}
-  <div x-show="started" x-transition
+  <div :class="started ? '' : 'hidden'"
        class="sticky bottom-0 bg-surface-primary border-t border-border pt-3 pb-4 -mx-4 px-4">
     <form hx-post="/api/chat/message"
           hx-target="#chat-messages"
