@@ -2,22 +2,39 @@
 
 ## Overview
 
-Composer delivers mood-based playlist generation from a fully self-hosted music library. The build starts with a deployable Docker image published via CI/CD -- from day one the user can pull from Docker Hub and `docker compose up` on their NAS, iterating by rebuilding as features land. With the container and settings page working, we sync the Plex library, extract audio features with Essentia, then build the core playlist generation engine. Once the pipeline works end-to-end, we layer on existing playlist analysis, history browsing, and artist discovery via Lidarr.
+Composer's roadmap spans two milestones. **v1.0 (Phases 1–4)** shipped a self-hosted mood-to-playlist generator: Docker deployment + CI/CD, Plex library sync, Essentia audio-feature extraction, and an LLM-driven mood-chat playlist generator. **v2.0 (Phases 5–9)** pivots that foundation into a continuous music companion: Plex `userRating` becomes the taste signal, AI-clustered "vibes" replace one-shot mood chats, a Composer · Suggestions queue drains and refills as the user listens, and Lidarr discovery closes the loop outward. The v1 mood-chat UI is retired in v2.0; vibes home becomes the new landing page.
+
+**Cross-cutting v2.0 concern — debug surfaces.** Every v2 phase ships at least one `/debug/{service}` HTML page exposing recent activity, current state, and last errors in copy-pasteable form. The user runs Composer self-hosted on a Synology NAS and is the primary maintainer; when something looks wrong, a quick browser screenshot from `/debug/...` should be enough to diagnose without poking SQLite or grep'ing logs. A `/debug` index page links to all of them and is reachable from the settings footer (DEBUG-05).
+
+## Milestone Layout
+
+- **Milestone v1.0 (Mood-to-Playlist):** Phases 1–4 ✓ shipped 2026-04-09 → 2026-04-10
+- **Milestone v2.0 (Music Companion):** Phases 5–8 active, Phase 9 optional ("Feed the Engine")
+
+> **Transition note (2026-05-08):** The original v1.0 plan included a *Phase 5: Playlist Management & History* and *Phase 6: Artist Discovery*. Both were planned but never built. They are **superseded by the v2.0 phase set below** — see `PROJECT.md` (Out of Scope: Generation history UI / Browsing existing Plex playlists) and `REQUIREMENTS.md` (Superseded by v2.0 section) for the absorption / deferral rationale. v2.0 phases continue the integer numbering from v1.0; nothing is renumbered.
 
 ## Phases
 
 **Phase Numbering:**
-- Integer phases (1, 2, 3): Planned milestone work
+- Integer phases (1, 2, 3, …): Planned milestone work
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [x] **Phase 1: Foundation, Configuration & Deployment** - Docker container, CI/CD to Docker Hub, settings page, security patterns, Plex connection (completed 2026-04-09)
-- [x] **Phase 2: Library Sync** - Full Plex music library synced to local SQLite with delta updates (completed 2026-04-09)
-- [x] **Phase 3: Audio Feature Extraction** - Essentia analyzes local audio files for energy, tempo, danceability, valence (completed 2026-04-09)
-- [ ] **Phase 4: Playlist Generation** - Mood-to-playlist pipeline: natural language in, curated playlist out, pushed to Plex
-- [ ] **Phase 5: Playlist Management & History** - Browse existing Plex playlists, analyze mood profiles, view generation history
-- [ ] **Phase 6: Artist Discovery** - Lidarr artist recommendations with one-click add
+### Milestone v1.0 — Mood-to-Playlist (shipped)
+
+- [x] **Phase 1: Foundation, Configuration & Deployment** — Docker container, CI/CD to Docker Hub, settings page, security patterns, Plex connection (completed 2026-04-09)
+- [x] **Phase 2: Library Sync** — Full Plex music library synced to local SQLite with delta updates (completed 2026-04-09)
+- [x] **Phase 3: Audio Feature Extraction** — Essentia analyzes local audio files for energy, tempo, danceability, valence (completed 2026-04-09)
+- [x] **Phase 4: Playlist Generation** — Mood-to-playlist pipeline: natural language in, curated playlist out, pushed to Plex (completed 2026-04-10) *(retiring in v2.0; capabilities absorbed into vibe + suggestions model)*
+
+### Milestone v2.0 — Music Companion (active)
+
+- [ ] **Phase 5: Plex Event Foundation + Rating Sync** — Composer reliably ingests Plex webhook + polling events, dedupes them, and propagates RatingChanged end-to-end
+- [ ] **Phase 6: Vibe Clustering + Setup Wizard** — User completes first-run wizard and ends with 3–7 named vibe playlists in Plex, populated from rated set, auto-slotting newly-rated tracks
+- [ ] **Phase 7: Suggestions Queue + v1 Chat Retirement** — Continuous Composer · Suggestions playlist drains as the user listens and refills with taste-aware picks; v1 mood-chat retires; vibes home becomes the new landing page
+- [ ] **Phase 8: Lidarr Discovery + Polish** — Taste-aware artist discovery with one-click add to Lidarr; auto-ingest of new arrivals; legacy screens responsive on mobile
+- [ ] **Phase 9 (OPTIONAL): Feed the Engine** — Bulk rating, play-rated nudge, Surprise Me; cuttable without affecting any other phase
 
 ## Phase Details
 
@@ -54,6 +71,7 @@ Plans:
 - [x] 02-02-PLAN.md — Sync API endpoints, progress banner, library browse page with HTMX
 - [x] 02-03-PLAN.md — APScheduler integration, auto-sync on startup, settings page sync interval
 **UI hint**: yes
+
 ### Phase 3: Audio Feature Extraction
 **Goal**: Every track in the library has audio features extracted from local files, enabling mood-based filtering
 **Depends on**: Phase 2
@@ -62,7 +80,7 @@ Plans:
   1. User can trigger audio analysis and see progress tracking as Essentia processes their library
   2. Analysis can be stopped and resumed without re-analyzing previously completed tracks
   3. Tracks without audio features (analysis failed or pending) fall back to genre/year/artist for mood matching
-  4. Extracted features (energy, tempo, danceability, valence) are cached permanently in SQLite -- each track analyzed only once
+  4. Extracted features (energy, tempo, danceability, valence) are cached permanently in SQLite — each track analyzed only once
 **Plans:** 3/3 plans complete
 Plans:
 - [x] 03-01-PLAN.md — Track model expansion, Plex file_path extraction, Essentia audio analyzer module
@@ -76,49 +94,147 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. User can type a mood description (e.g., "chill Sunday morning coffee vibes") and receive a playlist of matching tracks
   2. User can specify the number of tracks to include before generating
-  3. User can review the generated playlist and edit it -- adding, removing, and reordering tracks before finalizing
+  3. User can review the generated playlist and edit it — adding, removing, and reordering tracks before finalizing
   4. User can push the finalized playlist to a specific Plex library as a named playlist
-  5. The Ollama LLM interprets mood descriptions into structured audio feature criteria that drive track scoring
-**Plans:** 3 plans
+  5. The LLM (Ollama in v1, replaced by Anthropic mid-milestone) interprets mood descriptions into structured audio feature criteria that drive track scoring
+**Plans:** 3/3 plans complete
 Plans:
 - [x] 04-01-PLAN.md — Data models, Pydantic schemas, playlist scoring engine, nav update, Instructor dependency
 - [x] 04-02-PLAN.md — Chat service with Instructor LLM pipeline, session state, API endpoints
 - [x] 04-03-PLAN.md — Chat UI templates, playlist card with drag-drop, push-to-Plex, visual verification
 **UI hint**: yes
+**Status note**: Capabilities retiring in v2.0 — chat UI removed in Phase 7 (UI-06); scoring primitive (PLAY-03) and Plex push (PLAY-06) carry forward as building blocks for vibe slotting and Suggestions reconciliation.
 
-### Phase 5: Playlist Management & History
-**Goal**: User can browse and analyze existing Plex playlists and review all previously generated playlists
-**Depends on**: Phase 4
-**Requirements**: PLEX-01, PLEX-02, PLEX-03, HIST-01, HIST-02
+---
+
+## Milestone v2.0: Music Companion
+
+> *Original v1.0 Phase 5 (Playlist Management & History) and Phase 6 (Artist Discovery) were superseded by the v2.0 phases below — see PROJECT.md and REQUIREMENTS.md for absorption/deferral rationale (PLEX-01/02/03 → out-of-scope or absorbed into vibe slotting; HIST-01/02 → out-of-scope under continuous-queue model; DISC-01/02 → reframed as DISC-03..07).*
+
+### Phase 5: Plex Event Foundation + Rating Sync
+**Goal**: Composer reliably ingests Plex events (webhook primary, polling fallback), dedupes them, and propagates `RatingChanged` end-to-end so every downstream v2 phase can react to ratings flowing in from Plexamp
+**Depends on**: Phase 2 (extends existing Plex sync infrastructure); no v2 dependencies
+**Requirements**: EVT-01, EVT-02, EVT-03, EVT-04, EVT-05, EVT-06, EVT-07, RATE-01, RATE-02, RATE-03, RATE-04, RATE-05, OPS-01, OPS-02, OPS-03, OPS-04, DEBUG-01
 **Success Criteria** (what must be TRUE):
-  1. User can view all existing playlists from their Plex server in the app
-  2. User can select a Plex playlist and see its mood/energy profile based on track audio features
-  3. App suggests new tracks from the library that fit an existing playlist's mood profile
-  4. User can browse a history of all previously generated playlists with the mood description and parameters used
+  1. User rates a track in Plexamp; within 5 seconds, Composer's UI reflects the new rating without a page refresh, and an audit row exists in `EventLog` with `processed_at` set
+  2. Webhook + polling both populate `EventLog` for the same logical rating event but only one downstream `RatingChanged` is dispatched (dedupe via `UNIQUE` constraint on `dedupe_key`)
+  3. User clicks "Resync now" on the home/settings page and Composer pulls `userRating` for every track in the rated view, emitting `RatingChanged` for every diff
+  4. Setup-wizard webhook step shows the user's webhook URL with a copy button and turns ✓ when Plex's "test webhook" event is received
+  5. Rated-track count is visible on the home page and updates in real time as ratings arrive (webhook or poll)
 **Plans**: TBD
 **UI hint**: yes
+**New dependencies**: `anthropic>=0.100,<1.0` (replaces v1 direct-httpx wrapper — OPS-02), `scikit-learn>=1.8,<2.0` (added here to keep image-build churn off the Phase 6 critical path — OPS-04), `pyarr>=6.6,<7.0` pin bump (OPS-03)
+**Key Concerns** (pitfalls to bake in — see `.planning/research/PITFALLS.md`):
+  - **Day-one webhook idempotency** (Pitfall 1): `EventLog.dedupe_key UNIQUE` constraint on the first commit, not retrofitted. Dedupe key = `sha256(event_type|ratingKey|user_rating|5s_timestamp_bucket)`. Insert-or-ignore pattern.
+  - **PlexAPI is sync, blocks the event loop** (Pitfall 4): every PlexAPI call from an `async` handler runs through `asyncio.to_thread(...)` — or the handler is declared `def` so FastAPI dispatches it to the threadpool. Document the convention in CLAUDE.md before any handler is written.
+  - **`userRating` is 0–10, not 0–5** (Pitfall 2): persist raw 0–10 in SQLite; convert to stars only at display boundaries via a single helper. Add a unit test asserting `userRating=7.0` → "3.5 stars" in UI, `7.0` in DB.
+  - **Webhook reachability test** (EVT-07): wizard's webhook URL builder must use the Docker-network hostname (`http://composer:8085/api/webhooks/plex`) when Plex and Composer share `synobridge`, not the Tailscale IP. The "test webhook" listener confirms reachability before the user leaves the wizard step.
+  - **Bounded polling queries** (Pitfall 21): polling fallback hits the recently-rated and recently-played views with `updatedAt>>` filters, never a full library scan. Default 5-min interval; back off when idle.
+  - **Schema migration without Alembic** (Pitfall 19, OPS-01): extend the existing `_migrate_add_columns()` shim for `Track.user_rating`, `rating_changed_at`, `last_viewed_at`, `view_count`. New tables (`EventLog`) via `create_all()`. No Alembic.
+  - **Debug surface from day one** (DEBUG-01): `/debug/events` HTML page lists last 50 received events (webhook + poll) with timestamp, source, dedupe_key, payload preview, processed_at, handler errors. Also surfaces current poll interval, last poll result, and last "test webhook" ping. This is the primary diagnostic surface when something looks wrong — copy-pasteable layout so the user can share output without poking SQLite.
 
-### Phase 6: Artist Discovery
-**Goal**: User gets artist recommendations based on their library and can add them to Lidarr with one click
-**Depends on**: Phase 4
-**Requirements**: DISC-01, DISC-02
+### Phase 6: Vibe Clustering + Setup Wizard
+**Goal**: User completes the first-run setup wizard and ends with 3–7 named, persistent "vibe" playlists in Plex, each populated from their rated set, with newly-rated tracks auto-slotting into matching vibes within seconds
+**Depends on**: Phase 5 (rating sync must be working — vibes need a populated rated set and a `RatingChanged` event stream)
+**Requirements**: VIBE-01, VIBE-02, VIBE-03, VIBE-04, VIBE-05, VIBE-06, VIBE-07, VIBE-08, VIBE-09, VIBE-10, VIBE-11, VIBE-12, WIZ-01, WIZ-02, WIZ-03, WIZ-04, WIZ-05, WIZ-06, WIZ-07, DEBUG-02
 **Success Criteria** (what must be TRUE):
-  1. User sees artist recommendations derived from their library analysis and LLM knowledge
-  2. User can one-click add a recommended artist to Lidarr with the configured quality profile
+  1. User completes the setup wizard end-to-end and sees N (3–7) named vibe playlists in Plex Web titled `Composer · {name}`, each containing rated tracks that match the vibe's audio-feature centroid
+  2. User rates a previously-unrated track 4 stars in Plexamp; within 10 seconds, the track appears in the matching `Composer · {name}` Plex playlist (slotting via audio-feature distance)
+  3. User edits a vibe name in the wizard ("Late Night Drives" → "Night Drives"); the corresponding Plex playlist is renamed to `Composer · Night Drives` and persists across container restart
+  4. User triggers "Re-cluster vibes" from settings; the LLM proposes new clusters, the user reviews and confirms, and existing manual track→vibe overrides are preserved across the re-cluster
+  5. With <30 rated tracks, the wizard refuses to cluster and surfaces the "rate more tracks" gate; with 30–49 rated tracks, single-vibe degraded mode runs; with ≥50, full clustering at silhouette ≥ 0.25
 **Plans**: TBD
 **UI hint**: yes
+**Key Concerns** (pitfalls to bake in):
+  - **Cold-start gating** (Pitfall 3, VIBE-06): hard floor at <30 rated tracks (clustering disabled); 30–49 = single-vibe degraded mode; ≥50 = full clustering. `k_max = min(7, n_rated // 15)`. Silhouette ≥ 0.25 enforced; below threshold, surface a "your taste is tight, try k=2 or rate more" message — don't silently produce nonsense vibes.
+  - **Soft membership margin** (Pitfall 24, VIBE-02): track joins a second vibe only if distance to second-closest is within 1 std-dev of distance to closest. Cap at 2 vibes per track. Prevents UX muddiness from blanket soft-assignment.
+  - **Plex playlist hands-off + post-push verification** (Pitfalls 5, 6, 20, VIBE-04, VIBE-12, OPS-06): `Composer · ` namespace prefix is mandatory; `ManagedPlaylist` registry is the second ownership marker. After every playlist push, re-fetch and reconcile track set; silently-dropped tracks are logged and retried once. v1-generated playlists (no `Composer ·` prefix) are recognized as legacy and never touched.
+  - **Anthropic prompt cache TTL — explicit `ttl: "1h"`** (Pitfall 9): vibe-clusterer Anthropic call sets `cache_control: {"type": "ephemeral", "ttl": "1h"}` explicitly. Log `cache_creation_input_tokens` / `cache_read_input_tokens` per response. The 5-minute default silently regressed in March 2026 — explicit TTL is mandatory.
+  - **LLM hallucination validation on track IDs** (Pitfall 10, v1-burned issue): every LLM-returned track ID round-trips against the candidate set; prefer integer indices over string IDs in prompts. v1's Phase 4 burned this; the convention carries forward.
+  - **Per-track lock on slot-in** (Pitfall 23): rapid rate-correct sequences (3★ → 4★ within 200ms) serialize through an `asyncio.Lock` keyed on ratingKey; latest rating read from Plex inside the lock, not from the webhook payload.
+  - **Wizard state in SQLite, not cookies** (WIZ-02): step 2 produces ~50KB of cluster proposals — server-side `SetupState` row.
+  - **Alpine morph for HTMX swaps** (Pitfall 15): wizard partials use `hx-ext="alpine-morph"` from the first template; document the convention project-wide.
+  - **Debug surface for vibes** (DEBUG-02): `/debug/vibes` HTML page shows each vibe's centroid features, member count, silhouette score, last-clustered-at, and the last 20 slot-in decisions (track → vibe(s) with computed distance). "Re-show last cluster proposal" button surfaces the LLM naming response. Critical when slot-in produces a surprising assignment.
+
+### Phase 7: Suggestions Queue + v1 Chat Retirement
+**Goal**: User has a continuous `Composer · Suggestions` Plex playlist that drains as they listen and refills with taste-aware picks within 30 seconds; v1 mood-chat is retired; vibes home is the new landing page
+**Depends on**: Phase 6 (vibe centroids + cached taste profile must exist for shortlist + LLM ranking; Suggestions playlist is bootstrapped on wizard finalize)
+**Requirements**: SUGG-01, SUGG-02, SUGG-03, SUGG-04, SUGG-05, SUGG-06, SUGG-07, SUGG-08, SUGG-09, SUGG-10, SUGG-11, UI-01, UI-02, UI-03, UI-04, UI-05, UI-06, OPS-05, DEBUG-03, DEBUG-05
+**Success Criteria** (what must be TRUE):
+  1. User plays a track from `Composer · Suggestions` to scrobble; within 30 seconds the played track is gone from the playlist and a new track has been appended at the bottom (taste-matched, with a "Why this track?" rationale visible on tap)
+  2. v2 vibes home is the landing page at `/`; the legacy `/chat` route returns 404 (or redirects to `/`); nav references to mood-chat are gone; archived chat templates are not reachable from any link
+  3. Mobile portrait layout at 375px wide: bottom tab bar (Vibes / Suggestions / Discover / Settings) is visible above the iOS toolbar (uses `h-dvh` + `safe-area-inset-bottom`); every tappable element measures ≥44px; no hover-only states block information access
+  4. Settings page shows the current daily LLM cost meter ("Anthropic spend today: 7 calls, $0.02 / $0.42 budgeted") with `cache_read_input_tokens` visibly accumulating across calls (caching is hitting)
+  5. A misconfigured refresh trigger (or any refill loop firing >5 times in 60s) trips the LLM cost circuit breaker; the UI surfaces "Suggestions paused — cost limit hit" and no further LLM ranking calls fire until the next event window
+**Plans**: TBD
+**UI hint**: yes
+**Key Concerns** (pitfalls to bake in):
+  - **LLM cost circuit breaker — FIRST commit, not last** (Pitfall 11, SUGG-11): daily quota (50 calls), burst limit (5 calls / 60s), per-event debounce (60s cooldown per `(track_id, event_type)`). All four (counter + dashboard + breaker + debounce) ship in the same commit as the first ranking call. Adding them after a runaway means refunding spend.
+  - **Anthropic prompt cache `ttl: "1h"` explicit** (Pitfall 9, SUGG-05): suggestions ranking system message sets `cache_control: {"type": "ephemeral", "ttl": "1h"}`. Sonnet 4.6 minimum 2048 tokens — verify `cache_creation_input_tokens > 0` on first call. Without explicit TTL, every call is a 5-min cache miss and the budget blows.
+  - **Pydantic validation on track IDs** (Pitfall 10, v1-burned): every LLM-ranked track ID validated against the shortlist before insertion into the queue. Use Instructor `max_retries` with a Pydantic validator, or send integer indices and map back server-side. v1's Phase 4 already taught this — non-negotiable.
+  - **Trust the webhook payload, don't re-fetch** (Pitfall 7): consumption detection uses the webhook's own `lastViewedAt`/timestamp; no `plex.fetchItem(...).lastViewedAt` re-fetch race.
+  - **Scrobble = consumption, not endorsement** (Pitfall 8, SUGG-08, SUGG-09): scrobble drains a track from Suggestions but does NOT strengthen the taste signal. Endorsement = `userRating ≥ 3 stars`. Skip-bomb detector: >10 tracks consumed in <10 min disables Suggestions drain.
+  - **SQLite is read-truth, Plex is write-target** (eventually-consistent mirror, SUGG-02): on `TrackPlayed`, act locally first (remove from mirror, shortlist, rank, pick) then push to Plex via a single `update_playlist_items` call. Don't re-fetch the Plex playlist as the read path.
+  - **Cross-surface dedup** (Pitfall 12, SUGG-07): `SuggestionHistory` table with 14-day exclusion window; `recently_recommended_track_ids` injected into the LLM prompt as "don't recommend these again."
+  - **Alpine morph + iOS dvh + 44px targets + tap-not-hover** (Pitfalls 15, 16, 17, 18, UI-03/04/05): project-wide CSS conventions established in this phase — `--touch-target-min: 44px`, `h-dvh` not `h-screen`, `env(safe-area-inset-bottom)` on fixed bottom UI, `viewport-fit=cover` meta tag, `<body hx-ext="alpine-morph">`. Test every interaction on a real iPhone, not desktop emulation.
+  - **LLM observability with first ranking call** (OPS-05): structured log per call (`{model, input_tokens, cache_creation_input_tokens, cache_read_input_tokens, output_tokens, cost_estimate_usd, reason}`); daily aggregate exposed in settings.
+  - **Debug surface for suggestions** (DEBUG-03): `/debug/suggestions` page shows current queue contents (track + vibe + score + rationale), last 20 refill triggers (event source, candidates evaluated, picks made, latency), recent skip-tracking signals, current circuit-breaker state, and last 20 LLM calls (model, cache hit/miss, tokens, cost, prompt summary). Highest-leverage debug page since suggestions is where most user "why did it pick that?" questions land.
+  - **Debug index linked from settings** (DEBUG-05): `/debug` index page lists all debug surfaces (`/debug/events`, `/debug/vibes`, `/debug/suggestions`, `/debug/discovery` once it lands). Settings page footer links to `/debug` so the user can find diagnostics without remembering URLs. All debug pages render plain HTML (no JS-only content) so output is copy-pasteable.
+
+### Phase 8: Lidarr Discovery + Polish
+**Goal**: User can discover new artists matching their taste and one-click add to Lidarr; new arrivals from Lidarr auto-ingest into Essentia analysis + vibe scoring; legacy v1 screens (settings, library) are responsive on mobile portrait
+**Depends on**: Phase 7 (taste profile, prompt-cache infrastructure, LLM cost breaker, recommendation history table all reused; Lidarr is the leafy outward closer)
+**Requirements**: DISC-03, DISC-04, DISC-05, DISC-06, DISC-07, UI-07, UI-08, OPS-06, DEBUG-04
+**Success Criteria** (what must be TRUE):
+  1. User opens the Discover tab and sees ≥10 artist suggestions ranked by closeness to taste profile, each with a one-line "why" rationale ("Same label as Four Tet · MusicBrainz adjacent to 3 starred artists"); no artist already in the library appears
+  2. User clicks "Add" on a discovered artist; Lidarr accepts the request without error using the configured quality + metadata profiles, and Composer shows "Added to Lidarr" feedback
+  3. After Lidarr imports a new album from a Composer-added artist, within one Plex sync cycle the new tracks are auto-queued for Essentia analysis, then auto-scored against vibes and become eligible for the Suggestions queue
+  4. Settings page Lidarr connection-test reliably distinguishes unreachable / auth-failure / version-mismatch with clear error messages — the v1 carry-over connection bug is fixed
+  5. Settings and library screens render cleanly portrait at 375px wide: service cards stack vertically, track tables become tap-friendly card lists, no horizontal scroll, no hover-only affordances
+**Plans**: TBD
+**UI hint**: yes
+**Key Concerns** (pitfalls to bake in):
+  - **Lidarr connection-test fix is foundational** (Pitfall 14, DISC-07): the v1 carry-over bug (likely Docker-network resolution against `synobridge` rather than `localhost`) is the FIRST task of the phase. Until connection-test is reliable, every other Lidarr feature is built on sand. Reference `.planning/notes/connection-test-bugs.md`.
+  - **Popularity-bias guardrails** (Pitfall 13, DISC-04): anchor LLM prompt on a small specific seed set (3 underrepresented-genre tracks from the user's stars), filter MusicBrainz results by listener-count, require MusicBrainz adjacency to ≥1 starred artist OR shared label/release-group. Show provenance ("Suggested because you starred Four Tet — same label").
+  - **pyarr 6.6 metadata profile + quality profile fetch** (Pitfall 14, OPS-03): pyarr 6.6's `add_artist()` requires both `qualityProfileId` AND `metadataProfileId` — fetch dynamically from `/api/v1/qualityprofile` and `/api/v1/metadataprofile`, never hardcode. Confirm signature during phase planning (light spike per SUMMARY.md).
+  - **MusicBrainz validation gate** (Pitfall 10): every LLM-suggested artist name validated via MusicBrainz lookup before showing to user — prevents hallucinated "The Velvet Echoes from Brooklyn" with a real-sounding name. Lidarr's lookup endpoint suffices.
+  - **Post-add monitoring** (Pitfall 14): 24h check after each Composer-initiated add — if Lidarr hasn't imported any releases, surface "Velvet Echoes added 2 days ago, no releases found yet — change quality profile?" Prevents silent failure mode.
+  - **Auto-ingest plumbing already mostly works** (Pitfall 25, DISC-06): existing `trigger_post_sync_analysis()` from v1 Phase 3 picks up new tracks; only new code is the Lidarr webhook (or aggressive 10-min poll for 24h post-add) that triggers a Composer sync of the affected library section before the regular interval.
+  - **Cross-surface dedup reused** (Pitfall 12): Discover filters out artists with any track already in `composer.tracks` or already in Lidarr's `/api/v1/artist` — cache the managed list for 1h.
+  - **Legacy playlist recognition** (OPS-06): scan for v1-generated Plex playlists (no `Composer ·` prefix in `ManagedPlaylist`) and surface them as legacy — explicitly NOT touched, NOT analyzed as taste signal, NOT auto-imported into vibes.
+  - **Mobile responsive pass** (UI-07, UI-08): apply the Phase 7 mobile conventions (h-dvh, safe-area-inset, 44px targets, tap-not-hover) to the v1 settings and library screens.
+  - **Debug surface for discovery** (DEBUG-04): `/debug/discovery` HTML page shows the last candidate set (with provenance per artist — seed source, MusicBrainz adjacency, label/genre overlap, LLM rationale), recent MusicBrainz queries with rate-limit headers, recent Lidarr `add_artist` requests + responses, and the Lidarr connection-test result history. Specifically aimed at debugging "why did Composer recommend X?" and "why did Lidarr reject this add?"
+
+### Phase 9 (OPTIONAL): Feed the Engine
+**Goal**: Surface bulk rating, play-rated nudge, and Surprise Me to encourage faster rating accumulation, particularly for underweighted vibes
+**Depends on**: Phase 7 (reuses UI conventions, taste profile, ranking infrastructure); nothing depends on Phase 9 downstream
+**Requirements**: ENG-01, ENG-02, ENG-03
+**Success Criteria** (what must be TRUE):
+  1. User opens "Bulk Rating" and sees 10 strategically diverse unrated tracks (mixed energy/tempo/genre); each track has a "Rate in Plexamp" deeplink that opens the track in the Plexamp app for in-Plexamp rating
+  2. Vibes home displays a "Played but not rated" nudge listing unrated tracks with `viewCount ≥ 5`; tap deeplinks to Plexamp
+  3. User taps "Surprise Me"; Composer picks a single unrated taste-matched track and deeplinks to Plexamp to play it (bypasses the Suggestions queue)
+**Plans**: TBD
+**UI hint**: yes
+**Status note**: **OPTIONAL AND CUTTABLE.** Nothing in v2.0 depends on Phase 9 downstream. If milestone budget runs short, drop Phase 9 entirely — the Music Companion is feature-complete after Phase 8. Phase 9 can also ship alongside or after Phase 8 without blocking anything.
+**Key Concerns**:
+  - **Composer never writes ratings** (PROJECT.md key decision): Phase 9 nudges the user toward rating in Plexamp via deeplinks — never writes `userRating` back to Plex. If bulk-rating UX becomes blocked because Plexamp deeplinks are unreliable, the locked decision can be revisited during Phase 9 planning, not before.
+  - **Diversity selection for bulk rating** (ENG-01): the "10 strategically diverse" selection algorithm — pick across the audio-feature space and across genres so each rating teaches the system more — is a Phase 9 design problem; start with a simple stratified sample.
 
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
-Note: Phases 5 and 6 both depend on Phase 4 and could execute in parallel.
+v1.0 phases executed 1 → 2 → 3 → 4 (complete).
+v2.0 phases execute 5 → 6 → 7 → 8, then optionally 9.
+Phase 9 has no downstream dependents; it can ship parallel to Phase 8 or be cut entirely.
 
 | Phase | Plans Complete | Status | Completed |
-|-------|---------------|--------|-----------|
-| 1. Foundation, Configuration & Deployment | 3/3 | Complete    | 2026-04-09 |
-| 2. Library Sync | 3/3 | Complete    | 2026-04-09 |
-| 3. Audio Feature Extraction | 3/3 | Complete    | 2026-04-09 |
-| 4. Playlist Generation | 0/3 | Planned | - |
-| 5. Playlist Management & History | 0/TBD | Not started | - |
-| 6. Artist Discovery | 0/TBD | Not started | - |
+|-------|----------------|--------|-----------|
+| 1. Foundation, Configuration & Deployment | 3/3 | Complete | 2026-04-09 |
+| 2. Library Sync | 3/3 | Complete | 2026-04-09 |
+| 3. Audio Feature Extraction | 3/3 | Complete | 2026-04-09 |
+| 4. Playlist Generation | 3/3 | Complete (retiring in v2.0) | 2026-04-10 |
+| 5. Plex Event Foundation + Rating Sync | 0/TBD | Next up | - |
+| 6. Vibe Clustering + Setup Wizard | 0/TBD | Not started | - |
+| 7. Suggestions Queue + v1 Chat Retirement | 0/TBD | Not started | - |
+| 8. Lidarr Discovery + Polish | 0/TBD | Not started | - |
+| 9. Feed the Engine (OPTIONAL) | 0/TBD | Not started (cuttable) | - |

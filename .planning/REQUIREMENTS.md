@@ -152,6 +152,16 @@ Every new v2 surface is portrait-first; v1 chat retires; legacy screens get a re
 - [ ] **UI-07**: Responsive pass on settings page and library browse page — service cards and track lists work cleanly portrait at 375px wide
 - [ ] **UI-08**: "Why this track?" rationale, vibe coverage indicator, and skip-track dismiss action are all designed mobile-first
 
+### Debug / Observability
+
+Cross-cutting debug surfaces. Every v2 phase ships at least one `/debug/{service}` HTML page that exposes recent activity, current state, and last errors in copy-pasteable form — so when something looks wrong, the user can grab a snapshot from the browser and share it without poking around in logs or SQLite. No auth needed (Tailscale-only access).
+
+- [ ] **DEBUG-01** (Phase 5): `/debug/events` page lists last 50 events received (webhook + poll), each with timestamp, source, dedupe_key, payload preview, processed_at, and any handler error. Also shows current poll interval, last poll result, last webhook test ✓/✗.
+- [ ] **DEBUG-02** (Phase 6): `/debug/vibes` page shows each vibe's centroid features, member count, silhouette score, last-clustered-at, and the last 20 slot-in decisions (track → vibe(s) with computed distance). Includes a "Re-show wizard cluster proposal" button that displays the last LLM cluster-naming response.
+- [ ] **DEBUG-03** (Phase 7): `/debug/suggestions` page shows current queue contents (track + vibe + score + rationale), last 20 refill triggers (event source, candidates evaluated, picks made, latency), recent skip-tracking signals, and current circuit-breaker state. Also shows last 20 LLM calls with model, prompt-cache hit/miss, tokens, cost.
+- [ ] **DEBUG-04** (Phase 8): `/debug/discovery` page shows last candidate set (with provenance per artist), recent MusicBrainz queries with rate-limit headers, recent Lidarr `add_artist` requests + responses, and the Lidarr connection-test result history.
+- [ ] **DEBUG-05** (cross-cutting, all phases): Each debug page is plain HTML with copy-friendly layout (no JS-only rendering); reachable from a single `/debug` index page; flagged with "for diagnostics only" so the user knows it's not a feature surface. Linked from the settings page footer for discoverability.
+
 ### Operations / Migration
 
 Schema migrations, observability, and the cost-control machinery the rest of v2.0 leans on.
@@ -254,26 +264,32 @@ Maps requirements to phases. Filled during roadmap creation; updated as phases c
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| EVT-01..07 | Phase 5 | Pending |
-| RATE-01..05 | Phase 5 | Pending |
-| OPS-01..04 | Phase 5 | Pending (schema + dep adds happen here) |
-| VIBE-01..12 | Phase 6 | Pending |
-| WIZ-01..07 | Phase 6 | Pending |
-| SUGG-01..11 | Phase 7 | Pending |
-| UI-01..06 | Phase 7 | Pending (vibes home + chat retirement) |
-| OPS-05 | Phase 7 | Pending (LLM observability ships with first ranking call) |
-| DISC-03..07 | Phase 8 | Pending |
-| UI-07, UI-08 | Phase 8 | Pending (legacy screen polish) |
-| OPS-06 | Phase 8 | Pending (legacy playlist recognition) |
-| ENG-01..03 | Phase 9 (optional) | Pending |
+| EVT-01..07 (7 reqs) | Phase 5 | Pending |
+| RATE-01..05 (5 reqs) | Phase 5 | Pending |
+| OPS-01..04 (4 reqs) | Phase 5 | Pending (schema + dep adds happen here: anthropic, scikit-learn, pyarr bump) |
+| DEBUG-01 (1 req) | Phase 5 | Pending (`/debug/events` page) |
+| VIBE-01..12 (12 reqs) | Phase 6 | Pending |
+| WIZ-01..07 (7 reqs) | Phase 6 | Pending |
+| DEBUG-02 (1 req) | Phase 6 | Pending (`/debug/vibes` page) |
+| SUGG-01..11 (11 reqs) | Phase 7 | Pending |
+| UI-01..06 (6 reqs) | Phase 7 | Pending (vibes home + chat retirement + mobile shell) |
+| OPS-05 (1 req) | Phase 7 | Pending (LLM observability ships with first ranking call) |
+| DEBUG-03, DEBUG-05 (2 reqs) | Phase 7 | Pending (`/debug/suggestions` + `/debug` index linked from settings) |
+| DISC-03..07 (5 reqs) | Phase 8 | Pending |
+| UI-07, UI-08 (2 reqs) | Phase 8 | Pending (legacy screen polish + multi-surface mobile-first detail) |
+| OPS-06 (1 req) | Phase 8 | Pending (legacy playlist recognition) |
+| DEBUG-04 (1 req) | Phase 8 | Pending (`/debug/discovery` page) |
+| ENG-01..03 (3 reqs) | Phase 9 (optional) | Pending |
 
-**Coverage:**
-- v2.0 requirements: 60 total (61 if you count the half-asked PLEX-02/03 absorption notes)
-- Mapped to phases: 60
-- Unmapped: 0
-- Phase 9 is optional and explicitly cuttable; everything else is required for v2.0
+**Coverage (v2.0):**
+- Required (Phases 5–8): **66 requirements** mapped — 7 EVT + 5 RATE + 4 OPS-01..04 + 1 DEBUG-01 + 12 VIBE + 7 WIZ + 1 DEBUG-02 + 11 SUGG + 6 UI-01..06 + 1 OPS-05 + 2 DEBUG-03/05 + 5 DISC + 2 UI-07/08 + 1 OPS-06 + 1 DEBUG-04 = 66
+- Optional (Phase 9): **3 requirements** (ENG-01..03)
+- Total v2.0 surface: **69 requirements**, all mapped, **0 unmapped**
+- Phase 9 is explicitly cuttable; everything else is required for v2.0
+- Roadmap validated 2026-05-08 — all v2.0 REQ-IDs map to exactly one phase, no orphans, no duplicates
 
 ---
 
 *Requirements defined: 2026-04-09 (v1.0)*
 *v2.0 requirements added: 2026-05-08 — Music Companion milestone*
+*Traceability validated against ROADMAP.md: 2026-05-08*
