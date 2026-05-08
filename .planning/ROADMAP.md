@@ -121,7 +121,12 @@ Plans:
   3. User clicks "Resync now" on the home/settings page and Composer pulls `userRating` for every track in the rated view, emitting `RatingChanged` for every diff
   4. Setup-wizard webhook step shows the user's webhook URL with a copy button and turns ✓ when Plex's "test webhook" event is received
   5. Rated-track count is visible on the home page and updates in real time as ratings arrive (webhook or poll)
-**Plans**: TBD
+**Plans:** 4 plans
+Plans:
+- [ ] 05-01-PLAN.md — Foundation: schema migration, models (EventLog/LLMUsage/TasteProfile/events.py), event bus + dispatcher, webhook receiver, Wave 0 test scaffolds, dependency adds (anthropic/scikit-learn/psutil + pyarr bump)
+- [ ] 05-02-PLAN.md — Polling job (APScheduler), rating sync service, plex_client extension for userRating/lastViewedAt/viewCount, first-run auto-backfill, Resync now button + backfill banner partial
+- [ ] 05-03-PLAN.md — Anthropic SDK client (explicit ttl=1h cache_control + LLMUsage logging) + taste profile service (4-D centroid + top artists/genres + LLM summary text + 10% delta recompute trigger)
+- [ ] 05-04-PLAN.md — Webhook URL auto-detection (Docker/LAN/Tailscale), wizard webhook radio form + test indicator, /debug/events page, settings additions (Resync button + diagnostics footer link), atomic ollama_client.py + tests deletion
 **UI hint**: yes
 **New dependencies**: `anthropic>=0.100,<1.0` (replaces v1 direct-httpx wrapper — OPS-02), `scikit-learn>=1.8,<2.0` (added here to keep image-build churn off the Phase 6 critical path — OPS-04), `pyarr>=6.6,<7.0` pin bump (OPS-03)
 **Key Concerns** (pitfalls to bake in — see `.planning/research/PITFALLS.md`):
@@ -233,7 +238,7 @@ Phase 9 has no downstream dependents; it can ship parallel to Phase 8 or be cut 
 | 2. Library Sync | 3/3 | Complete | 2026-04-09 |
 | 3. Audio Feature Extraction | 3/3 | Complete | 2026-04-09 |
 | 4. Playlist Generation | 3/3 | Complete (retiring in v2.0) | 2026-04-10 |
-| 5. Plex Event Foundation + Rating Sync | 0/TBD | Next up | - |
+| 5. Plex Event Foundation + Rating Sync | 0/4 | Next up | - |
 | 6. Vibe Clustering + Setup Wizard | 0/TBD | Not started | - |
 | 7. Suggestions Queue + v1 Chat Retirement | 0/TBD | Not started | - |
 | 8. Lidarr Discovery + Polish | 0/TBD | Not started | - |
