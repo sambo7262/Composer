@@ -37,6 +37,14 @@ class Track(SQLModel, table=True):
     analyzed_at: Optional[str] = Field(default=None)
     analysis_error: Optional[str] = Field(default=None)
 
+    # Phase 5 (D-15): Plex rating + listening signals.
+    # user_rating is RAW 0-10 (Pitfall 2). Convert to display via
+    # app.services.rating_helpers.stars_from_user_rating().
+    user_rating: Optional[float] = Field(default=None, index=True)
+    last_viewed_at: Optional[str] = Field(default=None)
+    view_count: Optional[int] = Field(default=0)
+    rating_changed_at: Optional[str] = Field(default=None)
+
 
 class SyncState(SQLModel, table=True):
     """Tracks the last sync timestamp and total track count."""

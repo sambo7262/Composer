@@ -54,11 +54,16 @@ def test_phase5_migration(test_engine):
     try:
         cur.execute("PRAGMA table_info(track)")
         cols = {row[1]: row[2] for row in cur.fetchall()}
-        assert cols.get("user_rating") == "REAL", f"user_rating column type wrong: {cols.get('user_rating')!r}"
-        assert cols.get("last_viewed_at") == "TEXT"
-        # SQLite reports the declared type; INTEGER is what _migrate_add_columns inserts.
+        # SQLite type affinity: REAL == FLOAT (both fall in NUMERIC/REAL affinity).
+        # SQLAlchemy/SQLModel emits FLOAT when create_all() runs first; ALTER emits REAL.
+        # Either is acceptable per Phase 5 D-15 (Plan accepts both).
+        assert cols.get("user_rating", "").upper() in ("REAL", "FLOAT"), (
+            f"user_rating column type wrong: {cols.get('user_rating')!r}"
+        )
+        assert cols.get("last_viewed_at", "").upper() in ("TEXT", "VARCHAR")
+        # SQLite reports declared type; INTEGER affinity covers int/bigint/smallint.
         assert cols.get("view_count", "").upper().startswith("INTEGER")
-        assert cols.get("rating_changed_at") == "TEXT"
+        assert cols.get("rating_changed_at", "").upper() in ("TEXT", "VARCHAR")
 
         cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = {row[0] for row in cur.fetchall()}

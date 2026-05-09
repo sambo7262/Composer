@@ -58,8 +58,9 @@ def _migrate_add_columns(engine) -> None:
     cursor.execute("PRAGMA table_info(track)")
     existing_cols = {row[1] for row in cursor.fetchall()}
 
-    # Columns added in Phase 3 (audio feature extraction)
+    # Columns added in Phase 3 (audio feature extraction) and Phase 5 (D-15: rating/listening)
     new_columns = {
+        # Phase 3
         "file_path": "TEXT",
         "energy": "REAL",
         "tempo": "REAL",
@@ -71,11 +72,24 @@ def _migrate_add_columns(engine) -> None:
         "loudness": "REAL",
         "analyzed_at": "TEXT",
         "analysis_error": "TEXT",
+        # Phase 5 (D-15) — raw user_rating 0-10 per Pitfall 2
+        "user_rating": "REAL",
+        "last_viewed_at": "TEXT",
+        "view_count": "INTEGER DEFAULT 0",
+        "rating_changed_at": "TEXT",
     }
 
     for col_name, col_type in new_columns.items():
         if col_name not in existing_cols:
             cursor.execute(f"ALTER TABLE track ADD COLUMN {col_name} {col_type}")
+
+    # Phase 5 RATE-04: index on user_rating for the rated-set view.
+    cursor.execute("CREATE INDEX IF NOT EXISTS ix_track_user_rating ON track(user_rating)")
+    # Phase 5 DEBUG-01: index on EventLog.received_at for /debug/events ORDER BY DESC LIMIT 50.
+    # CREATE IF NOT EXISTS guards against re-running on existing DBs.
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS ix_eventlog_received_at_desc ON eventlog(received_at)"
+    )
 
     # Recalculate energy as weighted combination of loudness, tempo, complexity.
     # Old energy was spectral_rms-only which is unreliable (mastering-dependent).
@@ -105,8 +119,14 @@ def init_db() -> None:
     from app.models.settings import ServiceConfig  # noqa: F401
     from app.models.track import Track, SyncState  # noqa: F401
     from app.models.playlist import Playlist, PlaylistTrack  # noqa: F401
+    # Phase 5 (D-19) — register new tables before create_all
+    from app.models.event_log import EventLog  # noqa: F401
+    from app.models.llm_usage import LLMUsage  # noqa: F401
+    from app.models.taste_profile import TasteProfile  # noqa: F401
 
     engine = get_engine()
+    # create_all MUST run before _migrate_add_columns so the eventlog table exists
+    # when the CREATE INDEX statement targets it.
     SQLModel.metadata.create_all(engine)
 
     # Add any missing columns to existing tables
