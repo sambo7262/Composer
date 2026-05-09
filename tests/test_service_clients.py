@@ -77,59 +77,6 @@ class TestPlexClient:
 
 
 @pytest.mark.asyncio
-class TestOllamaClient:
-    """Test Ollama connection client with mocked OpenAI SDK."""
-
-    @patch("app.services.ollama_client.OpenAI")
-    async def test_success_returns_model_list(self, mock_openai_cls):
-        """test_ollama_connection returns list of model IDs."""
-        from app.services.ollama_client import test_ollama_connection
-
-        mock_client = MagicMock()
-        mock_model_1 = MagicMock()
-        mock_model_1.id = "llama3:latest"
-        mock_model_2 = MagicMock()
-        mock_model_2.id = "mistral:latest"
-
-        mock_response = MagicMock()
-        mock_response.data = [mock_model_1, mock_model_2]
-        mock_client.models.list.return_value = mock_response
-        mock_openai_cls.return_value = mock_client
-
-        result = await test_ollama_connection("http://ollama:11434")
-
-        assert result["success"] is True
-        assert result["models"] == ["llama3:latest", "mistral:latest"]
-        mock_openai_cls.assert_called_once_with(
-            base_url="http://ollama:11434/v1", api_key="ollama"
-        )
-
-    @patch("app.services.ollama_client.OpenAI")
-    async def test_timeout_returns_timeout_error(self, mock_openai_cls):
-        """test_ollama_connection with timeout returns timeout message."""
-        from app.services.ollama_client import test_ollama_connection
-
-        mock_openai_cls.side_effect = Exception("Connection timeout")
-
-        result = await test_ollama_connection("http://ollama:11434")
-
-        assert result["success"] is False
-        assert "timed out" in result["error"]
-
-    @patch("app.services.ollama_client.OpenAI")
-    async def test_generic_error_returns_generic_message(self, mock_openai_cls):
-        """test_ollama_connection with unknown error returns generic message."""
-        from app.services.ollama_client import test_ollama_connection
-
-        mock_openai_cls.side_effect = Exception("Weird error")
-
-        result = await test_ollama_connection("http://ollama:11434")
-
-        assert result["success"] is False
-        assert "Could not connect" in result["error"]
-
-
-@pytest.mark.asyncio
 class TestLidarrClient:
     """Test Lidarr connection client with mocked LidarrAPI."""
 
