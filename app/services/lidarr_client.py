@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from pyarr import LidarrAPI
+try:
+    from pyarr import Lidarr  # pyarr 6.x — class renamed
+except ImportError:  # pragma: no cover
+    from pyarr import LidarrAPI as Lidarr  # pyarr 5.x — backwards-compat alias
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +17,7 @@ async def test_lidarr_connection(url: str, api_key: str) -> dict:
         # Strip trailing slash if present
         url = url.rstrip("/")
         logger.info("Testing Lidarr connection at %s", url)
-        lidarr = LidarrAPI(host_url=url, api_key=api_key)
+        lidarr = Lidarr(host_url=url, api_key=api_key)
         profiles = await asyncio.to_thread(lidarr.get_quality_profile)
         profile_list = [{"id": p["id"], "name": p["name"]} for p in (profiles or [])]
         logger.info("Lidarr connection successful, found %d quality profiles", len(profile_list))

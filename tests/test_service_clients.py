@@ -78,9 +78,9 @@ class TestPlexClient:
 
 @pytest.mark.asyncio
 class TestLidarrClient:
-    """Test Lidarr connection client with mocked LidarrAPI."""
+    """Test Lidarr connection client with mocked Lidarr (pyarr 6.x)."""
 
-    @patch("app.services.lidarr_client.LidarrAPI")
+    @patch("app.services.lidarr_client.Lidarr")
     async def test_success_returns_quality_profiles(self, mock_lidarr_cls):
         """test_lidarr_connection returns quality profiles with id and name."""
         from app.services.lidarr_client import test_lidarr_connection
@@ -98,7 +98,7 @@ class TestLidarrClient:
         assert len(result["profiles"]) == 2
         assert result["profiles"][0] == {"id": 1, "name": "Lossless"}
 
-    @patch("app.services.lidarr_client.LidarrAPI")
+    @patch("app.services.lidarr_client.Lidarr")
     async def test_bad_credentials_returns_auth_error(self, mock_lidarr_cls):
         """test_lidarr_connection with 401 returns auth error."""
         from app.services.lidarr_client import test_lidarr_connection
@@ -110,7 +110,7 @@ class TestLidarrClient:
         assert result["success"] is False
         assert "Authentication failed" in result["error"]
 
-    @patch("app.services.lidarr_client.LidarrAPI")
+    @patch("app.services.lidarr_client.Lidarr")
     async def test_timeout_returns_timeout_error(self, mock_lidarr_cls):
         """test_lidarr_connection with timeout returns timeout message."""
         from app.services.lidarr_client import test_lidarr_connection
@@ -122,7 +122,7 @@ class TestLidarrClient:
         assert result["success"] is False
         assert "timed out" in result["error"]
 
-    @patch("app.services.lidarr_client.LidarrAPI")
+    @patch("app.services.lidarr_client.Lidarr")
     async def test_generic_error_returns_generic_message(self, mock_lidarr_cls):
         """test_lidarr_connection with unknown error returns generic message."""
         from app.services.lidarr_client import test_lidarr_connection
