@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: — Music Companion
 status: executing
-stopped_at: "Phase 5 Plan 02 complete"
-last_updated: "2026-05-09T20:00:00.000Z"
-last_activity: 2026-05-09 -- Phase 05 Plan 02 (polling + auto-backfill + Resync now) shipped
+stopped_at: "Phase 5 Plan 03 complete"
+last_updated: "2026-05-09T21:00:00.000Z"
+last_activity: 2026-05-09 -- Phase 05 Plan 03 (anthropic_client + taste_profile_service + recompute hook) shipped
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 16
-  completed_plans: 14
-  percent: 88
+  completed_plans: 15
+  percent: 94
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-05-08)
 ## Current Position
 
 Phase: 05 (Plex Event Foundation + Rating Sync) — EXECUTING
-Plan: 3 of 4 (Plans 01–02 ✅ complete)
-Status: Plan 02 shipped — polling fallback + Track view_count + auto-backfill + Resync now all wired; ready for Plan 03
-Last activity: 2026-05-09 -- Phase 05 Plan 02 complete (3 commits, 16 new tests green, 0 regressions)
+Plan: 4 of 4 (Plans 01–03 ✅ complete)
+Status: Plan 03 shipped — AnthropicClient v2 + TasteProfileService + recompute hook all wired; ready for Plan 04 (FINAL — wizard UI, /debug/events, ollama deletion)
+Last activity: 2026-05-09 -- Phase 05 Plan 03 complete (3 commits, 11 new tests green, 0 regressions)
 
 ### v2.0 Phase Snapshot
 
@@ -77,6 +77,7 @@ Last activity: 2026-05-09 -- Phase 05 Plan 02 complete (3 commits, 16 new tests 
 | Phase 04 P03 | 5min | 2 tasks | 8 files |
 | Phase 05 P01 | ~2h | 3 tasks | 21 files |
 | Phase 05 P02 | ~2h | 3 tasks | 14 files |
+| Phase 05 P03 | ~1h | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -144,13 +145,20 @@ Recent decisions affecting current work:
 - [Phase 05-02]: handle_track_played reads lastViewedAt from event payload itself (Pitfall 7 — no Plex re-fetch); increments view_count = (view_count or 0) + 1
 - [Phase 05-02]: rating_sync_service is a thin re-export shim over backfill_service (D-11 — manual Resync now and auto first-run backfill share the same singleton state machine; future divergence stays cheap)
 - [Phase 05-02]: Lifespan ordering: queue → dispatcher → scheduler → maybe_trigger_first_run_backfill (after scheduler so polling job is registered first)
+- [Phase 05-03]: NEW app/services/anthropic_client.py — separate from v1 llm_client.py (D-01 untouched until Phase 7); AsyncAnthropic SDK with explicit cache_control={'type':'ephemeral','ttl':'1h'} on every system message (Pitfall 4 / OPS-02); structured output via Pydantic.model_validate_json — NO Instructor (D-03)
+- [Phase 05-03]: Per-call LLMUsage row inserted with all 4 token counts + cost_estimate_usd via asyncio.to_thread; circuit-breaker counters computed on demand via aggregate SELECT — Phase 5 schema sufficient for Phase 7 correctness (DESIGN NOTE in anthropic_client.py)
+- [Phase 05-03]: Logger.warning fires when cache_creation==0 AND cache_read==0 — catches prompts below the 2048-token Sonnet 4.6 minimum
+- [Phase 05-03]: TasteProfile centroid is single numpy.mean over rated tracks' (energy, tempo, danceability, valence) — NOT k-means; sklearn import forbidden in taste_profile_service.py (clustering = Phase 6; static AST test enforces)
+- [Phase 05-03]: System prompt for taste profile padded above 2048 tokens with real Composer context — identical across calls within 1h TTL = cache engages
+- [Phase 05-03]: Recompute trigger uses true accumulation: prior.rated_track_count snapshot vs current count >=10% threshold; fires from handle_rating_changed via lazy import + try/except (best-effort — never breaks rating-update path)
+- [Phase 05-03]: TasteProfileSummary(BaseModel) is the AnthropicClient response shape — minimal {summary_text: str}; LLM failure persists structured aggregates with empty summary rather than crashing (T-05-16 mitigation)
 
 ### Pending Todos
 
 - ✅ Phase 5 Plan 01 (event foundation + schema migration) — COMPLETE
 - ✅ Phase 5 Plan 02 (poll service + RATE-04 view_count handler + auto-backfill + Resync now) — COMPLETE
-- Phase 5 Plan 03 — anthropic_client.py with prompt caching + taste profile builder + RATE-05 LLM summary
-- Phase 5 Plan 04 — wizard UI (3-candidate detection), `/debug/events`, ollama_client deletion
+- ✅ Phase 5 Plan 03 (anthropic_client.py with prompt caching + taste profile builder + RATE-05 LLM summary) — COMPLETE
+- Phase 5 Plan 04 — wizard UI (3-candidate detection), `/debug/events`, ollama_client deletion (FINAL Phase 5 plan; visual checkpoint, autonomous: false)
 - Confirm Docker-network webhook URL during Phase 5 Plan 04 wizard build (`http://composer:8085/api/webhooks/plex` on `synobridge`)
 - Light spike at Phase 8 planning to confirm pyarr 6.6 `add_artist()` signature, MusicBrainz adjacency query rate limits, Last.fm vs MusicBrainz as candidate source
 
@@ -162,6 +170,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-05-09T20:00:00.000Z
-Stopped at: Phase 5 Plan 02 complete — orchestrator should spawn Plan 03
-Resume file: .planning/phases/05-plex-event-foundation-rating-sync/05-03-PLAN.md
+Last session: 2026-05-09T21:00:00.000Z
+Stopped at: Phase 5 Plan 03 complete — orchestrator should spawn Plan 04 (FINAL — wizard UI + /debug/events + ollama deletion; has visual checkpoint, autonomous: false)
+Resume file: .planning/phases/05-plex-event-foundation-rating-sync/05-04-PLAN.md

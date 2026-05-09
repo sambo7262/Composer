@@ -82,7 +82,7 @@ Rated tracks are the taste signal. Composer reads `userRating` from Plex on ever
 - [x] **RATE-02**: Initial library sync (and full Resync) populates `user_rating` for every track *(Phase 5 Plan 02 — `app/services/backfill_service.py` auto-fires from lifespan when DB has tracks but none rated; Resync now button shares the same singleton)*
 - [x] **RATE-03**: `media.rate` webhook events (and rating diffs found by polling) update `user_rating` in real time and emit a `RatingChanged` event for downstream slotting *(Phase 5 Plan 01 — `handle_rating_changed`)*
 - [x] **RATE-04**: A "rated set" is exposed as a derived view — `Track.user_rating > 0` — with an index on the field for fast queries *(Phase 5 Plan 01 — `ix_track_user_rating` index)*
-- [ ] **RATE-05**: A taste profile (centroid features + top artists/genres + rated-set summary text suitable for Anthropic prompt caching) is computed and cached; recomputes on user-triggered re-cluster or when the rated set changes by ≥10%
+- [x] **RATE-05**: A taste profile (centroid features + top artists/genres + rated-set summary text suitable for Anthropic prompt caching) is computed and cached; recomputes on user-triggered re-cluster or when the rated set changes by ≥10% *(Phase 5 Plan 03 — `app/services/taste_profile_service.py` with `recompute()` + `maybe_recompute_after_rating_change()`; 4-D centroid via numpy.mean, top 10 artists/genres via Counter, ~200-word LLM summary via AnthropicClient with explicit ttl=1h cache)*
 
 ### Vibe Curation
 
@@ -167,7 +167,7 @@ Cross-cutting debug surfaces. Every v2 phase ships at least one `/debug/{service
 Schema migrations, observability, and the cost-control machinery the rest of v2.0 leans on.
 
 - [x] **OPS-01**: Schema migrations extend the existing `_migrate_add_columns()` shim in `app/database.py` for additive changes; new tables use `create_all()` — no Alembic introduced *(Phase 5 Plan 01 — 4 Track cols + 3 new tables + 2 indexes)*
-- [ ] **OPS-02**: Anthropic SDK migration — `anthropic>=0.100,<1.0` replaces the v1 direct-httpx wrapper; existing chat service code is removed alongside chat UI retirement
+- [x] **OPS-02**: Anthropic SDK migration — `anthropic>=0.100,<1.0` replaces the v1 direct-httpx wrapper; existing chat service code is removed alongside chat UI retirement *(Phase 5 Plan 03 — `app/services/anthropic_client.py` shipped with explicit `cache_control={"type":"ephemeral","ttl":"1h"}` (Pitfall 4) and per-call LLMUsage logging; v1 `llm_client.py` + `chat_service.py` stay UNTOUCHED until Phase 7 retirement per D-01)*
 - [x] **OPS-03**: `pyarr` pin bumped from `>=5.2,<6.0` to `>=6.6,<7.0` (required for current Lidarr endpoints in DISC-05/06) *(Phase 5 Plan 01 — requirements.txt)*
 - [x] **OPS-04**: `scikit-learn>=1.8,<2.0` added for k-means + silhouette in vibe clustering *(Phase 5 Plan 01 — requirements.txt)*
 - [ ] **OPS-05**: LLM usage logged per call (model, input tokens, cache_creation_input_tokens, cache_read_input_tokens, output tokens, cost estimate); daily aggregate exposed on settings page so cost surprises are visible
@@ -265,8 +265,8 @@ Maps requirements to phases. Filled during roadmap creation; updated as phases c
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | EVT-01..07 (7 reqs) | Phase 5 | Partial — EVT-01/02/03/04/05/06 complete (Plans 01–02); EVT-07 pending Plan 04 |
-| RATE-01..05 (5 reqs) | Phase 5 | Partial — RATE-01/02/03/04 complete (Plans 01–02); RATE-05 pending Plan 03 |
-| OPS-01..04 (4 reqs) | Phase 5 | Partial — OPS-01/03/04 complete (Plan 01); OPS-02 pending Plan 03 |
+| RATE-01..05 (5 reqs) | Phase 5 | Complete — RATE-01/02/03/04 (Plans 01–02); RATE-05 (Plan 03) |
+| OPS-01..04 (4 reqs) | Phase 5 | Complete — OPS-01/03/04 (Plan 01); OPS-02 (Plan 03) |
 | DEBUG-01 (1 req) | Phase 5 | Pending (`/debug/events` page — Plan 04) |
 | VIBE-01..12 (12 reqs) | Phase 6 | Pending |
 | WIZ-01..07 (7 reqs) | Phase 6 | Pending |
