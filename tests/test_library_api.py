@@ -136,6 +136,96 @@ class TestGetTracks:
         assert "No tracks matching" in response.text
 
 
+class TestStatsEndpoint:
+    """Concern 1 / ROADMAP SC-5: GET /api/library/stats returns the library_stats partial."""
+
+    def test_stats_returns_zero_for_empty_library(self, client):
+        """Empty DB: total=0, rated=0, last_rating_event_at is None."""
+        response = client.get("/api/library/stats")
+        assert response.status_code == 200
+        assert "Total tracks" in response.text
+        assert "Rated tracks" in response.text
+        assert "Last rating event" in response.text
+        # No events yet → the partial renders the em-dash placeholder.
+        assert "—" in response.text
+
+    def test_stats_counts_total_and_rated(self, client, test_engine):
+        """Seed mixed-rating library, confirm counts match."""
+        from app.models.event_log import EventLog  # noqa: F401  ensures table exists
+        from app.models.track import Track
+
+        with Session(test_engine) as session:
+            for i in range(5):
+                session.add(
+                    Track(
+                        plex_rating_key=f"rk-rated-{i}",
+                        title=f"Title {i}",
+                        artist=f"Artist {i}",
+                        user_rating=8.0,
+                    )
+                )
+            for i in range(3):
+                session.add(
+                    Track(
+                        plex_rating_key=f"rk-unrated-{i}",
+                        title=f"Other {i}",
+                        artist=f"Artist {i}",
+                        user_rating=None,
+                    )
+                )
+            session.commit()
+
+        response = client.get("/api/library/stats")
+        assert response.status_code == 200
+        # 8 total tracks; 5 of them rated.
+        assert "8" in response.text
+        assert "5" in response.text
+
+    def test_stats_returns_last_rating_event_at(self, client, test_engine):
+        """Most recent rating_changed EventLog timestamp surfaces on the partial."""
+        from app.models.event_log import EventLog
+
+        with Session(test_engine) as session:
+            session.add(
+                EventLog(
+                    source="webhook",
+                    event_type="rating_changed",
+                    plex_rating_key="42",
+                    dedupe_key="aa11bb22cc33dd44",
+                    received_at="2026-05-08T09:00:00+00:00",
+                    processed_at="2026-05-08T09:00:00.500000+00:00",
+                )
+            )
+            session.add(
+                EventLog(
+                    source="webhook",
+                    event_type="rating_changed",
+                    plex_rating_key="43",
+                    dedupe_key="bb22cc33dd44ee55",
+                    received_at="2026-05-08T11:30:00+00:00",
+                    processed_at="2026-05-08T11:30:00.500000+00:00",
+                )
+            )
+            # An unrelated event_type should NOT be picked up.
+            session.add(
+                EventLog(
+                    source="webhook",
+                    event_type="track_played",
+                    plex_rating_key="44",
+                    dedupe_key="cc33dd44ee55ff66",
+                    received_at="2026-05-09T00:00:00+00:00",
+                    processed_at="2026-05-09T00:00:00.500000+00:00",
+                )
+            )
+            session.commit()
+
+        response = client.get("/api/library/stats")
+        assert response.status_code == 200
+        # Must show the most recent rating_changed timestamp, NOT the later track_played one.
+        assert "2026-05-08T11:30:00+00:00" in response.text
+        assert "2026-05-09T00:00:00+00:00" not in response.text
+
+
 class TestLibraryPage:
     """Tests for GET /library."""
 
