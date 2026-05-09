@@ -49,6 +49,33 @@ async def _trigger_sync() -> None:
     asyncio.create_task(run_sync())
 
 
+def schedule_polling(interval_minutes: int = 5) -> None:
+    """Register the Plex polling job alongside library_sync (D-08, EVT-03).
+
+    Polls the SAME AsyncIOScheduler singleton — only one scheduler instance
+    process-wide. Job id 'plex_polling' mirrors 'library_sync' naming.
+    """
+    scheduler = get_scheduler()
+    if scheduler.get_job("plex_polling"):
+        scheduler.remove_job("plex_polling")
+    scheduler.add_job(
+        _trigger_polling,
+        trigger=IntervalTrigger(minutes=interval_minutes),
+        id="plex_polling",
+        replace_existing=True,
+        name=f"Plex polling every {interval_minutes}m",
+    )
+    logger.info("Scheduled Plex polling every %d minutes", interval_minutes)
+
+
+async def _trigger_polling() -> None:
+    """Job function called by APScheduler. Fires-and-forgets a poll task."""
+    # Lazy import to avoid module-load-time circular dep with poll_service
+    from app.services.poll_service import run_poll
+
+    asyncio.create_task(run_poll())
+
+
 async def start_scheduler() -> None:
     """Start the scheduler and configure sync based on saved settings.
 
@@ -83,9 +110,15 @@ async def start_scheduler() -> None:
                     await run_sync()
 
                 asyncio.create_task(_delayed_auto_sync())
+
+        # Phase 5 (D-08, EVT-03): register the Plex polling job alongside library_sync.
+        # 5-minute default interval; bounded queries inside run_poll guard against load.
+        schedule_polling(interval_minutes=5)
     except Exception:
         # Schedule with default even if settings load fails
         schedule_sync(interval_hours)
+        # Polling is additive — register it even if settings load failed.
+        schedule_polling(interval_minutes=5)
         logger.exception("Error loading sync settings, using default %dh interval", interval_hours)
 
 

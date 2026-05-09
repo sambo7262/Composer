@@ -17,6 +17,10 @@ def _map_track(t) -> dict:
     except (IndexError, AttributeError):
         pass
 
+    # Phase 5 additions (D-15 + Pitfall 5): defensive getattr because PlexAPI
+    # partial responses may omit these attributes entirely. user_rating is RAW
+    # 0-10 — display conversion happens via app.services.rating_helpers only.
+    last_viewed = getattr(t, "lastViewedAt", None)
     return {
         "plex_rating_key": str(t.ratingKey),
         "title": t.title or "",
@@ -28,6 +32,9 @@ def _map_track(t) -> dict:
         "added_at": t.addedAt.isoformat() if t.addedAt else None,
         "updated_at": t.updatedAt.isoformat() if t.updatedAt else None,
         "file_path": file_path,
+        "user_rating": getattr(t, "userRating", None),
+        "last_viewed_at": last_viewed.isoformat() if last_viewed else None,
+        "view_count": getattr(t, "viewCount", 0) or 0,
     }
 
 

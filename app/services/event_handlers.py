@@ -136,6 +136,22 @@ def _update_track_rating_sync(
         session.commit()
 
 
+def _update_track_play_sync(rating_key: str, last_viewed_at: str) -> None:
+    """Phase 5 Plan 02 / RATE-04: increment view_count, set last_viewed_at."""
+    with Session(get_engine()) as session:
+        statement = select(Track).where(Track.plex_rating_key == rating_key)
+        track = session.exec(statement).first()
+        if track is None:
+            logger.info(
+                "TrackPlayed for unknown ratingKey=%s; ignoring", rating_key
+            )
+            return
+        track.view_count = (track.view_count or 0) + 1
+        track.last_viewed_at = last_viewed_at
+        session.add(track)
+        session.commit()
+
+
 # -----------------------------------------------------------------------------
 # Per-type handlers — all async, all touching DB via asyncio.to_thread.
 # -----------------------------------------------------------------------------
@@ -154,10 +170,16 @@ async def handle_rating_changed(event: RatingChangedEvent) -> None:
 
 
 async def handle_track_played(event: TrackPlayedEvent) -> None:
-    """Stub for Plan 02. Phase 5 logs only — Plan 02 implements view_count + last_viewed_at."""
-    logger.info(
-        "TrackPlayed event received for ratingKey=%s; deferred to Plan 02",
-        event.plex_rating_key,
+    """RATE-04: increment Track.view_count + update Track.last_viewed_at.
+
+    Reads the lastViewedAt timestamp from the event payload itself rather than
+    re-fetching from Plex (Pitfall 7) — webhook delivers a snapshot we trust.
+    """
+    if event.plex_rating_key is None:
+        logger.warning("TrackPlayedEvent without ratingKey; skipping")
+        return
+    await asyncio.to_thread(
+        _update_track_play_sync, event.plex_rating_key, event.last_viewed_at
     )
 
 
