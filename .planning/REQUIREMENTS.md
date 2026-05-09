@@ -68,9 +68,9 @@ The foundation for everything else. Without reliable, deduplicated event streams
 
 - [x] **EVT-01**: Composer exposes a `POST /api/webhooks/plex` endpoint that accepts Plex Pass webhooks (multipart/form-data with JSON `payload` field), returns 200 in <50ms, and pushes a typed event onto the internal event bus *(Phase 5 Plan 01)*
 - [x] **EVT-02**: Webhook handler dedupes events via an `EventLog` table with a `UNIQUE` constraint on `dedupe_key = sha256(event_type|ratingKey|user_rating|5s_timestamp_bucket)`; duplicates are dropped silently *(Phase 5 Plan 01)*
-- [ ] **EVT-03**: APScheduler-based polling job runs every 5 minutes (configurable) to detect rating, play, and library changes — emits the same typed events through the same event bus, dedupe handles webhook+poll overlap
+- [x] **EVT-03**: APScheduler-based polling job runs every 5 minutes (configurable) to detect rating, play, and library changes — emits the same typed events through the same event bus, dedupe handles webhook+poll overlap *(Phase 5 Plan 02 — `app/services/poll_service.py` + `schedule_polling` in `sync_scheduler.py`)*
 - [x] **EVT-04**: Single asyncio dispatcher task consumes the event bus and serializes downstream handlers to avoid SQLite write contention *(Phase 5 Plan 01)*
-- [ ] **EVT-05**: User can manually trigger a "Resync now" full event scan from the UI (settings or vibes home)
+- [x] **EVT-05**: User can manually trigger a "Resync now" full event scan from the UI (settings or vibes home) *(Phase 5 Plan 02 — POST /api/rating-sync/start + `partials/backfill_banner.html`; Plan 04 will surface the button on the settings page)*
 - [x] **EVT-06**: PlexAPI calls inside event handlers run via `asyncio.to_thread()` so the FastAPI event loop is never blocked *(Phase 5 Plan 01 — enforced by AST static test)*
 - [ ] **EVT-07**: Setup wizard displays the user's webhook URL with a copy button, auto-detecting the accessible hostname/port; "test webhook" flow shows ✓ when Plex's test event is received
 
@@ -79,7 +79,7 @@ The foundation for everything else. Without reliable, deduplicated event streams
 Rated tracks are the taste signal. Composer reads `userRating` from Plex on every relevant event; never writes ratings.
 
 - [x] **RATE-01**: `Track` model extended with `user_rating` field (Plex's 0–10 scale stored raw; conversion to 0–5 stars happens only at display boundaries) *(Phase 5 Plan 01 — `app/services/rating_helpers.stars_from_user_rating`)*
-- [ ] **RATE-02**: Initial library sync (and full Resync) populates `user_rating` for every track
+- [x] **RATE-02**: Initial library sync (and full Resync) populates `user_rating` for every track *(Phase 5 Plan 02 — `app/services/backfill_service.py` auto-fires from lifespan when DB has tracks but none rated; Resync now button shares the same singleton)*
 - [x] **RATE-03**: `media.rate` webhook events (and rating diffs found by polling) update `user_rating` in real time and emit a `RatingChanged` event for downstream slotting *(Phase 5 Plan 01 — `handle_rating_changed`)*
 - [x] **RATE-04**: A "rated set" is exposed as a derived view — `Track.user_rating > 0` — with an index on the field for fast queries *(Phase 5 Plan 01 — `ix_track_user_rating` index)*
 - [ ] **RATE-05**: A taste profile (centroid features + top artists/genres + rated-set summary text suitable for Anthropic prompt caching) is computed and cached; recomputes on user-triggered re-cluster or when the rated set changes by ≥10%
@@ -264,10 +264,10 @@ Maps requirements to phases. Filled during roadmap creation; updated as phases c
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| EVT-01..07 (7 reqs) | Phase 5 | Pending |
-| RATE-01..05 (5 reqs) | Phase 5 | Pending |
-| OPS-01..04 (4 reqs) | Phase 5 | Pending (schema + dep adds happen here: anthropic, scikit-learn, pyarr bump) |
-| DEBUG-01 (1 req) | Phase 5 | Pending (`/debug/events` page) |
+| EVT-01..07 (7 reqs) | Phase 5 | Partial — EVT-01/02/03/04/05/06 complete (Plans 01–02); EVT-07 pending Plan 04 |
+| RATE-01..05 (5 reqs) | Phase 5 | Partial — RATE-01/02/03/04 complete (Plans 01–02); RATE-05 pending Plan 03 |
+| OPS-01..04 (4 reqs) | Phase 5 | Partial — OPS-01/03/04 complete (Plan 01); OPS-02 pending Plan 03 |
+| DEBUG-01 (1 req) | Phase 5 | Pending (`/debug/events` page — Plan 04) |
 | VIBE-01..12 (12 reqs) | Phase 6 | Pending |
 | WIZ-01..07 (7 reqs) | Phase 6 | Pending |
 | DEBUG-02 (1 req) | Phase 6 | Pending (`/debug/vibes` page) |

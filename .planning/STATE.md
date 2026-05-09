@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: — Music Companion
 status: executing
-stopped_at: "Phase 5 Plan 01 complete"
-last_updated: "2026-05-09T17:30:00.000Z"
-last_activity: 2026-05-09 -- Phase 05 Plan 01 (event foundation + schema migration) shipped
+stopped_at: "Phase 5 Plan 02 complete"
+last_updated: "2026-05-09T20:00:00.000Z"
+last_activity: 2026-05-09 -- Phase 05 Plan 02 (polling + auto-backfill + Resync now) shipped
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 16
-  completed_plans: 13
-  percent: 81
+  completed_plans: 14
+  percent: 88
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-05-08)
 ## Current Position
 
 Phase: 05 (Plex Event Foundation + Rating Sync) — EXECUTING
-Plan: 2 of 4 (Plan 01 ✅ complete)
-Status: Plan 01 shipped — event foundation + schema in place; ready for Plan 02
-Last activity: 2026-05-09 -- Phase 05 Plan 01 complete (3 commits, 50 tests green, 0 regressions)
+Plan: 3 of 4 (Plans 01–02 ✅ complete)
+Status: Plan 02 shipped — polling fallback + Track view_count + auto-backfill + Resync now all wired; ready for Plan 03
+Last activity: 2026-05-09 -- Phase 05 Plan 02 complete (3 commits, 16 new tests green, 0 regressions)
 
 ### v2.0 Phase Snapshot
 
@@ -76,6 +76,7 @@ Last activity: 2026-05-09 -- Phase 05 Plan 01 complete (3 commits, 50 tests gree
 | Phase 04-playlist-generation P02 | 3min | 2 tasks | 5 files |
 | Phase 04 P03 | 5min | 2 tasks | 8 files |
 | Phase 05 P01 | ~2h | 3 tasks | 21 files |
+| Phase 05 P02 | ~2h | 3 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -136,11 +137,18 @@ Recent decisions affecting current work:
 - [Phase 05-01]: All PlexAPI calls in async paths route through asyncio.to_thread; enforced by AST static test (test_no_blocking_plexapi_in_async)
 - [Phase 05-01]: Webhook handler uses Annotated[str, Form()] + json.loads (NEVER pydantic.Json[Model] — FastAPI bug #10997); ALWAYS returns 200 (Plex retries non-2xx)
 - [Phase 05-01]: if/elif on event.type used in dispatch_event instead of match (Python 3.9 venv parse compat; functionally identical for discriminator-only routing)
+- [Phase 05-02]: APScheduler polling job 'plex_polling' added alongside library_sync (5-min default); both share the existing AsyncIOScheduler singleton — never spawn a second instance
+- [Phase 05-02]: Polling uses bounded queries (searchTracks(filters={'track.userRating>>': 0}, limit=200, sort='lastRatedAt:desc')) — Pitfall 21 forbids any unbounded full-library scan
+- [Phase 05-02]: Polling emits typed events with source='poll' through the SAME asyncio.Queue + dispatcher as webhooks; UNIQUE(dedupe_key) handles webhook+poll overlap naturally — no app-level coordination
+- [Phase 05-02]: Auto-backfill gate is Pitfall 7: (any Track exists) AND (no Track has user_rating populated) — empty DB is a no-op, already-rated DB is a no-op
+- [Phase 05-02]: handle_track_played reads lastViewedAt from event payload itself (Pitfall 7 — no Plex re-fetch); increments view_count = (view_count or 0) + 1
+- [Phase 05-02]: rating_sync_service is a thin re-export shim over backfill_service (D-11 — manual Resync now and auto first-run backfill share the same singleton state machine; future divergence stays cheap)
+- [Phase 05-02]: Lifespan ordering: queue → dispatcher → scheduler → maybe_trigger_first_run_backfill (after scheduler so polling job is registered first)
 
 ### Pending Todos
 
 - ✅ Phase 5 Plan 01 (event foundation + schema migration) — COMPLETE
-- Phase 5 Plan 02 — poll service + RATE-04 view_count handler + backfill on first deploy
+- ✅ Phase 5 Plan 02 (poll service + RATE-04 view_count handler + auto-backfill + Resync now) — COMPLETE
 - Phase 5 Plan 03 — anthropic_client.py with prompt caching + taste profile builder + RATE-05 LLM summary
 - Phase 5 Plan 04 — wizard UI (3-candidate detection), `/debug/events`, ollama_client deletion
 - Confirm Docker-network webhook URL during Phase 5 Plan 04 wizard build (`http://composer:8085/api/webhooks/plex` on `synobridge`)
@@ -154,6 +162,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-05-09T17:30:00.000Z
-Stopped at: Phase 5 Plan 01 complete — orchestrator should spawn Plan 02
-Resume file: .planning/phases/05-plex-event-foundation-rating-sync/05-02-PLAN.md
+Last session: 2026-05-09T20:00:00.000Z
+Stopped at: Phase 5 Plan 02 complete — orchestrator should spawn Plan 03
+Resume file: .planning/phases/05-plex-event-foundation-rating-sync/05-03-PLAN.md
