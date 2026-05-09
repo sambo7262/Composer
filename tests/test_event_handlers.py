@@ -109,6 +109,89 @@ class TestHandleRatingChanged:
         _run_async(handle_rating_changed(evt))
 
 
+class TestHandleTrackPlayed:
+    """Tests for handle_track_played (Phase 5 Plan 02 — view_count + last_viewed_at)."""
+
+    def test_handle_track_played(self, db_with_phase5):
+        """TrackPlayed event increments Track.view_count and updates last_viewed_at."""
+        from app.models.events import TrackPlayedEvent
+        from app.models.track import Track
+        from app.services.event_handlers import handle_track_played
+        from app.database import get_engine
+
+        # Pre-populate: track with view_count=3 and last_viewed_at=None
+        track = Track(
+            plex_rating_key="42",
+            title="X",
+            artist="Y",
+            view_count=3,
+            last_viewed_at=None,
+        )
+        db_with_phase5.add(track)
+        db_with_phase5.commit()
+
+        evt = TrackPlayedEvent(
+            plex_rating_key="42",
+            last_viewed_at="2026-05-08T12:00:00+00:00",
+            source="webhook",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        _run_async(handle_track_played(evt))
+
+        with Session(get_engine()) as fresh:
+            updated = fresh.exec(
+                select(Track).where(Track.plex_rating_key == "42")
+            ).first()
+            assert updated is not None
+            assert updated.view_count == 4
+            assert updated.last_viewed_at == "2026-05-08T12:00:00+00:00"
+
+    def test_handle_track_played_first_play(self, db_with_phase5):
+        """TrackPlayed on a track with view_count=0 increments to 1."""
+        from app.models.events import TrackPlayedEvent
+        from app.models.track import Track
+        from app.services.event_handlers import handle_track_played
+        from app.database import get_engine
+
+        track = Track(
+            plex_rating_key="43",
+            title="X",
+            artist="Y",
+            view_count=0,
+        )
+        db_with_phase5.add(track)
+        db_with_phase5.commit()
+
+        evt = TrackPlayedEvent(
+            plex_rating_key="43",
+            last_viewed_at="2026-05-08T13:00:00+00:00",
+            source="webhook",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+        _run_async(handle_track_played(evt))
+
+        with Session(get_engine()) as fresh:
+            updated = fresh.exec(
+                select(Track).where(Track.plex_rating_key == "43")
+            ).first()
+            assert updated.view_count == 1
+
+    def test_handle_track_played_unknown_track_is_noop(self, db_with_phase5):
+        """TrackPlayed for unknown ratingKey logs and exits cleanly (no crash)."""
+        from app.models.events import TrackPlayedEvent
+        from app.services.event_handlers import handle_track_played
+
+        evt = TrackPlayedEvent(
+            plex_rating_key="9999999",
+            last_viewed_at="2026-05-08T13:00:00+00:00",
+            source="webhook",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+        # Must not raise
+        _run_async(handle_track_played(evt))
+
+
 class TestDispatchEvent:
     def test_dispatch_event_inserts_event_log(self, db_with_phase5):
         """dispatch_event inserts an EventLog row with processed_at set after handler."""

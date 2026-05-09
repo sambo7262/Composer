@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -181,3 +181,74 @@ class TestMapTrackFilePath:
 
         result = _map_track(mock_track)
         assert result["file_path"] is None
+
+
+class TestMapTrackPhase5Fields:
+    """Tests for the Phase 5 additions to _map_track output (D-15)."""
+
+    def test_map_track_extracts_user_rating(self):
+        """_map_track returns user_rating, last_viewed_at, view_count from PlexAPI track."""
+        from app.services.plex_client import _map_track
+
+        # Build a fully-populated mock with the 3 new attrs
+        last_viewed = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
+        mock_track = MagicMock()
+        mock_track.ratingKey = 555
+        mock_track.title = "Star Track"
+        mock_track.grandparentTitle = "Artist"
+        mock_track.parentTitle = "Album"
+        mock_track.genres = []
+        mock_track.year = 2024
+        mock_track.duration = 200000
+        mock_track.addedAt = None
+        mock_track.updatedAt = None
+        mock_track.media = []
+        mock_track.userRating = 7.0
+        mock_track.lastViewedAt = last_viewed
+        mock_track.viewCount = 12
+
+        result = _map_track(mock_track)
+
+        assert result["user_rating"] == 7.0
+        assert result["last_viewed_at"] == "2026-05-08T12:00:00+00:00"
+        assert result["view_count"] == 12
+
+    def test_map_track_handles_missing_phase5_fields(self):
+        """When PlexAPI track lacks userRating/lastViewedAt/viewCount, defaults apply.
+
+        Pitfall 5: PlexAPI partial responses can omit these attributes entirely.
+        Defaults: user_rating=None, last_viewed_at=None, view_count=0.
+        """
+        from app.services.plex_client import _map_track
+
+        # Use spec to limit attributes — userRating/lastViewedAt/viewCount won't exist
+        mock_track = MagicMock(
+            spec=[
+                "ratingKey",
+                "title",
+                "grandparentTitle",
+                "parentTitle",
+                "genres",
+                "year",
+                "duration",
+                "addedAt",
+                "updatedAt",
+                "media",
+            ]
+        )
+        mock_track.ratingKey = 556
+        mock_track.title = "Unrated"
+        mock_track.grandparentTitle = "Artist"
+        mock_track.parentTitle = "Album"
+        mock_track.genres = []
+        mock_track.year = 2024
+        mock_track.duration = 200000
+        mock_track.addedAt = None
+        mock_track.updatedAt = None
+        mock_track.media = []
+
+        result = _map_track(mock_track)
+
+        assert result["user_rating"] is None
+        assert result["last_viewed_at"] is None
+        assert result["view_count"] == 0
