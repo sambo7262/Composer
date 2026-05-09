@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -16,6 +17,7 @@ from app.routers import (
     api_chat,
     api_health,
     api_library,
+    api_rating_sync,
     api_settings,
     api_sync,
     api_webhooks,
@@ -35,7 +37,9 @@ async def lifespan(app: FastAPI):
     2. get_encryptor() — generate encryption key on first startup.
     3. get_event_bus() — ensure asyncio.Queue exists.
     4. start_dispatcher() — start consumer BEFORE any producer (scheduler/webhooks).
-    5. start_scheduler() — APScheduler may register a poll job that publishes events.
+    5. start_scheduler() — APScheduler registers library_sync + plex_polling jobs.
+    6. maybe_trigger_first_run_backfill() — fires once if Phase 5 just deployed
+       onto a populated DB whose user_rating column is still NULL across the board.
     """
     init_db()
     get_encryptor()
@@ -43,6 +47,11 @@ async def lifespan(app: FastAPI):
     get_event_bus()
     await start_dispatcher()
     await start_scheduler()
+    # Phase 5 (D-10 / Pitfall 7): auto-trigger backfill if we have tracks but
+    # nothing is rated — classic "first deploy onto an existing v1 library".
+    from app.services.backfill_service import maybe_trigger_first_run_backfill
+
+    asyncio.create_task(maybe_trigger_first_run_backfill())
     yield
     await stop_scheduler()
     await stop_dispatcher()
@@ -60,4 +69,5 @@ app.include_router(api_library.router)
 app.include_router(api_settings.router)
 app.include_router(api_sync.router)
 app.include_router(api_webhooks.router)  # Phase 5
+app.include_router(api_rating_sync.router)  # Phase 5
 app.include_router(pages.router)
