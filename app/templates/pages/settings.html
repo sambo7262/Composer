@@ -5,6 +5,15 @@
 {% block content %}
 <h1 class="text-[22px] font-semibold mb-6">Settings</h1>
 
+<!-- Phase 5 Concern 1: Library at a glance — above service cards (ROADMAP SC-5) -->
+<div hx-get="/api/library/stats"
+     hx-trigger="load"
+     hx-target="this"
+     hx-swap="innerHTML"
+     class="mb-6">
+  <p class="text-[13px] text-text-secondary">Loading library stats…</p>
+</div>
+
 <div class="flex flex-col gap-4">
   {% with service="plex", heading="Plex Server", description="Connect to your Plex Media Server to access your music library.", configured=plex_configured, enabled=True, setting=plex_setting, sync_interval=sync_interval %}
     {% include "partials/service_card.html" %}
@@ -18,4 +27,30 @@
     {% include "partials/service_card.html" %}
   {% endwith %}
 </div>
+
+<!-- Phase 5: Plex webhook configuration (EVT-07 / D-12 / D-14) -->
+<div class="mt-6">
+  <h2 class="text-[20px] font-semibold text-text-primary mb-3">Plex Webhooks</h2>
+  <div hx-get="/api/settings/webhook/section"
+       hx-trigger="load"
+       hx-target="this"
+       hx-swap="innerHTML">
+    <p class="text-[13px] text-text-secondary">Loading webhook configuration…</p>
+  </div>
+</div>
+
+<!-- Phase 5: Resync now button (EVT-05) -->
+<div class="mt-6">
+  <h2 class="text-[20px] font-semibold text-text-primary mb-3">Rating Sync</h2>
+  <div hx-get="/api/rating-sync/status" hx-trigger="load" hx-target="this" hx-swap="innerHTML">
+    <p class="text-[13px] text-text-secondary">Loading…</p>
+  </div>
+</div>
+
+<!-- Phase 5: D-22 diagnostics footer link -->
+<footer class="mt-12 pt-6 border-t border-border">
+  <a href="/debug/events" class="text-[13px] text-text-secondary hover:text-accent">
+    View diagnostics →
+  </a>
+</footer>
 {% endblock %}

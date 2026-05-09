@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Diagnostics — Events{% endblock %}
+{% block content %}
+<!-- Phase 5 Concern 1: Library-at-a-glance header (ROADMAP SC-5) -->
+<div hx-get="/api/library/stats"
+     hx-trigger="load"
+     hx-target="this"
+     hx-swap="innerHTML"
+     class="mb-4">
+  <p class="text-[12px] text-text-secondary">Loading stats…</p>
+</div>
+
+<div class="space-y-6 pb-12">
+  <header>
+    <h1 class="text-[28px] font-semibold text-text-primary">Event Pipeline Diagnostics</h1>
+    <p class="text-text-secondary text-[13px] mt-1">
+      For diagnostics only. Visible to anyone reachable on this URL — Composer assumes Tailscale-only access.
+    </p>
+  </header>
+
+  <section>
+    <h2 class="text-[18px] font-semibold mb-2">Configured</h2>
+    <dl class="grid grid-cols-[160px_1fr] gap-y-1 text-[13px]">
+      <dt class="text-text-secondary">Webhook URL</dt>
+      <dd class="font-mono break-all">{{ webhook_url or "not configured" }}</dd>
+      <dt class="text-text-secondary">Poll interval</dt>
+      <dd>{{ poll_info.interval_minutes }}m
+        {% if poll_info.next_run %}(next run: {{ poll_info.next_run }}){% endif %}
+      </dd>
+      <dt class="text-text-secondary">Last poll</dt>
+      <dd>
+        {% if poll_info.last_completed %}{{ poll_info.last_completed }} — {{ poll_info.last_changes }} changes seen
+        {% else %}—{% endif %}
+        {% if poll_info.error %}<span class="text-error">· error: {{ poll_info.error }}</span>{% endif %}
+      </dd>
+      <dt class="text-text-secondary">Queue depth</dt>
+      <dd>{{ queue_depth }} events pending</dd>
+      <dt class="text-text-secondary">Last test</dt>
+      <dd>
+        {% if last_test_received_at %}{{ last_test_received_at }}
+          <details class="mt-1">
+            <summary class="cursor-pointer text-text-secondary text-[12px]">payload preview</summary>
+            <pre class="text-[12px] overflow-x-auto bg-surface-elevated p-2 mt-1">{{ (last_test_payload | tojson(indent=2))[:200] }}</pre>
+          </details>
+        {% else %}no test received yet{% endif %}
+      </dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2 class="text-[18px] font-semibold mb-2">Last 50 events</h2>
+    <table class="w-full text-[12px] font-mono">
+      <thead class="text-text-secondary">
+        <tr>
+          <th class="text-left p-1">received_at</th>
+          <th class="text-left p-1">src</th>
+          <th class="text-left p-1">type</th>
+          <th class="text-left p-1">ratingKey</th>
+          <th class="text-left p-1">processed</th>
+          <th class="text-left p-1">error / dedupe_key</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if events %}
+          {% for e in events %}
+          <tr class="{% if e.handler_error %}bg-error/5{% endif %} border-t border-border">
+            <td class="p-1 align-top">{{ e.received_at }}</td>
+            <td class="p-1 align-top">{{ e.source }}</td>
+            <td class="p-1 align-top">{{ e.event_type }}</td>
+            <td class="p-1 align-top">{{ e.plex_rating_key or "—" }}</td>
+            <td class="p-1 align-top">{{ e.processed_at or "—" }}</td>
+            <td class="p-1 align-top">
+              {% if e.handler_error %}<span class="text-error">{{ e.handler_error[:120] }}</span>
+              {% else %}<span class="text-text-secondary text-[10px]">{{ e.dedupe_key[:16] }}…</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr><td colspan="6" class="text-text-secondary p-2">No events yet.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </section>
+</div>
+{% endblock %}

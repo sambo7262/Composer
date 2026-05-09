@@ -8,9 +8,14 @@ from fastapi.responses import HTMLResponse
 from sqlmodel import Session, select, func, col
 
 from app.database import get_session
+from app.models.event_log import EventLog
 from app.models.track import Track
+from app.routers import api_webhooks
 from app.services.analysis_service import get_analysis_status
+from app.services.event_bus import get_event_bus
+from app.services.poll_service import get_poll_status
 from app.services.settings_service import get_setting, is_service_configured
+from app.services.sync_scheduler import get_scheduler
 from app.services.sync_service import get_last_sync_info, get_sync_status
 
 router = APIRouter(tags=["pages"])
@@ -138,5 +143,52 @@ async def library_page(request: Request, session: Session = Depends(get_session)
             "analysis_state": analysis_status.state.value,
             "analyzed_count": analyzed_count,
             "unanalyzed_count": unanalyzed_count,
+        },
+    )
+
+
+@router.get("/debug/events", response_class=HTMLResponse)
+async def debug_events(request: Request, session: Session = Depends(get_session)):
+    """DEBUG-01 / D-21: list last 50 EventLog rows + queue depth + poll info
+    + last test event + configured webhook URL.
+
+    Plain HTML, screenshot-readable. No auth — Composer assumes Tailscale-only
+    access (T-05-21). The page header explicitly warns about this.
+    """
+    templates = get_templates()
+    rows = session.exec(
+        select(EventLog).order_by(col(EventLog.received_at).desc()).limit(50)
+    ).all()
+    queue = get_event_bus()
+    queue_depth = queue.qsize()
+    scheduler = get_scheduler()
+    poll_job = scheduler.get_job("plex_polling") if scheduler else None
+    poll_status = get_poll_status()
+    poll_info = {
+        "interval_minutes": 5,
+        "next_run": (
+            poll_job.next_run_time.isoformat()
+            if poll_job and poll_job.next_run_time
+            else None
+        ),
+        "last_completed": poll_status.last_completed,
+        "last_changes": poll_status.last_changes_seen,
+        "error": poll_status.error,
+    }
+    last_test_received_at = api_webhooks._last_test_received_at
+    last_test_payload = api_webhooks._last_test_payload
+    webhook_setting = get_setting(session, "webhook")
+    webhook_url = webhook_setting.url if webhook_setting else None
+    return templates.TemplateResponse(
+        request,
+        "pages/debug_events.html",
+        {
+            "active_page": "debug_events",
+            "events": rows,
+            "queue_depth": queue_depth,
+            "poll_info": poll_info,
+            "last_test_received_at": last_test_received_at,
+            "last_test_payload": last_test_payload,
+            "webhook_url": webhook_url,
         },
     )
