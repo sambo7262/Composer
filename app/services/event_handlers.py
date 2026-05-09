@@ -157,7 +157,7 @@ def _update_track_play_sync(rating_key: str, last_viewed_at: str) -> None:
 # -----------------------------------------------------------------------------
 
 async def handle_rating_changed(event: RatingChangedEvent) -> None:
-    """RATE-03: update Track.user_rating + rating_changed_at."""
+    """RATE-03: update Track.user_rating + rating_changed_at; D-18: maybe recompute taste profile."""
     if event.plex_rating_key is None:
         logger.warning("RatingChangedEvent without ratingKey; skipping")
         return
@@ -167,6 +167,19 @@ async def handle_rating_changed(event: RatingChangedEvent) -> None:
         event.new_rating,
         datetime.now(timezone.utc).isoformat(),
     )
+    # Phase 5 D-18: Trigger taste profile recompute if rated set changed by >=10%.
+    # Lazy import avoids a circular-dep risk via anthropic_client → settings_service → ...
+    # Best-effort: never let recompute failure break the rating-update path.
+    try:
+        from app.services.taste_profile_service import (
+            maybe_recompute_after_rating_change,
+        )
+
+        await maybe_recompute_after_rating_change()
+    except Exception:
+        logger.exception(
+            "Taste profile recompute hook failed; rating update succeeded"
+        )
 
 
 async def handle_track_played(event: TrackPlayedEvent) -> None:
