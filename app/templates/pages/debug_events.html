@@ -23,16 +23,22 @@
     <dl class="grid grid-cols-[160px_1fr] gap-y-1 text-[13px]">
       <dt class="text-text-secondary">Webhook URL</dt>
       <dd class="font-mono break-all">{{ webhook_url or "not configured" }}</dd>
-      <dt class="text-text-secondary">Poll interval</dt>
-      <dd>{{ poll_info.interval_minutes }}m
-        {% if poll_info.next_run %}(next run: {{ poll_info.next_run }}){% endif %}
+      <dt class="text-text-secondary">Polling</dt>
+      <dd>
+        {% if poll_info.enabled %}
+          enabled · {{ poll_info.interval_minutes }}m{% if poll_info.next_run %} (next run: {{ poll_info.next_run }}){% endif %}
+        {% else %}
+          <span class="text-text-secondary">disabled — webhooks + nightly library sync handle reconciliation</span>
+        {% endif %}
       </dd>
+      {% if poll_info.enabled %}
       <dt class="text-text-secondary">Last poll</dt>
       <dd>
         {% if poll_info.last_completed %}{{ poll_info.last_completed }} — {{ poll_info.last_changes }} changes seen
         {% else %}—{% endif %}
         {% if poll_info.error %}<span class="text-error">· error: {{ poll_info.error }}</span>{% endif %}
       </dd>
+      {% endif %}
       <dt class="text-text-secondary">Queue depth</dt>
       <dd>{{ queue_depth }} events pending</dd>
       <dt class="text-text-secondary">Last test</dt>

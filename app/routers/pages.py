@@ -165,15 +165,16 @@ async def debug_events(request: Request, session: Session = Depends(get_session)
     poll_job = scheduler.get_job("plex_polling") if scheduler else None
     poll_status = get_poll_status()
     poll_info = {
+        "enabled": poll_job is not None,
         "interval_minutes": 5,
         "next_run": (
             poll_job.next_run_time.isoformat()
             if poll_job and poll_job.next_run_time
             else None
         ),
-        "last_completed": poll_status.last_completed,
-        "last_changes": poll_status.last_changes_seen,
-        "error": poll_status.error,
+        "last_completed": poll_status.last_completed if poll_job else None,
+        "last_changes": poll_status.last_changes_seen if poll_job else 0,
+        "error": poll_status.error if poll_job else None,
     }
     last_test_received_at = api_webhooks._last_test_received_at
     last_test_payload = api_webhooks._last_test_payload

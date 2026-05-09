@@ -81,6 +81,20 @@ def _check_needs_backfill_sync() -> bool:
         return any_rated is None
 
 
+def _count_tracks_in_db_sync() -> int:
+    """Count Track rows in the local DB.
+
+    Used as the backfill denominator. PlexAPI's section.totalSize on a music
+    library returns the artist count (not track count), so we can't trust the
+    Plex-side total. The local DB row count is the population we're actually
+    backfilling against.
+    """
+    from sqlalchemy import func
+    with Session(get_engine()) as session:
+        result = session.exec(select(func.count()).select_from(Track)).one()
+        return int(result if isinstance(result, int) else result[0])
+
+
 def _upsert_rating_fields_sync(track_dicts: list) -> int:
     """Update user_rating + last_viewed_at + view_count on existing tracks.
 
@@ -154,23 +168,25 @@ async def run_backfill() -> None:
             if not (url and token and library_id):
                 raise ValueError("Plex URL/token/library_id missing")
 
+        # Use local DB track count as the denominator (NOT section.totalSize —
+        # that returns the artist count for Plex music libraries, leading to
+        # nonsensical "X of Y" display when X >> Y).
+        total = await asyncio.to_thread(_count_tracks_in_db_sync)
+        _backfill_status.total_tracks = total
+        logger.info("Backfill started: %d tracks in local DB", total)
+
         batch_size = 200
         offset = 0
-        total: Optional[int] = None
         backfilled = 0
 
         while True:
-            batch, batch_total = await get_library_tracks(
+            batch, _ = await get_library_tracks(
                 url,
                 token,
                 library_id,
                 container_start=offset,
                 container_size=batch_size,
             )
-            if total is None:
-                total = batch_total
-                _backfill_status.total_tracks = total
-                logger.info("Backfill started: %d total tracks", total)
 
             count = await asyncio.to_thread(_upsert_rating_fields_sync, batch)
             backfilled += count
@@ -179,14 +195,17 @@ async def run_backfill() -> None:
             # Yield control so HTMX banner status endpoint stays responsive
             await asyncio.sleep(0)
 
-            if len(batch) < batch_size or (total is not None and offset + len(batch) >= total):
+            # Plex music sections often return all tracks in one call ignoring
+            # container_size; break when we got a short page OR when we've
+            # processed at least the whole DB population.
+            if len(batch) < batch_size or backfilled >= total:
                 break
             offset += batch_size
 
         _backfill_status.state = BackfillStateEnum.COMPLETED
         _backfill_status.last_completed = datetime.now(timezone.utc).isoformat()
         logger.info(
-            "Backfill completed: %d / %d tracks", backfilled, total or 0
+            "Backfill completed: %d / %d tracks", backfilled, total
         )
     except Exception as exc:
         _backfill_status.state = BackfillStateEnum.FAILED

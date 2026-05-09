@@ -89,12 +89,14 @@ async def start_scheduler() -> None:
 
     # Load sync interval from settings
     interval_hours = 24  # default
+    polling_enabled = False  # Phase 5: opt-in only — webhooks are the primary path
     try:
         engine = get_engine()
         with Session(engine) as session:
             setting = get_setting(session, "plex")
             if setting and setting.extra_config:
                 interval_hours = setting.extra_config.get("sync_interval_hours", 24)
+                polling_enabled = bool(setting.extra_config.get("plex_polling_enabled", False))
 
             # Schedule recurring sync
             schedule_sync(interval_hours)
@@ -111,14 +113,18 @@ async def start_scheduler() -> None:
 
                 asyncio.create_task(_delayed_auto_sync())
 
-        # Phase 5 (D-08, EVT-03): register the Plex polling job alongside library_sync.
-        # 5-minute default interval; bounded queries inside run_poll guard against load.
-        schedule_polling(interval_minutes=5)
+        # Phase 5 polling is OPT-IN. Set plex_polling_enabled=true in Plex extra_config
+        # to enable the 5-min poll job. Default OFF — webhooks (Plex Pass) are the primary
+        # event source, and the recurring library_sync at `interval_hours` covers reconciliation.
+        if polling_enabled:
+            schedule_polling(interval_minutes=5)
+            logger.info("Plex polling enabled (5min interval)")
+        else:
+            logger.info("Plex polling disabled (webhooks + nightly library_sync handle reconciliation)")
     except Exception:
         # Schedule with default even if settings load fails
         schedule_sync(interval_hours)
-        # Polling is additive — register it even if settings load failed.
-        schedule_polling(interval_minutes=5)
+        # Polling stays opt-in even on error path.
         logger.exception("Error loading sync settings, using default %dh interval", interval_hours)
 
 
