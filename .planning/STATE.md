@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: — Music Companion
-status: Roadmap drafted; awaiting plan-phase for Phase 5
-stopped_at: Phase 5 context gathered
-last_updated: "2026-05-08T21:35:38.134Z"
-last_activity: 2026-05-08 — v2.0 roadmap created (Phases 5–8 active, Phase 9 optional)
+status: executing
+stopped_at: "Phase 5 Plan 01 complete"
+last_updated: "2026-05-09T17:30:00.000Z"
+last_activity: 2026-05-09 -- Phase 05 Plan 01 (event foundation + schema migration) shipped
 progress:
-  total_phases: 4
+  total_phases: 5
   completed_phases: 4
-  total_plans: 12
-  completed_plans: 12
-  percent: 100
+  total_plans: 16
+  completed_plans: 13
+  percent: 81
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-08)
 
 **Core value:** Your Plex stars are the truth. Composer turns them into living vibe playlists and a steady stream of personalized discoveries — without you having to describe a vibe each time.
-**Current focus:** v2.0 Music Companion roadmap drafted; Phase 5 (Plex Event Foundation + Rating Sync) is next up.
+**Current focus:** Phase 05 — Plex Event Foundation + Rating Sync
 
 ## Current Position
 
-Phase: **5 — Plex Event Foundation + Rating Sync (next up)**
-Plan: —
-Status: Roadmap drafted; awaiting plan-phase for Phase 5
-Last activity: 2026-05-08 — v2.0 roadmap created (Phases 5–8 active, Phase 9 optional)
+Phase: 05 (Plex Event Foundation + Rating Sync) — EXECUTING
+Plan: 2 of 4 (Plan 01 ✅ complete)
+Status: Plan 01 shipped — event foundation + schema in place; ready for Plan 02
+Last activity: 2026-05-09 -- Phase 05 Plan 01 complete (3 commits, 50 tests green, 0 regressions)
 
 ### v2.0 Phase Snapshot
 
@@ -75,6 +75,7 @@ Last activity: 2026-05-08 — v2.0 roadmap created (Phases 5–8 active, Phase 9
 | Phase 04 P01 | 4min | 2 tasks | 9 files |
 | Phase 04-playlist-generation P02 | 3min | 2 tasks | 5 files |
 | Phase 04 P03 | 5min | 2 tasks | 8 files |
+| Phase 05 P01 | ~2h | 3 tasks | 21 files |
 
 ## Accumulated Context
 
@@ -127,11 +128,22 @@ Recent decisions affecting current work:
 - [Phase 04-02]: Track ID validation filters LLM-hallucinated IDs before playlist assembly (T-04-03)
 - [Phase 04-03]: Alpine.js Sort plugin loaded via CDN before Alpine core per plugin convention
 - [Phase 04-03]: Push-to-Plex uses batch fetchItems with comma-separated ratingKeys (avoids N+1)
+- [Phase 05-01]: EventLog UNIQUE(dedupe_key) + INSERT OR IGNORE — race-free dedupe; never SELECT-then-INSERT
+- [Phase 05-01]: dedupe_key = sha256(event_type|ratingKey|user_rating|5s_bucket) — webhook+poll overlap resolves naturally
+- [Phase 05-01]: Track.user_rating stored RAW 0-10 from Plex; conversion to "X.X stars" only at display via stars_from_user_rating()
+- [Phase 05-01]: Single asyncio.Queue + one dispatcher task started in lifespan (queue→dispatcher→scheduler order); NOT FastAPI Depends()
+- [Phase 05-01]: stop_dispatcher resets _queue to None — prevents cross-loop "Future attached to a different loop" between TestClient sessions
+- [Phase 05-01]: All PlexAPI calls in async paths route through asyncio.to_thread; enforced by AST static test (test_no_blocking_plexapi_in_async)
+- [Phase 05-01]: Webhook handler uses Annotated[str, Form()] + json.loads (NEVER pydantic.Json[Model] — FastAPI bug #10997); ALWAYS returns 200 (Plex retries non-2xx)
+- [Phase 05-01]: if/elif on event.type used in dispatch_event instead of match (Python 3.9 venv parse compat; functionally identical for discriminator-only routing)
 
 ### Pending Todos
 
-- Phase 5 plan-phase decomposition (DB migration shim → EventLog table → webhook router → poll service → rating sync service → settings UI for webhook URL → home-page rated-track count)
-- Confirm Docker-network webhook URL during Phase 5 wizard build (`http://composer:8085/api/webhooks/plex` on `synobridge`)
+- ✅ Phase 5 Plan 01 (event foundation + schema migration) — COMPLETE
+- Phase 5 Plan 02 — poll service + RATE-04 view_count handler + backfill on first deploy
+- Phase 5 Plan 03 — anthropic_client.py with prompt caching + taste profile builder + RATE-05 LLM summary
+- Phase 5 Plan 04 — wizard UI (3-candidate detection), `/debug/events`, ollama_client deletion
+- Confirm Docker-network webhook URL during Phase 5 Plan 04 wizard build (`http://composer:8085/api/webhooks/plex` on `synobridge`)
 - Light spike at Phase 8 planning to confirm pyarr 6.6 `add_artist()` signature, MusicBrainz adjacency query rate limits, Last.fm vs MusicBrainz as candidate source
 
 ### Blockers/Concerns
@@ -142,6 +154,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-05-08T21:35:38.122Z
-Stopped at: Phase 5 context gathered
-Resume file: .planning/phases/05-plex-event-foundation-rating-sync/05-CONTEXT.md
+Last session: 2026-05-09T17:30:00.000Z
+Stopped at: Phase 5 Plan 01 complete — orchestrator should spawn Plan 02
+Resume file: .planning/phases/05-plex-event-foundation-rating-sync/05-02-PLAN.md

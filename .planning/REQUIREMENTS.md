@@ -66,22 +66,22 @@ Pivots Composer from one-shot mood-to-playlist into a continuous companion built
 
 The foundation for everything else. Without reliable, deduplicated event streams from Plex, the rest of v2.0 cannot react to ratings, plays, or library additions.
 
-- [ ] **EVT-01**: Composer exposes a `POST /api/webhooks/plex` endpoint that accepts Plex Pass webhooks (multipart/form-data with JSON `payload` field), returns 200 in <50ms, and pushes a typed event onto the internal event bus
-- [ ] **EVT-02**: Webhook handler dedupes events via an `EventLog` table with a `UNIQUE` constraint on `dedupe_key = sha256(event_type|ratingKey|user_rating|5s_timestamp_bucket)`; duplicates are dropped silently
+- [x] **EVT-01**: Composer exposes a `POST /api/webhooks/plex` endpoint that accepts Plex Pass webhooks (multipart/form-data with JSON `payload` field), returns 200 in <50ms, and pushes a typed event onto the internal event bus *(Phase 5 Plan 01)*
+- [x] **EVT-02**: Webhook handler dedupes events via an `EventLog` table with a `UNIQUE` constraint on `dedupe_key = sha256(event_type|ratingKey|user_rating|5s_timestamp_bucket)`; duplicates are dropped silently *(Phase 5 Plan 01)*
 - [ ] **EVT-03**: APScheduler-based polling job runs every 5 minutes (configurable) to detect rating, play, and library changes — emits the same typed events through the same event bus, dedupe handles webhook+poll overlap
-- [ ] **EVT-04**: Single asyncio dispatcher task consumes the event bus and serializes downstream handlers to avoid SQLite write contention
+- [x] **EVT-04**: Single asyncio dispatcher task consumes the event bus and serializes downstream handlers to avoid SQLite write contention *(Phase 5 Plan 01)*
 - [ ] **EVT-05**: User can manually trigger a "Resync now" full event scan from the UI (settings or vibes home)
-- [ ] **EVT-06**: PlexAPI calls inside event handlers run via `asyncio.to_thread()` so the FastAPI event loop is never blocked
+- [x] **EVT-06**: PlexAPI calls inside event handlers run via `asyncio.to_thread()` so the FastAPI event loop is never blocked *(Phase 5 Plan 01 — enforced by AST static test)*
 - [ ] **EVT-07**: Setup wizard displays the user's webhook URL with a copy button, auto-detecting the accessible hostname/port; "test webhook" flow shows ✓ when Plex's test event is received
 
 ### Rating Sync
 
 Rated tracks are the taste signal. Composer reads `userRating` from Plex on every relevant event; never writes ratings.
 
-- [ ] **RATE-01**: `Track` model extended with `user_rating` field (Plex's 0–10 scale stored raw; conversion to 0–5 stars happens only at display boundaries)
+- [x] **RATE-01**: `Track` model extended with `user_rating` field (Plex's 0–10 scale stored raw; conversion to 0–5 stars happens only at display boundaries) *(Phase 5 Plan 01 — `app/services/rating_helpers.stars_from_user_rating`)*
 - [ ] **RATE-02**: Initial library sync (and full Resync) populates `user_rating` for every track
-- [ ] **RATE-03**: `media.rate` webhook events (and rating diffs found by polling) update `user_rating` in real time and emit a `RatingChanged` event for downstream slotting
-- [ ] **RATE-04**: A "rated set" is exposed as a derived view — `Track.user_rating > 0` — with an index on the field for fast queries
+- [x] **RATE-03**: `media.rate` webhook events (and rating diffs found by polling) update `user_rating` in real time and emit a `RatingChanged` event for downstream slotting *(Phase 5 Plan 01 — `handle_rating_changed`)*
+- [x] **RATE-04**: A "rated set" is exposed as a derived view — `Track.user_rating > 0` — with an index on the field for fast queries *(Phase 5 Plan 01 — `ix_track_user_rating` index)*
 - [ ] **RATE-05**: A taste profile (centroid features + top artists/genres + rated-set summary text suitable for Anthropic prompt caching) is computed and cached; recomputes on user-triggered re-cluster or when the rated set changes by ≥10%
 
 ### Vibe Curation
@@ -166,10 +166,10 @@ Cross-cutting debug surfaces. Every v2 phase ships at least one `/debug/{service
 
 Schema migrations, observability, and the cost-control machinery the rest of v2.0 leans on.
 
-- [ ] **OPS-01**: Schema migrations extend the existing `_migrate_add_columns()` shim in `app/database.py` for additive changes; new tables use `create_all()` — no Alembic introduced
+- [x] **OPS-01**: Schema migrations extend the existing `_migrate_add_columns()` shim in `app/database.py` for additive changes; new tables use `create_all()` — no Alembic introduced *(Phase 5 Plan 01 — 4 Track cols + 3 new tables + 2 indexes)*
 - [ ] **OPS-02**: Anthropic SDK migration — `anthropic>=0.100,<1.0` replaces the v1 direct-httpx wrapper; existing chat service code is removed alongside chat UI retirement
-- [ ] **OPS-03**: `pyarr` pin bumped from `>=5.2,<6.0` to `>=6.6,<7.0` (required for current Lidarr endpoints in DISC-05/06)
-- [ ] **OPS-04**: `scikit-learn>=1.8,<2.0` added for k-means + silhouette in vibe clustering
+- [x] **OPS-03**: `pyarr` pin bumped from `>=5.2,<6.0` to `>=6.6,<7.0` (required for current Lidarr endpoints in DISC-05/06) *(Phase 5 Plan 01 — requirements.txt)*
+- [x] **OPS-04**: `scikit-learn>=1.8,<2.0` added for k-means + silhouette in vibe clustering *(Phase 5 Plan 01 — requirements.txt)*
 - [ ] **OPS-05**: LLM usage logged per call (model, input tokens, cache_creation_input_tokens, cache_read_input_tokens, output tokens, cost estimate); daily aggregate exposed on settings page so cost surprises are visible
 - [ ] **OPS-06**: Existing v1-generated Plex playlists in user's library are recognized as legacy (no `Composer ·` prefix in `ManagedPlaylist`) and explicitly NOT touched
 
