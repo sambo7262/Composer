@@ -1,0 +1,24 @@
+<div id="library-stats-card"
+     hx-get="/api/library/stats"
+     hx-trigger="load, every 10s"
+     hx-target="#library-stats-card"
+     hx-swap="outerHTML"
+     class="mb-6 p-4 rounded-lg border border-border bg-surface-primary">
+  <h2 class="text-[15px] font-semibold text-text-primary mb-3">Library at a glance</h2>
+  <dl class="grid grid-cols-3 gap-4 text-[13px]">
+    <div>
+      <dt class="text-text-secondary">Total tracks</dt>
+      <dd class="text-text-primary text-[20px] font-semibold mt-1">{{ total_tracks }}</dd>
+    </div>
+    <div>
+      <dt class="text-text-secondary">Rated tracks</dt>
+      <dd class="text-text-primary text-[20px] font-semibold mt-1">{{ rated_tracks }}</dd>
+    </div>
+    <div>
+      <dt class="text-text-secondary">Last rating event</dt>
+      <dd class="text-text-primary text-[13px] font-mono mt-1">
+        {% if last_rating_event_at %}{{ last_rating_event_at }}{% else %}—{% endif %}
+      </dd>
+    </div>
+  </dl>
+</div>

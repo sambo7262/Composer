@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse
 from sqlmodel import Session, or_, select, func, col
 
 from app.database import get_session
+from app.models.event_log import EventLog
 from app.models.track import Track
 
 router = APIRouter(prefix="/api/library", tags=["library"])
@@ -114,4 +115,41 @@ async def get_tracks(
         request,
         "partials/track_table.html",
         context,
+    )
+
+
+@router.get("/stats", response_class=HTMLResponse)
+async def library_stats(request: Request, session: Session = Depends(get_session)):
+    """Library-at-a-glance partial (Concern 1 / ROADMAP Phase 5 SC-5).
+
+    Returns total_tracks, rated_tracks, last_rating_event_at as a small HTMX
+    partial. Polled every 10s by both /settings and /debug/events so the rated
+    count visibly increments as media.rate webhooks arrive.
+
+    Aggregates run in <1ms on SQLite even for 10k-row tables — no caching.
+    Track.user_rating > 0 uses the ix_track_user_rating index landed in Plan 01
+    (RATE-04).
+    """
+    templates = get_templates()
+    total_tracks = session.exec(select(func.count(Track.id))).one() or 0
+    rated_tracks = (
+        session.exec(
+            select(func.count(Track.id)).where(Track.user_rating > 0)  # type: ignore[arg-type]
+        ).one()
+        or 0
+    )
+    last_event = session.exec(
+        select(EventLog.received_at)
+        .where(EventLog.event_type == "rating_changed")
+        .order_by(col(EventLog.received_at).desc())
+        .limit(1)
+    ).first()
+    return templates.TemplateResponse(
+        request,
+        "partials/library_stats.html",
+        {
+            "total_tracks": total_tracks,
+            "rated_tracks": rated_tracks,
+            "last_rating_event_at": last_event,
+        },
     )
