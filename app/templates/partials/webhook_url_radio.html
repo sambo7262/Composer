@@ -1,0 +1,47 @@
+<form id="webhook-url-form"
+      hx-post="/api/settings/webhook/save"
+      hx-target="#webhook-url-form"
+      hx-swap="outerHTML"
+      class="space-y-3">
+  <h3 class="text-[15px] font-semibold text-text-primary">Configure Plex webhook URL</h3>
+  <p class="text-[13px] text-text-secondary">
+    Pick whichever URL Plex can reach Composer at. Click "Test" then trigger Plex's test webhook —
+    the indicator turns green when an event arrives within 60s.
+  </p>
+  {% if saved %}
+    <div class="p-2 rounded bg-success/10 border border-success/30 text-success text-[13px]">
+      &#10003; Webhook URL saved.
+    </div>
+  {% endif %}
+  {% for cand in candidates %}
+  <label class="flex items-start gap-3 p-3 rounded-lg border border-border bg-surface-primary
+                hover:bg-surface-elevated cursor-pointer">
+    <input type="radio" name="webhook_url" value="{{ cand.url }}"
+           class="mt-1"
+           {% if selected_url and selected_url == cand.url %}checked{% endif %}>
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center justify-between gap-2 flex-wrap">
+        <span class="text-text-primary text-[14px] font-medium">{{ cand.label }}</span>
+        <button type="button"
+                hx-post="/api/webhooks/plex/test-arm"
+                hx-target="#webhook-test-indicator-{{ loop.index }}"
+                hx-swap="outerHTML"
+                class="text-[13px] bg-accent hover:bg-accent-hover text-surface-primary
+                       font-medium px-3 py-1 rounded">
+          Test webhook
+        </button>
+      </div>
+      <code class="text-[12px] font-mono break-all text-text-secondary block mt-1">{{ cand.url }}</code>
+      <div id="webhook-test-indicator-{{ loop.index }}" class="mt-2"></div>
+    </div>
+  </label>
+  {% else %}
+  <p class="text-[13px] text-warning">No webhook URL candidates detected. Configure manually below.</p>
+  <input type="text" name="webhook_url" placeholder="http://your-host:8085/api/webhooks/plex"
+         class="w-full px-3 py-2 rounded border border-border bg-surface-primary text-[14px]">
+  {% endfor %}
+  <button type="submit"
+          class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-4 py-2 rounded-lg">
+    Save selected URL
+  </button>
+</form>

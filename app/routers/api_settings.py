@@ -15,6 +15,7 @@ from app.services.settings_service import (
     save_setting,
 )
 from app.services.sync_scheduler import update_sync_schedule
+from app.services.webhook_url_detection import get_webhook_url_candidates
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -273,6 +274,57 @@ async def get_settings_status(session: Session = Depends(get_session)):
     """Return all service statuses. No credentials in response."""
     settings = get_all_settings(session)
     return [s.dict() for s in settings]
+
+
+# --- Phase 5: Webhook configuration endpoints (EVT-07 / D-12 / D-14) ---
+
+
+@router.get("/webhook/section", response_class=HTMLResponse)
+async def webhook_section(request: Request, session: Session = Depends(get_session)):
+    """Render the webhook radio form for the settings page.
+
+    HTMX-loaded via ``hx-trigger="load"`` so candidate detection runs on
+    every page render (the user may switch networks).
+    """
+    templates = get_templates()
+    candidates = get_webhook_url_candidates(request, port=8085)
+    existing = get_setting(session, "webhook")
+    return templates.TemplateResponse(
+        request,
+        "partials/webhook_url_radio.html",
+        {
+            "candidates": candidates,
+            "selected_url": existing.url if existing else None,
+            "saved": False,
+        },
+    )
+
+
+@router.post("/webhook/save", response_class=HTMLResponse)
+async def webhook_save(
+    request: Request,
+    webhook_url: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    """Persist the user-selected webhook URL to ServiceConfig with
+    service_name='webhook' (D-14)."""
+    templates = get_templates()
+    # T-05-22: webhook_url is consumed only for display; Composer never makes
+    # outbound requests to it, so no SSRF risk. Single-user app — submitter IS
+    # the user. Defensive scheme check still helps catch typos.
+    if not (webhook_url.startswith("http://") or webhook_url.startswith("https://")):
+        webhook_url = f"http://{webhook_url}"
+    save_setting(session, "webhook", webhook_url, "")
+    candidates = get_webhook_url_candidates(request, port=8085)
+    return templates.TemplateResponse(
+        request,
+        "partials/webhook_url_radio.html",
+        {
+            "candidates": candidates,
+            "selected_url": webhook_url,
+            "saved": True,
+        },
+    )
 
 
 # --- Reconfigure endpoints ---

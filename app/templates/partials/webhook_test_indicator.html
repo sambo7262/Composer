@@ -1,0 +1,17 @@
+<div id="webhook-test-indicator"
+     hx-get="/api/webhooks/plex/last-test?since={{ test_armed_at }}"
+     hx-trigger="every 2s"
+     hx-target="#webhook-test-indicator"
+     hx-swap="outerHTML"
+     class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm
+            {% if last_test_received_at and last_test_received_at > test_armed_at %}
+              bg-success/10 text-success border border-success/30
+            {% else %}
+              bg-surface-elevated text-text-secondary
+            {% endif %}">
+  {% if last_test_received_at and last_test_received_at > test_armed_at %}
+    &#10003; Webhook test received at {{ last_test_received_at }}
+  {% else %}
+    &#9203; Waiting for test event&hellip; (paste URL into Plex Web → Account → Webhooks, then send test)
+  {% endif %}
+</div>

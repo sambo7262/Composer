@@ -30,7 +30,12 @@ from app.models.events import (
     WebhookTestEvent,
 )
 from app.services.event_bus import get_event_bus
-from app.services.webhook_test_state import disarm_test, is_test_armed
+from app.services.webhook_test_state import (
+    arm_test,
+    disarm_test,
+    get_armed_at_iso,
+    is_test_armed,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
@@ -140,28 +145,40 @@ async def plex_webhook(
     return Response(status_code=200)
 
 
+@router.post("/plex/test-arm", response_class=HTMLResponse)
+async def arm_test_webhook(request: Request):
+    """Wizard's 'Test webhook' button arms the receiver to treat the next inbound
+    event as the test event (Pitfall 6).
+
+    Returns the indicator partial in the 'waiting' state (HTMX swaps it in
+    place of the per-candidate placeholder div).
+    """
+    arm_test()
+    templates = get_templates()
+    return templates.TemplateResponse(
+        request,
+        "partials/webhook_test_indicator.html",
+        {
+            "test_armed_at": get_armed_at_iso() or "",
+            "last_test_received_at": _last_test_received_at,
+        },
+    )
+
+
 @router.get("/plex/last-test", response_class=HTMLResponse)
 async def last_test_event(request: Request, since: Optional[str] = None):
     """HTMX-polled by the wizard. Returns the test-indicator partial.
 
-    Plan 04 will refactor to a dedicated `partials/webhook_test_indicator.html`.
-    For Plan 01, returns an inline HTML partial the wizard can target by id.
+    The partial self-polls every 2s. The ``since`` query param is the timestamp
+    of when the wizard armed test mode — the partial flips to ✓ only when a
+    test event has arrived strictly AFTER ``since``.
     """
-    if _last_test_received_at and (since is None or _last_test_received_at > since):
-        return HTMLResponse(
-            content=(
-                f'<div id="webhook-test-indicator" class="text-success">'
-                f"&#10003; Webhook test received at {_last_test_received_at}"
-                f"</div>"
-            )
-        )
-    return HTMLResponse(
-        content=(
-            '<div id="webhook-test-indicator" '
-            'hx-get="/api/webhooks/plex/last-test" '
-            'hx-trigger="every 2s" '
-            'hx-target="#webhook-test-indicator" '
-            'hx-swap="outerHTML" '
-            'class="text-text-secondary">&#9203; Waiting for test event&hellip;</div>'
-        )
+    templates = get_templates()
+    return templates.TemplateResponse(
+        request,
+        "partials/webhook_test_indicator.html",
+        {
+            "test_armed_at": since or get_armed_at_iso() or "",
+            "last_test_received_at": _last_test_received_at,
+        },
     )
