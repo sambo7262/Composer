@@ -134,6 +134,56 @@ class TestTrackModel:
         assert "danceability" in indexed_columns
         assert "valence" in indexed_columns
 
+    def test_user_rating_indexed(self, db_with_tracks):
+        """RATE-04: user_rating column has a database index for the rated-set view."""
+        from app.models.track import Track  # noqa: F401
+
+        inspector = inspect(db_with_tracks.get_bind())
+        indexes = inspector.get_indexes("track")
+        indexed_columns = set()
+        for idx in indexes:
+            for col in idx["column_names"]:
+                indexed_columns.add(col)
+
+        assert "user_rating" in indexed_columns
+
+    def test_phase5_track_columns_exist(self, db_with_tracks):
+        """Phase 5 (D-15): user_rating, last_viewed_at, view_count, rating_changed_at."""
+        from app.models.track import Track
+
+        track = Track(plex_rating_key="55555", title="P5", artist="Test")
+        db_with_tracks.add(track)
+        db_with_tracks.commit()
+        db_with_tracks.refresh(track)
+
+        # All Phase 5 fields default to None / 0
+        assert track.user_rating is None
+        assert track.last_viewed_at is None
+        assert track.view_count == 0
+        assert track.rating_changed_at is None
+
+    def test_phase5_track_columns_round_trip(self, db_with_tracks):
+        """Phase 5 columns store values correctly. Raw 0-10 user_rating per Pitfall 2."""
+        from app.models.track import Track
+
+        track = Track(
+            plex_rating_key="66666",
+            title="Rated",
+            artist="Test",
+            user_rating=7.0,  # raw 0-10
+            last_viewed_at="2026-05-08T12:00:00+00:00",
+            view_count=5,
+            rating_changed_at="2026-05-08T12:00:00+00:00",
+        )
+        db_with_tracks.add(track)
+        db_with_tracks.commit()
+        db_with_tracks.refresh(track)
+
+        assert track.user_rating == 7.0
+        assert track.last_viewed_at == "2026-05-08T12:00:00+00:00"
+        assert track.view_count == 5
+        assert track.rating_changed_at == "2026-05-08T12:00:00+00:00"
+
     def test_track_with_audio_features(self, db_with_tracks):
         """Track model stores audio feature values correctly."""
         from app.models.track import Track
