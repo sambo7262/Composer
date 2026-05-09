@@ -117,7 +117,50 @@ A self-hosted web app that generates mood-based playlists from your personal mus
 <!-- GSD:conventions-start source:CONVENTIONS.md -->
 ## Conventions
 
-Conventions not yet established. Will populate as patterns emerge during development.
+### Phase 5 Conventions (Plex Event Foundation)
+
+These conventions were locked in Phase 5 Plan 01 and apply to every later plan
+that touches the event pipeline, Plex integration, or async DB code.
+
+1. **PlexAPI calls are sync — wrap in `asyncio.to_thread`** (D-09 / Pitfall 4).
+   Every PlexAPI call from any `async def` function MUST run via
+   `asyncio.to_thread(...)`. Webhook receivers using `def handler` (not
+   `async def`) automatically dispatch to FastAPI's threadpool. The static AST
+   test `tests/test_event_handlers.py::test_no_blocking_plexapi_in_async`
+   enforces this in `app/services/event_handlers.py`.
+
+2. **Pydantic event types** (D-06): event classes use the `*Event` suffix
+   (`RatingChangedEvent`, `TrackPlayedEvent`, etc.) and a Literal `type`
+   discriminator field. Place in `app/models/events.py`. Pure pydantic — NOT
+   SQLModel `table=True`. Dispatch on `event.type` in
+   `app/services/event_handlers.py::dispatch_event`.
+
+3. **Module-level singletons** for new services follow the
+   `_state` + `get_state()` pattern (mirroring `sync_service`,
+   `analysis_service`, `event_bus`). Reset via test fixtures with
+   `autouse=True`. Public accessor is always `get_<name>()`.
+
+4. **Multipart Form parsing** (D-05): use `Annotated[str, Form()]` +
+   `json.loads()` to parse JSON bodies inside multipart. NEVER use
+   `pydantic.Json[Model]` inside `Form()` — FastAPI bug #10997 silently
+   coerces it wrong. The webhook handler always returns 200, even on parse
+   failure (Pitfall 1 — Plex retries on non-2xx).
+
+5. **userRating is raw 0-10** (D-15 / Pitfall 2): Plex stores ratings on a
+   0-10 scale to support half-stars. Persist the RAW value in SQLite. Convert
+   to display-string ("3.5 stars") ONLY at display boundaries via
+   `app/services/rating_helpers.stars_from_user_rating()`.
+
+6. **EventLog dedupe** (D-07): all event-bus events get an `INSERT OR IGNORE`
+   on `EventLog.dedupe_key` (UNIQUE constraint at the DB layer). Dedupe key is
+   `sha256(event_type|ratingKey|user_rating|5s_bucket)`. Race-free; no
+   SELECT-then-INSERT.
+
+7. **Event bus lifecycle** (D-06): one `asyncio.Queue` + one
+   `asyncio.create_task(_dispatch_loop())` per process. Started in `lifespan`
+   BEFORE the scheduler (so any poll job can publish on startup). Cancelled
+   and awaited on shutdown. Singleton — never per-request `Depends()`.
+
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->

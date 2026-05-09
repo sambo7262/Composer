@@ -11,19 +11,41 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.database import init_db
-from app.routers import api_analysis, api_chat, api_health, api_library, api_settings, api_sync, pages
+from app.routers import (
+    api_analysis,
+    api_chat,
+    api_health,
+    api_library,
+    api_settings,
+    api_sync,
+    api_webhooks,
+    pages,
+)
 from app.services.encryption import get_encryptor
+from app.services.event_bus import get_event_bus, start_dispatcher, stop_dispatcher
 from app.services.sync_scheduler import start_scheduler, stop_scheduler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: initialize database, encryption key, and sync scheduler. Shutdown: cleanup."""
+    """Startup: initialize database, encryption key, event bus + dispatcher, sync scheduler.
+
+    Order matters (Phase 5):
+    1. init_db() — schema + migrations.
+    2. get_encryptor() — generate encryption key on first startup.
+    3. get_event_bus() — ensure asyncio.Queue exists.
+    4. start_dispatcher() — start consumer BEFORE any producer (scheduler/webhooks).
+    5. start_scheduler() — APScheduler may register a poll job that publishes events.
+    """
     init_db()
-    get_encryptor()  # Generate encryption key on first startup
+    get_encryptor()
+    # Phase 5: queue → dispatcher → scheduler order is mandatory.
+    get_event_bus()
+    await start_dispatcher()
     await start_scheduler()
     yield
     await stop_scheduler()
+    await stop_dispatcher()
 
 
 app = FastAPI(title="Composer", lifespan=lifespan)
@@ -37,4 +59,5 @@ app.include_router(api_health.router)
 app.include_router(api_library.router)
 app.include_router(api_settings.router)
 app.include_router(api_sync.router)
+app.include_router(api_webhooks.router)  # Phase 5
 app.include_router(pages.router)
