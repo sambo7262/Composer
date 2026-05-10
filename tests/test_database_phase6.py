@@ -425,3 +425,29 @@ def test_setup_state_recluster_mode_migration_on_legacy_db(test_engine):
         assert val == 0, f"recluster_mode default should be 0; got {val!r}"
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.1 Test: MigrationLog table created after init_db (Blocker #4 — uses
+# autouse tmp_data_dir fixture; NO monkeypatch.setenv).
+# ---------------------------------------------------------------------------
+def test_migrationlog_table_created_after_init_db(test_engine):
+    """Phase 6.1 D-NEW-09 — init_db creates the migrationlog table with the
+    expected columns (phase_id PK, completed_at NULL).
+    """
+    # Register all Phase 6 + 6.1 models so create_all picks up MigrationLog.
+    from app.models.vibe import (  # noqa: F401
+        Vibe, TrackVibe, ManagedPlaylist, SetupState, SlotInLog, MigrationLog,
+    )
+    SQLModel.metadata.create_all(test_engine)
+
+    # Inspect schema directly via SQLAlchemy.
+    from sqlalchemy import inspect as sa_inspect
+    insp = sa_inspect(test_engine)
+    tables = insp.get_table_names()
+    assert "migrationlog" in tables, (
+        f"migrationlog table missing after create_all; got {tables}"
+    )
+    cols = {c["name"] for c in insp.get_columns("migrationlog")}
+    assert "phase_id" in cols, f"phase_id column missing; got {cols}"
+    assert "completed_at" in cols, f"completed_at column missing; got {cols}"
