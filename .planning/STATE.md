@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: — Music Companion
-status: executing
-stopped_at: "Phase 5 Plan 03 complete"
-last_updated: "2026-05-09T21:00:00.000Z"
-last_activity: 2026-05-09 -- Phase 05 Plan 03 (anthropic_client + taste_profile_service + recompute hook) shipped
+status: Plan 03 shipped — AnthropicClient v2 + TasteProfileService + recompute hook all wired; ready for Plan 04 (FINAL — wizard UI, /debug/events, ollama deletion)
+stopped_at: "Phase 5 Plan 03 complete — orchestrator should spawn Plan 04 (FINAL — wizard UI + /debug/events + ollama deletion; has visual checkpoint, autonomous: false)"
+last_updated: "2026-05-10T01:02:34.412Z"
+last_activity: 2026-05-10
 progress:
-  total_phases: 5
+  total_phases: 4
   completed_phases: 4
-  total_plans: 16
-  completed_plans: 15
-  percent: 94
+  total_plans: 12
+  completed_plans: 12
+  percent: 100
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-05-08)
 
 ## Current Position
 
-Phase: 05 (Plex Event Foundation + Rating Sync) — EXECUTING
-Plan: 4 of 4 (Plans 01–03 ✅ complete)
+Phase: 5
+Plan: Not started
 Status: Plan 03 shipped — AnthropicClient v2 + TasteProfileService + recompute hook all wired; ready for Plan 04 (FINAL — wizard UI, /debug/events, ollama deletion)
-Last activity: 2026-05-09 -- Phase 05 Plan 03 complete (3 commits, 11 new tests green, 0 regressions)
+Last activity: 2026-05-10
 
 ### v2.0 Phase Snapshot
 
@@ -44,7 +44,7 @@ Last activity: 2026-05-09 -- Phase 05 Plan 03 complete (3 commits, 11 new tests 
 
 **Velocity (v1.0 — shipped):**
 
-- Total plans completed: 12
+- Total plans completed: 16
 - Phases completed: 4 of 4 (v1.0)
 - Total v1.0 execution time: ~57 min across plans (logged below)
 
@@ -56,6 +56,7 @@ Last activity: 2026-05-09 -- Phase 05 Plan 03 complete (3 commits, 11 new tests 
 | 2 | 3 | ~20min | ~6.7min |
 | 3 | 3 | ~11min | ~3.7min |
 | 4 | 3 | ~12min | ~4.0min |
+| 5 | 4 | - | - |
 
 **Recent Trend:**
 

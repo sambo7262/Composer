@@ -72,7 +72,7 @@ The foundation for everything else. Without reliable, deduplicated event streams
 - [x] **EVT-04**: Single asyncio dispatcher task consumes the event bus and serializes downstream handlers to avoid SQLite write contention *(Phase 5 Plan 01)*
 - [x] **EVT-05**: User can manually trigger a "Resync now" full event scan from the UI (settings or vibes home) *(Phase 5 Plan 02 — POST /api/rating-sync/start + `partials/backfill_banner.html`; Plan 04 will surface the button on the settings page)*
 - [x] **EVT-06**: PlexAPI calls inside event handlers run via `asyncio.to_thread()` so the FastAPI event loop is never blocked *(Phase 5 Plan 01 — enforced by AST static test)*
-- [ ] **EVT-07**: Setup wizard displays the user's webhook URL with a copy button, auto-detecting the accessible hostname/port; "test webhook" flow shows ✓ when Plex's test event is received
+- [x] **EVT-07**: Setup wizard displays the user's webhook URL with a copy button, auto-detecting the accessible hostname/port; "test webhook" flow shows ✓ when Plex's test event is received *(Phase 5 Plan 04 — 3-candidate radio: Docker hostname / NAS LAN IP / Tailscale 100.x; user-validated against real Plex on 2026-05-09)*
 
 ### Rating Sync
 
@@ -156,7 +156,7 @@ Every new v2 surface is portrait-first; v1 chat retires; legacy screens get a re
 
 Cross-cutting debug surfaces. Every v2 phase ships at least one `/debug/{service}` HTML page that exposes recent activity, current state, and last errors in copy-pasteable form — so when something looks wrong, the user can grab a snapshot from the browser and share it without poking around in logs or SQLite. No auth needed (Tailscale-only access).
 
-- [ ] **DEBUG-01** (Phase 5): `/debug/events` page lists last 50 events received (webhook + poll), each with timestamp, source, dedupe_key, payload preview, processed_at, and any handler error. Also shows current poll interval, last poll result, last webhook test ✓/✗.
+- [x] **DEBUG-01** (Phase 5): `/debug/events` page lists last 50 events received (webhook + poll), each with timestamp, source, dedupe_key, payload preview, processed_at, and any handler error. Also shows current poll interval, last poll result, last webhook test ✓/✗. *(Phase 5 Plan 04 — `/debug/events` route + library-at-a-glance header + queue depth + "Polling disabled" surfacing when opt-in flag off)*
 - [ ] **DEBUG-02** (Phase 6): `/debug/vibes` page shows each vibe's centroid features, member count, silhouette score, last-clustered-at, and the last 20 slot-in decisions (track → vibe(s) with computed distance). Includes a "Re-show wizard cluster proposal" button that displays the last LLM cluster-naming response.
 - [ ] **DEBUG-03** (Phase 7): `/debug/suggestions` page shows current queue contents (track + vibe + score + rationale), last 20 refill triggers (event source, candidates evaluated, picks made, latency), recent skip-tracking signals, and current circuit-breaker state. Also shows last 20 LLM calls with model, prompt-cache hit/miss, tokens, cost.
 - [ ] **DEBUG-04** (Phase 8): `/debug/discovery` page shows last candidate set (with provenance per artist), recent MusicBrainz queries with rate-limit headers, recent Lidarr `add_artist` requests + responses, and the Lidarr connection-test result history.
@@ -264,10 +264,10 @@ Maps requirements to phases. Filled during roadmap creation; updated as phases c
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| EVT-01..07 (7 reqs) | Phase 5 | Partial — EVT-01/02/03/04/05/06 complete (Plans 01–02); EVT-07 pending Plan 04 |
+| EVT-01..07 (7 reqs) | Phase 5 | Complete (Plans 01–04) |
 | RATE-01..05 (5 reqs) | Phase 5 | Complete — RATE-01/02/03/04 (Plans 01–02); RATE-05 (Plan 03) |
 | OPS-01..04 (4 reqs) | Phase 5 | Complete — OPS-01/03/04 (Plan 01); OPS-02 (Plan 03) |
-| DEBUG-01 (1 req) | Phase 5 | Pending (`/debug/events` page — Plan 04) |
+| DEBUG-01 (1 req) | Phase 5 | Complete (Plan 04) |
 | VIBE-01..12 (12 reqs) | Phase 6 | Pending |
 | WIZ-01..07 (7 reqs) | Phase 6 | Pending |
 | DEBUG-02 (1 req) | Phase 6 | Pending (`/debug/vibes` page) |
