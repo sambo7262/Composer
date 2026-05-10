@@ -21,17 +21,18 @@ Composer's roadmap spans two milestones. **v1.0 (Phases 1–4)** shipped a self-
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-### Milestone v1.0 — Mood-to-Playlist (shipped)
+#### Milestone v1.0 — Mood-to-Playlist (shipped)
 
 - [x] **Phase 1: Foundation, Configuration & Deployment** — Docker container, CI/CD to Docker Hub, settings page, security patterns, Plex connection (completed 2026-04-09)
 - [x] **Phase 2: Library Sync** — Full Plex music library synced to local SQLite with delta updates (completed 2026-04-09)
 - [x] **Phase 3: Audio Feature Extraction** — Essentia analyzes local audio files for energy, tempo, danceability, valence (completed 2026-04-09)
 - [x] **Phase 4: Playlist Generation** — Mood-to-playlist pipeline: natural language in, curated playlist out, pushed to Plex (completed 2026-04-10) *(retiring in v2.0; capabilities absorbed into vibe + suggestions model)*
 
-### Milestone v2.0 — Music Companion (active)
+#### Milestone v2.0 — Music Companion (active)
 
 - [x] **Phase 5: Plex Event Foundation + Rating Sync** — Composer reliably ingests Plex webhook + polling events, dedupes them, and propagates RatingChanged end-to-end (completed 2026-05-10)
 - [ ] **Phase 6: Vibe Clustering + Setup Wizard** — User completes first-run wizard and ends with 3–7 named vibe playlists in Plex, populated from rated set, auto-slotting newly-rated tracks
+- [ ] **Phase 6.1: Vibe Wizard Foundations: server-led clustering + user-led vibe input** (INSERTED) — Server-led membership from k-means labels + user-typed vibe names replace LLM-led seed-picking; ensures all rated tracks land in a vibe playlist
 - [ ] **Phase 7: Suggestions Queue + v1 Chat Retirement** — Continuous Composer · Suggestions playlist drains as the user listens and refills with taste-aware picks; v1 mood-chat retires; vibes home becomes the new landing page
 - [ ] **Phase 8: Lidarr Discovery + Polish** — Taste-aware artist discovery with one-click add to Lidarr; auto-ingest of new arrivals; legacy screens responsive on mobile
 - [ ] **Phase 9 (OPTIONAL): Feed the Engine** — Bulk rating, play-rated nudge, Surprise Me; cuttable without affecting any other phase
@@ -172,6 +173,16 @@ Plans:
   - **Wizard state in SQLite, not cookies** (WIZ-02): step 2 produces ~50KB of cluster proposals — server-side `SetupState` row.
   - **Alpine morph for HTMX swaps** (Pitfall 15): wizard partials use `hx-ext="alpine-morph"` from the first template; document the convention project-wide.
   - **Debug surface for vibes** (DEBUG-02): `/debug/vibes` HTML page shows each vibe's centroid features, member count, silhouette score, last-clustered-at, and the last 20 slot-in decisions (track → vibe(s) with computed distance). "Re-show last cluster proposal" button surfaces the LLM naming response. Critical when slot-in produces a surprising assignment.
+
+### Phase 06.1: Vibe Wizard Foundations: server-led clustering + user-led vibe input (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 6
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 06.1 to break down)
 
 ### Phase 7: Suggestions Queue + v1 Chat Retirement
 **Goal**: User has a continuous `Composer · Suggestions` Plex playlist that drains as they listen and refills with taste-aware picks within 30 seconds; v1 mood-chat is retired; vibes home is the new landing page

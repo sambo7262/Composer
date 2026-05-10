@@ -4,13 +4,13 @@ milestone: v2.0
 milestone_name: — Music Companion
 status: executing
 stopped_at: Phase 6 UI-SPEC approved
-last_updated: "2026-05-10T03:06:57.588Z"
+last_updated: "2026-05-10T21:24:34.631Z"
 last_activity: 2026-05-10 -- Phase 6 planning complete
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 12
-  completed_plans: 12
+  total_phases: 9
+  completed_phases: 6
+  total_plans: 20
+  completed_plans: 20
   percent: 100
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-08)
 
 **Core value:** Your Plex stars are the truth. Composer turns them into living vibe playlists and a steady stream of personalized discoveries — without you having to describe a vibe each time.
-**Current focus:** Phase 05 — Plex Event Foundation + Rating Sync
+**Current focus:** Phase 6.1 — Vibe Wizard Foundations (urgent insertion after Phase 6 UAT)
 
 ## Current Position
 
-Phase: 5
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-05-10 -- Phase 6 planning complete
+Phase: 6.1
+Plan: Not yet planned
+Status: Ready to discuss/plan
+Last activity: 2026-05-10 -- Phase 6 UAT exposed foundational gaps; inserted Phase 6.1
 
 ### v2.0 Phase Snapshot
 
@@ -81,6 +81,10 @@ Last activity: 2026-05-10 -- Phase 6 planning complete
 | Phase 05 P03 | ~1h | 3 tasks | 5 files |
 
 ## Accumulated Context
+
+### Roadmap Evolution
+
+- Phase 6.1 inserted after Phase 6 (URGENT — 2026-05-10): Vibe Wizard Foundations: server-led clustering + user-led vibe input. Phase 6 UAT exposed three foundational gaps — k-means labels unused for membership (~10 tracks per playlist out of 600 rated), empty song lists in cards (sparse seed_track_indices), LLM-first UX wastes compute. 6.1 server-leads track membership and replaces Step 3 with user-typed vibe names.
 
 ### Decisions
 
