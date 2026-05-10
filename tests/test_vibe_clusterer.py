@@ -1,33 +1,41 @@
-"""Phase 6 D-33: sklearn allowlist test (extends Phase 5 ``test_no_sklearn_import``).
+"""Phase 6 Plan 02 vibe_clusterer tests + Plan 01 sklearn allowlist tripwire.
 
-Phase 5 forbade sklearn in ``taste_profile_service.py`` specifically. Phase 6
-broadens the rule:
+The Plan 01 AST allowlist test (``test_sklearn_only_in_clusterer_module``) is
+preserved verbatim — Plan 02 adds ``from sklearn.cluster import KMeans`` and
+``from sklearn.metrics import silhouette_score`` to ``vibe_clusterer.py``,
+which the allowlist permits. Any sklearn leak into another service file fails
+the test (D-33).
 
-    sklearn imports are allowed ONLY in files matching one of:
-      - ``vibe_clusterer.py``
-      - ``clustering*.py``
-      - ``clusterer*.py``
-
-This test scans the whole ``app/services/`` tree and fails if sklearn appears
-outside the allowlist. Plan 02 will create ``vibe_clusterer.py`` with sklearn
-imports — this test must already exist and pass before that import is added;
-it is the gate that prevents accidental sklearn leakage into other service
-files (taste_profile_service, event_handlers, anthropic_client, etc.).
-
-Today (Plan 01), no service file imports sklearn at all. This test passes
-trivially. Add a sklearn import to any non-allowlist file and the test trips
-red — that's the whole point.
+Plan 02 adds 8 behavioral tests covering:
+- Cold-start gate (n_rated < 30 → degraded_mode, no LLM call) — Pitfall 3 / D-10.
+- Silhouette-optimal k pick — Pitfall 3 / VIBE-05.
+- forced_k override — D-13.
+- Z-score normalization (tempo's [60,180] vs others' [0,1]) — D-05.
+- Out-of-range seed_track_indices retry-once-then-raise — Pitfall 10 / D-03.
+- purpose= flag on AnthropicClient call (initial / refine / recluster) — D-34.
+- materialize_clusters fills centroid + spread + silhouette per proposal.
 """
 from __future__ import annotations
 
 import ast
 import re
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Generator
+from unittest.mock import AsyncMock, MagicMock
+
+import numpy as np
+import pytest
+from sqlmodel import Session, SQLModel, select
+
 
 SERVICES_DIR = Path(__file__).parent.parent / "app" / "services"
 ALLOWLIST_RE = re.compile(r"^(vibe_clusterer\.py|clustering.*\.py|clusterer.*\.py)$")
 
 
+# ---------------------------------------------------------------------------
+# Plan 01 AST allowlist test — preserved verbatim.
+# ---------------------------------------------------------------------------
 def test_sklearn_only_in_clusterer_module():
     """Every app/services/*.py file is sklearn-free unless it's on the allowlist."""
     violations: list[str] = []
@@ -48,3 +56,360 @@ def test_sklearn_only_in_clusterer_module():
         "sklearn imports outside vibe_clusterer.py allowlist:\n"
         + "\n".join(violations)
     )
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 behavioral tests — fixtures
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def db_with_phase6(test_engine) -> Generator[Session, None, None]:
+    """Create all Phase 5 + Phase 6 tables and yield a session.
+
+    Mirrors tests/test_database_phase6.py::db_with_phase6 (Plan 01 fixture).
+    """
+    from app.models.settings import ServiceConfig  # noqa: F401
+    from app.models.track import SyncState, Track  # noqa: F401
+    from app.models.event_log import EventLog  # noqa: F401
+    from app.models.llm_usage import LLMUsage  # noqa: F401
+    from app.models.taste_profile import TasteProfile  # noqa: F401
+
+    # Phase 6
+    from app.models.vibe import (  # noqa: F401
+        ManagedPlaylist,
+        SetupState,
+        TrackVibe,
+        Vibe,
+    )
+
+    SQLModel.metadata.create_all(test_engine)
+    with Session(test_engine) as session:
+        yield session
+    SQLModel.metadata.drop_all(test_engine)
+
+
+def _seed_tracks(session: Session, count: int, *, well_separated: bool = False) -> None:
+    """Seed `count` rated tracks. If well_separated, build 3 Gaussian-separated clusters."""
+    from app.models.track import Track
+
+    rng = np.random.RandomState(42)
+    if well_separated and count >= 30:
+        # Build 3 well-separated 4-D clusters of count//3 points each.
+        per = count // 3
+        centers = np.array(
+            [
+                [0.20, 80.0, 0.20, 0.20],   # low-energy slow chill
+                [0.80, 140.0, 0.70, 0.70],  # high-energy fast happy
+                [0.50, 110.0, 0.50, 0.50],  # mid-energy mid-tempo neutral
+            ]
+        )
+        scales = np.array([0.05, 5.0, 0.05, 0.05])
+        i = 0
+        for c_idx, center in enumerate(centers):
+            for _ in range(per):
+                pt = center + rng.randn(4) * scales
+                session.add(
+                    Track(
+                        plex_rating_key=f"clu-{c_idx}-{i}",
+                        title=f"Track {i}",
+                        artist=f"Artist {c_idx}",
+                        album="A",
+                        user_rating=8.0,
+                        energy=float(np.clip(pt[0], 0.0, 1.0)),
+                        tempo=float(np.clip(pt[1], 60.0, 180.0)),
+                        danceability=float(np.clip(pt[2], 0.0, 1.0)),
+                        valence=float(np.clip(pt[3], 0.0, 1.0)),
+                    )
+                )
+                i += 1
+        # Fill remainder with random points (count - 3*per)
+        for j in range(i, count):
+            session.add(
+                Track(
+                    plex_rating_key=f"rem-{j}",
+                    title=f"Track {j}",
+                    artist="ArtistR",
+                    album="A",
+                    user_rating=8.0,
+                    energy=float(rng.uniform(0.0, 1.0)),
+                    tempo=float(rng.uniform(60.0, 180.0)),
+                    danceability=float(rng.uniform(0.0, 1.0)),
+                    valence=float(rng.uniform(0.0, 1.0)),
+                )
+            )
+    else:
+        for j in range(count):
+            session.add(
+                Track(
+                    plex_rating_key=f"t-{j}",
+                    title=f"Track {j}",
+                    artist=f"Artist {j % 4}",
+                    album="A",
+                    user_rating=8.0,
+                    energy=float(rng.uniform(0.0, 1.0)),
+                    tempo=float(rng.uniform(60.0, 180.0)),
+                    danceability=float(rng.uniform(0.0, 1.0)),
+                    valence=float(rng.uniform(0.0, 1.0)),
+                )
+            )
+    session.commit()
+
+
+def _make_proposal_set(n_proposals: int, n_rated: int):
+    """Build a canned VibeProposalSet with valid integer indices."""
+    from app.services.vibe_clusterer import VibeProposal, VibeProposalSet
+
+    proposals = []
+    chunk = max(1, n_rated // n_proposals)
+    for i in range(n_proposals):
+        start = i * chunk
+        end = min(n_rated, start + chunk)
+        proposals.append(
+            VibeProposal(
+                name=f"Vibe {i+1}",
+                description=f"Description {i+1}",
+                action="new",
+                source_vibe_ids=[],
+                seed_track_indices=list(range(start, end)),
+            )
+        )
+    return VibeProposalSet(
+        proposals=proposals,
+        rated_track_count=n_rated,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 2: degraded mode below n_rated < 30
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_initial_proposal_returns_degraded_mode_below_30(db_with_phase6, monkeypatch):
+    """n_rated=25 → degraded_mode=True, single Your Taste proposal, no LLM call."""
+    _seed_tracks(db_with_phase6, 25)
+
+    fake_factory = MagicMock()
+    fake_factory.call_with_structured_output = AsyncMock()
+    monkeypatch.setattr(
+        "app.services.vibe_clusterer.get_anthropic_client_v2",
+        lambda s: fake_factory,
+    )
+
+    from app.services.vibe_clusterer import initial_cluster_proposal
+
+    result = await initial_cluster_proposal()
+
+    assert result.degraded_mode is True
+    assert len(result.proposals) == 1
+    assert result.proposals[0].name == "Your Taste"
+    assert result.proposals[0].action == "new"
+    # All 25 indices land in the single proposal.
+    assert len(result.proposals[0].seed_track_indices) == 25
+    assert result.proposals[0].seed_track_indices == list(range(25))
+    assert result.silhouette_avg is None
+    # LLM was NEVER called.
+    assert fake_factory.call_with_structured_output.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 3: silhouette-optimal k pick on 60 well-separated points
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_initial_proposal_picks_silhouette_optimal_k(db_with_phase6, monkeypatch):
+    """60 well-separated 3-cluster points → 3 proposals, sil ≥ 0.25, degraded=False."""
+    _seed_tracks(db_with_phase6, 60, well_separated=True)
+
+    canned = _make_proposal_set(3, 60)
+    fake_client = MagicMock()
+    fake_client.call_with_structured_output = AsyncMock(return_value=canned)
+    monkeypatch.setattr(
+        "app.services.vibe_clusterer.get_anthropic_client_v2",
+        lambda s: fake_client,
+    )
+
+    from app.services.vibe_clusterer import initial_cluster_proposal
+
+    result = await initial_cluster_proposal()
+
+    assert len(result.proposals) == 3
+    assert result.degraded_mode is False
+    assert result.silhouette_avg is not None
+    assert result.silhouette_avg >= 0.25
+    assert result.forced_k is None
+    fake_client.call_with_structured_output.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Test 4: forced_k override
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_initial_proposal_honors_forced_k(db_with_phase6, monkeypatch):
+    """forced_k=5 → k-means runs at k=5; LLM returns 5 proposals; result.forced_k == 5."""
+    _seed_tracks(db_with_phase6, 60, well_separated=True)
+
+    canned = _make_proposal_set(5, 60)
+    fake_client = MagicMock()
+    fake_client.call_with_structured_output = AsyncMock(return_value=canned)
+    monkeypatch.setattr(
+        "app.services.vibe_clusterer.get_anthropic_client_v2",
+        lambda s: fake_client,
+    )
+
+    from app.services.vibe_clusterer import initial_cluster_proposal
+
+    result = await initial_cluster_proposal(forced_k=5)
+
+    assert result.forced_k == 5
+    assert len(result.proposals) == 5
+    fake_client.call_with_structured_output.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Test 5: z-score normalization helper
+# ---------------------------------------------------------------------------
+def test_initial_proposal_zscore_normalizes_tempo():
+    """Per-dimension mean ≈ 0, std ≈ 1 after _z_score_normalize."""
+    from app.services.vibe_clusterer import _z_score_normalize
+
+    rng = np.random.RandomState(7)
+    n = 100
+    matrix = np.column_stack(
+        [
+            rng.uniform(0.0, 1.0, n),       # energy
+            rng.uniform(60.0, 180.0, n),    # tempo
+            rng.uniform(0.0, 1.0, n),       # danceability
+            rng.uniform(0.0, 1.0, n),       # valence
+        ]
+    )
+    mean = matrix.mean(axis=0)
+    std = matrix.std(axis=0)
+
+    normalized = _z_score_normalize(matrix, mean, std)
+
+    # Per-dimension mean ≈ 0
+    assert np.allclose(normalized.mean(axis=0), np.zeros(4), atol=1e-6)
+    # Per-dimension std ≈ 1
+    assert np.allclose(normalized.std(axis=0), np.ones(4), atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Test 6: out-of-range seed_track_indices → retry once → raise
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_refine_proposals_validates_seed_indices_in_range(db_with_phase6, monkeypatch):
+    """LLM returns out-of-range index → retry once → second failure raises ValueError."""
+    _seed_tracks(db_with_phase6, 60, well_separated=True)
+
+    from app.services.vibe_clusterer import VibeProposal, VibeProposalSet
+
+    # Build a bad proposal: index 60 is out-of-range for n_rated=60 (valid: 0..59).
+    bad_set = VibeProposalSet(
+        proposals=[
+            VibeProposal(
+                name="Bad",
+                description="d",
+                action="new",
+                source_vibe_ids=[],
+                seed_track_indices=[60],  # out-of-range
+            )
+        ],
+        rated_track_count=60,
+    )
+    fake_client = MagicMock()
+    fake_client.call_with_structured_output = AsyncMock(side_effect=[bad_set, bad_set])
+    monkeypatch.setattr(
+        "app.services.vibe_clusterer.get_anthropic_client_v2",
+        lambda s: fake_client,
+    )
+
+    from app.services.vibe_clusterer import refine_proposals
+
+    prior = _make_proposal_set(3, 60)
+    with pytest.raises(ValueError, match="out of range"):
+        await refine_proposals(prior, "do something bad")
+    # The mock was called TWICE (initial + 1 retry).
+    assert fake_client.call_with_structured_output.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Test 7: refine vs recluster purpose flag
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_refine_proposals_uses_recluster_purpose_when_flag_set(db_with_phase6, monkeypatch):
+    """recluster_mode=True → purpose='vibe_clustering_recluster'; False → '...refine'."""
+    _seed_tracks(db_with_phase6, 60, well_separated=True)
+
+    canned = _make_proposal_set(3, 60)
+    fake_client = MagicMock()
+    fake_client.call_with_structured_output = AsyncMock(return_value=canned)
+    monkeypatch.setattr(
+        "app.services.vibe_clusterer.get_anthropic_client_v2",
+        lambda s: fake_client,
+    )
+
+    from app.services.vibe_clusterer import refine_proposals
+
+    prior = _make_proposal_set(3, 60)
+
+    # Refine mode: purpose=vibe_clustering_refine
+    await refine_proposals(prior, "merge two", recluster_mode=False)
+    kw1 = fake_client.call_with_structured_output.await_args.kwargs
+    assert kw1["purpose"] == "vibe_clustering_refine"
+
+    # Recluster mode: purpose=vibe_clustering_recluster
+    fake_client.call_with_structured_output.reset_mock()
+    fake_client.call_with_structured_output = AsyncMock(return_value=canned)
+    await refine_proposals(prior, "redo clusters", recluster_mode=True)
+    kw2 = fake_client.call_with_structured_output.await_args.kwargs
+    assert kw2["purpose"] == "vibe_clustering_recluster"
+
+
+# ---------------------------------------------------------------------------
+# Test 8: defense in depth — n_rated < 30 never calls LLM (forced_k irrelevant)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_initial_proposal_aborts_below_n_30_no_llm(db_with_phase6, monkeypatch):
+    """n_rated=29 → degraded_mode=True; LLM mock NEVER called even on forced_k."""
+    _seed_tracks(db_with_phase6, 29)
+
+    fake_client = MagicMock()
+    fake_client.call_with_structured_output = AsyncMock()
+    monkeypatch.setattr(
+        "app.services.vibe_clusterer.get_anthropic_client_v2",
+        lambda s: fake_client,
+    )
+
+    from app.services.vibe_clusterer import initial_cluster_proposal
+
+    result = await initial_cluster_proposal()
+    assert result.degraded_mode is True
+    assert fake_client.call_with_structured_output.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 9: materialize_clusters fills centroid + spread + silhouette
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_materialize_clusters_assigns_centroids_and_spreads(db_with_phase6, monkeypatch):
+    """initial_cluster_proposal returns proposals with centroid/spread/silhouette filled in."""
+    _seed_tracks(db_with_phase6, 60, well_separated=True)
+
+    canned = _make_proposal_set(3, 60)
+    fake_client = MagicMock()
+    fake_client.call_with_structured_output = AsyncMock(return_value=canned)
+    monkeypatch.setattr(
+        "app.services.vibe_clusterer.get_anthropic_client_v2",
+        lambda s: fake_client,
+    )
+
+    from app.services.vibe_clusterer import initial_cluster_proposal
+
+    result = await initial_cluster_proposal()
+
+    assert len(result.proposals) == 3
+    for prop in result.proposals:
+        assert prop.centroid is not None
+        assert isinstance(prop.centroid, dict)
+        assert set(prop.centroid.keys()) == {"energy", "tempo", "danceability", "valence"}
+        assert prop.spread is not None
+        assert set(prop.spread.keys()) == {"energy", "tempo", "danceability", "valence"}
+        assert prop.silhouette is not None
+        assert isinstance(prop.silhouette, float)

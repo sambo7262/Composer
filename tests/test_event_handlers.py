@@ -293,15 +293,37 @@ class TestStaticAnalysis:
     def test_no_blocking_plexapi_in_async(self):
         """EVT-06 / D-09: No PlexAPI calls outside asyncio.to_thread in async functions.
 
-        Static AST scan of app/services/event_handlers.py — walk every async def body
-        and assert no Call nodes reference PlexAPI symbols (PlexServer, fetchItem,
-        searchTracks) outside of an asyncio.to_thread wrapper.
-        """
-        path = Path(__file__).parent.parent / "app" / "services" / "event_handlers.py"
-        source = path.read_text()
-        tree = ast.parse(source)
+        Static AST scan walks the following service files and asserts no Call
+        nodes reference PlexAPI symbols (PlexServer / fetchItem / searchTracks /
+        library / fetchItems / createPlaylist / addItems / removeItems /
+        editTitle) outside of an asyncio.to_thread wrapper.
 
-        forbidden_names = {"PlexServer", "fetchItem", "searchTracks", "library"}
+        Files walked (extended in Phase 6 Plan 02 — see plan 06-02):
+          - app/services/event_handlers.py (Phase 5 origin)
+          - app/services/plex_playlist_service.py (Phase 6 Plan 02 Task 2)
+          - app/services/vibe_service.py        (Phase 6 Plan 02 Task 3)
+
+        Files that do not yet exist on disk are skipped — preserves backwards
+        compatibility while Plan 02 commits land in order.
+        """
+        services_dir = Path(__file__).parent.parent / "app" / "services"
+        paths = [
+            services_dir / "event_handlers.py",
+            services_dir / "plex_playlist_service.py",
+            services_dir / "vibe_service.py",
+        ]
+
+        forbidden_names = {
+            "PlexServer",
+            "fetchItem",
+            "searchTracks",
+            "library",
+            "fetchItems",
+            "createPlaylist",
+            "addItems",
+            "removeItems",
+            "editTitle",
+        }
 
         def call_is_to_thread(call: ast.Call) -> bool:
             f = call.func
@@ -311,28 +333,95 @@ class TestStaticAnalysis:
                 return f.id == "to_thread"
             return False
 
-        violations = []
+        def collect_to_thread_targets(async_node: ast.AsyncFunctionDef) -> set:
+            """Names of inner functions passed as the first arg of asyncio.to_thread.
 
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.AsyncFunctionDef):
+            Such inner functions run in a worker thread — their PlexAPI calls
+            are NOT blocking the event loop, so we approve them as wrapped.
+            """
+            approved: set[str] = set()
+            for inner in ast.walk(async_node):
+                if not isinstance(inner, ast.Call) or not call_is_to_thread(inner):
+                    continue
+                if not inner.args:
+                    continue
+                first = inner.args[0]
+                if isinstance(first, ast.Name):
+                    approved.add(first.id)
+                elif isinstance(first, ast.Attribute):
+                    approved.add(first.attr)
+            return approved
+
+        def check_calls_in_node(
+            scope_label: str,
+            node: ast.AST,
+            violations: list,
+            recurse_into_nested_funcs: bool = True,
+            approved_function_names: set = None,
+        ) -> None:
+            """Walk Calls inside `node`. Skip approved inner function bodies."""
+            approved_function_names = approved_function_names or set()
+
+            # Build a set of inner FunctionDef nodes whose body should be
+            # walked separately (not via the outer ast.walk).
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, ast.FunctionDef):
+                    # Inner sync function. If approved (passed to to_thread),
+                    # skip — its PlexAPI calls are wrapped.
+                    if child.name in approved_function_names:
+                        continue
+                    # Otherwise, recursively check its body too.
+                    check_calls_in_node(
+                        f"{scope_label}::{child.name}",
+                        child,
+                        violations,
+                        recurse_into_nested_funcs=True,
+                        approved_function_names=approved_function_names,
+                    )
+                elif isinstance(child, ast.AsyncFunctionDef):
+                    # Nested AsyncFunctionDef gets its own top-level scan.
+                    continue
+                else:
+                    # For non-function children, walk inner Calls directly.
+                    for inner in ast.walk(child):
+                        if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            # Walked at the level above; don't double-count.
+                            continue
+                        if not isinstance(inner, ast.Call):
+                            continue
+                        if call_is_to_thread(inner):
+                            continue
+                        f = inner.func
+                        if isinstance(f, ast.Name) and f.id in forbidden_names:
+                            violations.append(
+                                f"{scope_label}: direct call to {f.id}"
+                            )
+                        elif isinstance(f, ast.Attribute) and f.attr in forbidden_names:
+                            violations.append(
+                                f"{scope_label}: direct attr call .{f.attr}"
+                            )
+
+        violations: list[str] = []
+
+        for path in paths:
+            if not path.exists():
+                # File not yet created (Plan 02 lands services in sequence).
                 continue
+            source = path.read_text()
+            tree = ast.parse(source)
 
-            # Walk inner Calls
-            for inner in ast.walk(node):
-                if not isinstance(inner, ast.Call):
+            for async_node in ast.walk(tree):
+                if not isinstance(async_node, ast.AsyncFunctionDef):
                     continue
-                if call_is_to_thread(inner):
-                    # to_thread wraps the underlying call — skip its args
-                    continue
-
-                # Check the call itself
-                f = inner.func
-                if isinstance(f, ast.Name) and f.id in forbidden_names:
-                    violations.append(f"{node.name}: direct call to {f.id}")
-                elif isinstance(f, ast.Attribute) and f.attr in forbidden_names:
-                    violations.append(f"{node.name}: direct attr call .{f.attr}")
+                approved = collect_to_thread_targets(async_node)
+                check_calls_in_node(
+                    f"{path.name}:{async_node.name}",
+                    async_node,
+                    violations,
+                    approved_function_names=approved,
+                )
 
         assert violations == [], (
-            "Forbidden blocking PlexAPI calls outside asyncio.to_thread in event_handlers.py:\n"
+            "Forbidden blocking PlexAPI calls outside asyncio.to_thread in:\n"
             + "\n".join(violations)
         )
