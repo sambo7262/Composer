@@ -40,9 +40,10 @@ DESIGN INVARIANTS — DO NOT silently change:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections import Counter
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -90,6 +91,41 @@ class VibeProposal(BaseModel):
     silhouette: Optional[float] = None
 
 
+class LLMVibeProposal(BaseModel):
+    """LLM-side proposal — permissive on ``source_vibe_ids`` (quick-260510-i1q).
+
+    Pre-finalize (during refinement turns), prior proposals have NO database IDs
+    yet. The clusterer's user-prompt builder injects a stable positional integer
+    ``id`` per prior proposal, but Claude has been observed to fall back to the
+    vibe name string as the most stable identifier visible in the prompt — e.g.
+    ``source_vibe_ids: ['Neon Nights']`` — which the strict canonical
+    :class:`VibeProposal` schema (``List[int]``) rejects, raising a 7-error
+    ``ValidationError`` at the structured-output boundary and crashing the
+    wizard refinement endpoint (live prod stack trace, May 2026).
+
+    The fix is two-layer:
+    1. The LLM-side schema (THIS class) is permissive — ``List[Union[int, str]]``.
+    2. The server resolves strings → integer positional indices via
+       :func:`_resolve_source_vibe_ids` BEFORE assembling the canonical
+       :class:`VibeProposalSet`, then drops any string that can't be name-matched
+       against ``prior_proposals``.
+
+    The canonical :class:`VibeProposal` stays strict (``source_vibe_ids:
+    List[int]``) — the permissiveness lives ONLY at the LLM ingest boundary.
+    """
+
+    name: str
+    description: str
+    action: Literal[
+        "keep", "new", "merged_from", "split_from", "renamed_from", "dropped"
+    ]
+    source_vibe_ids: List[Union[int, str]] = Field(default_factory=list)
+    seed_track_indices: List[int] = Field(default_factory=list)
+    centroid: Optional[dict] = None
+    spread: Optional[dict] = None
+    silhouette: Optional[float] = None
+
+
 class VibeProposalSetLLMResponse(BaseModel):
     """Slim LLM contract — the only fields the LLM is asked to return.
 
@@ -99,12 +135,17 @@ class VibeProposalSetLLMResponse(BaseModel):
     structured-output boundary (e.g. Claude returning ``rated_track_index_map:
     {}`` for an empty collection — `quick-260510-das` regression).
 
+    ``proposals`` is :class:`LLMVibeProposal` (permissive on ``source_vibe_ids``)
+    — the server normalizes to canonical :class:`VibeProposal` inside
+    :func:`_call_llm_with_validation` via :func:`_resolve_source_vibe_ids`
+    (quick-260510-i1q).
+
     DO NOT add server-controlled fields here. The defensive test
     ``test_slim_llm_response_schema_has_no_rated_track_index_map_field`` will
     fail loudly if anything other than ``proposals`` lands on this model.
     """
 
-    proposals: List[VibeProposal]
+    proposals: List[LLMVibeProposal]
 
 
 class VibeProposalSet(BaseModel):
@@ -375,22 +416,47 @@ def _build_clustering_user_prompt(
     prior_proposals: Optional[VibeProposalSet],
     user_message: str,
 ) -> str:
-    """Build the (uncached) user prompt for initial vs refinement turns."""
+    """Build the (uncached) user prompt for initial vs refinement turns.
+
+    For refinement turns, each prior proposal in the JSON dump is labeled with a
+    stable positional integer ``id`` field, and the prompt EXPLICITLY instructs
+    Claude to use that integer (not the vibe name string) when populating
+    ``source_vibe_ids`` on the revised proposal set. Without this anchor, Claude
+    falls back to the most stable identifier visible — the name string — which
+    crashes Pydantic validation on the strict canonical ``source_vibe_ids:
+    List[int]`` schema (quick-260510-i1q regression).
+    """
     if prior_proposals is None:
         return (
             "Propose 3-7 vibes for this user, naming each by feel + describing "
             "each in one line. Return as VibeProposalSet matching the Pydantic "
             "schema."
         )
+    prior_with_ids = [
+        {"id": i, **p.model_dump(exclude={"centroid", "spread", "silhouette"})}
+        for i, p in enumerate(prior_proposals.proposals)
+    ]
     return (
-        f"Prior proposals:\n{prior_proposals.model_dump_json(indent=2)}\n\n"
+        f"Prior proposals (each labeled with a stable integer 'id'):\n"
+        f"{json.dumps(prior_with_ids, indent=2)}\n\n"
         f"User feedback: {user_message}\n\n"
+        f"When you reference a prior vibe in source_vibe_ids, use the integer "
+        f"'id' field shown above (NOT the name string). Example: a new vibe "
+        f"merging the vibes with id=2 and id=5 sets source_vibe_ids=[2, 5].\n\n"
         f"Return the revised VibeProposalSet matching the schema."
     )
 
 
-def _validate_seed_indices(proposals: List[VibeProposal], n_rated: int) -> None:
-    """Raise ValueError if any seed_track_indices is out of [0, n_rated). Pitfall 10."""
+def _validate_seed_indices(
+    proposals: "List[LLMVibeProposal] | List[VibeProposal]",
+    n_rated: int,
+) -> None:
+    """Raise ValueError if any seed_track_indices is out of [0, n_rated). Pitfall 10.
+
+    Accepts either the slim LLM-side proposals or the canonical ones — they
+    share an identically-typed ``seed_track_indices: List[int]`` field, so the
+    range check works on either shape (quick-260510-i1q).
+    """
     for prop in proposals:
         for idx in prop.seed_track_indices:
             if not (0 <= idx < n_rated):
@@ -398,6 +464,83 @@ def _validate_seed_indices(proposals: List[VibeProposal], n_rated: int) -> None:
                     f"seed_track_indices contains out of range index {idx} "
                     f"(valid: 0..{n_rated - 1}); proposal name={prop.name!r}"
                 )
+
+
+def _resolve_source_vibe_ids(
+    llm_ids: List[Union[int, str]],
+    prior_proposals: Optional[VibeProposalSet],
+) -> List[int]:
+    """Convert LLM-supplied source_vibe_ids → integer positional indices.
+
+    The LLM-side :class:`LLMVibeProposal` accepts ``List[Union[int, str]]`` to
+    tolerate Claude returning vibe names instead of integer IDs (quick-260510-i1q
+    prod crash on 585-track library: 7 ValidationError entries like
+    ``source_vibe_ids.0 / input_value='Neon Nights'``).
+
+    Rules:
+    - Integers pass through verbatim.
+    - Strings are looked up case-insensitively (``.strip().casefold()``) against
+      the prior_proposals' names → integer positional index.
+    - Unmatched strings are dropped with ``logger.warning`` (defensive — better
+      to lose a source attribution than crash the wizard).
+    - If ``prior_proposals is None`` (initial turn — no priors), strings are
+      dropped silently. Initial-turn proposals SHOULD use empty
+      ``source_vibe_ids`` (every proposal is ``action="new"``), so this path is
+      defensive against a wandering LLM.
+    """
+    resolved: List[int] = []
+    name_to_index: dict = {}
+    if prior_proposals is not None:
+        name_to_index = {
+            p.name.strip().casefold(): i
+            for i, p in enumerate(prior_proposals.proposals)
+        }
+    for entry in llm_ids:
+        if isinstance(entry, int):
+            resolved.append(entry)
+            continue
+        if isinstance(entry, str):
+            key = entry.strip().casefold()
+            if key in name_to_index:
+                resolved.append(name_to_index[key])
+            else:
+                logger.warning(
+                    "vibe_clusterer: LLM source_vibe_ids contained "
+                    "unresolvable name %r; dropping",
+                    entry,
+                )
+    return resolved
+
+
+def _canonicalize_llm_proposals(
+    llm_proposals: List[LLMVibeProposal],
+    prior_proposals: Optional[VibeProposalSet],
+) -> List[VibeProposal]:
+    """Convert a list of permissive LLM proposals → strict canonical proposals.
+
+    Walks every :class:`LLMVibeProposal` and rewrites ``source_vibe_ids`` via
+    :func:`_resolve_source_vibe_ids` (strings → positional indices); all other
+    fields pass through unchanged. The canonical :class:`VibeProposal` stays
+    strict on ``source_vibe_ids: List[int]`` — the permissiveness lives ONLY at
+    the LLM ingest boundary (quick-260510-i1q).
+    """
+    canonical: List[VibeProposal] = []
+    for p in llm_proposals:
+        canonical.append(
+            VibeProposal(
+                name=p.name,
+                description=p.description,
+                action=p.action,
+                source_vibe_ids=_resolve_source_vibe_ids(
+                    p.source_vibe_ids, prior_proposals
+                ),
+                seed_track_indices=p.seed_track_indices,
+                centroid=p.centroid,
+                spread=p.spread,
+                silhouette=p.silhouette,
+            )
+        )
+    return canonical
 
 
 # ---------------------------------------------------------------------------
@@ -592,6 +735,7 @@ async def initial_cluster_proposal(
         forced_k=forced_k,
         degraded=degraded,
         silhouette_avg=sil,
+        prior_proposals=None,
     )
 
     proposals = materialize_clusters(proposals)
@@ -637,6 +781,7 @@ async def refine_proposals(
         forced_k=prior.forced_k,
         degraded=prior.degraded_mode,
         silhouette_avg=prior.silhouette_avg,
+        prior_proposals=prior,
     )
 
     proposals = materialize_clusters(proposals)
@@ -653,6 +798,7 @@ async def _call_llm_with_validation(
     forced_k: Optional[int],
     degraded: bool,
     silhouette_avg: Optional[float],
+    prior_proposals: Optional[VibeProposalSet] = None,
 ) -> VibeProposalSet:
     """LLM call + slim-schema Pydantic validation + server-side assembly.
 
@@ -661,6 +807,12 @@ async def _call_llm_with_validation(
     aggregate / clustering parameters, NOT from the LLM. This eliminates the
     ``rated_track_index_map: {}`` shape-mismatch class of bugs (the LLM never
     sees the field).
+
+    The LLM-side ``proposals`` use :class:`LLMVibeProposal` which is permissive
+    on ``source_vibe_ids`` (``List[Union[int, str]]``). We canonicalize via
+    :func:`_canonicalize_llm_proposals` AFTER slim-schema validation passes,
+    using ``prior_proposals`` for case-insensitive name → positional-index
+    resolution (quick-260510-i1q).
 
     Retries ONCE with a corrective user prompt on out-of-range
     ``seed_track_indices`` (Pitfall 10). Second failure raises ``ValueError``.
@@ -697,9 +849,16 @@ async def _call_llm_with_validation(
         )
         _validate_seed_indices(llm_response.proposals, n_rated)
 
+    # Canonicalize: LLMVibeProposal → VibeProposal (strict List[int] on
+    # source_vibe_ids). Uses prior_proposals for name → index lookup; strings
+    # without a name match are dropped with a warning (quick-260510-i1q).
+    canonical_proposals = _canonicalize_llm_proposals(
+        llm_response.proposals, prior_proposals
+    )
+
     # Assemble the full VibeProposalSet server-side.
     return VibeProposalSet(
-        proposals=llm_response.proposals,
+        proposals=canonical_proposals,
         rated_track_count=n_rated,
         silhouette_avg=silhouette_avg,
         forced_k=forced_k,
