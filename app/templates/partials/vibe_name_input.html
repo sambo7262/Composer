@@ -1,7 +1,7 @@
 {# Phase 6 Plan 03 — click-to-edit vibe name input (Alpine state).
 Used inside vibe_proposal_card.html.
 #}
-<div x-data="{ editing: false, value: '{{ proposal.name | e }}' }" class="mb-2">
+<div x-data="{ editing: false, value: {{ proposal.name | tojson }} }" class="mb-2">
   <h3 x-show="!editing"
       @click="editing = true; $nextTick(() => $refs.input.focus())"
       class="text-[20px] font-semibold text-text-primary cursor-text min-h-11 flex items-center">
