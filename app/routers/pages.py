@@ -4,12 +4,13 @@ import uuid
 from math import ceil
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlmodel import Session, select, func, col
 
 from app.database import get_session
 from app.models.event_log import EventLog
 from app.models.track import Track
+from app.models.vibe import SetupState, Vibe
 from app.routers import api_webhooks
 from app.services.analysis_service import get_analysis_status
 from app.services.event_bus import get_event_bus
@@ -29,7 +30,12 @@ def get_templates():
 
 @router.get("/", response_class=HTMLResponse)
 async def home(request: Request, session: Session = Depends(get_session)):
-    """Root page. Shows welcome if Plex not configured, else compose chat."""
+    """Root page. Shows welcome if Plex not configured, else compose chat.
+
+    Phase 6 (D-07 / WIZ-01): when Plex is configured AND no Vibe rows exist
+    AND there are >=1 rated tracks, auto-redirect to /setup. Once any Vibe row
+    exists, this redirect no longer fires.
+    """
     templates = get_templates()
     plex_configured = is_service_configured(session, "plex")
 
@@ -38,6 +44,20 @@ async def home(request: Request, session: Session = Depends(get_session)):
             request,
             "pages/welcome.html",
         )
+
+    # Phase 6 D-07: auto-redirect to /setup wizard.
+    rated_count = session.exec(
+        select(func.count()).select_from(Track).where(Track.user_rating > 0)  # type: ignore[arg-type]
+    ).one()
+    if isinstance(rated_count, tuple):
+        rated_count = rated_count[0]
+    vibe_count = session.exec(
+        select(func.count()).select_from(Vibe)
+    ).one()
+    if isinstance(vibe_count, tuple):
+        vibe_count = vibe_count[0]
+    if vibe_count == 0 and rated_count >= 1:
+        return RedirectResponse("/setup", status_code=302)
 
     anthropic_configured = is_service_configured(session, "anthropic")
 
@@ -192,4 +212,132 @@ async def debug_events(request: Request, session: Session = Depends(get_session)
             "last_test_payload": last_test_payload,
             "webhook_url": webhook_url,
         },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 Plan 03 — Setup wizard pages (D-06).
+# ---------------------------------------------------------------------------
+
+def _get_or_init_setup_state(session: Session) -> SetupState:
+    """Single-row id=1 helper (mirrors api_setup._get_or_create_setup_state)."""
+    state = session.exec(select(SetupState).where(SetupState.id == 1)).first()
+    if state is None:
+        state = SetupState(id=1)
+        session.add(state)
+        session.commit()
+        session.refresh(state)
+    return state
+
+
+def _count_rated(session: Session) -> int:
+    n = session.exec(
+        select(func.count()).select_from(Track).where(Track.user_rating > 0)  # type: ignore[arg-type]
+    ).one()
+    if isinstance(n, tuple):
+        n = n[0]
+    return int(n)
+
+
+def _decode_draft(state: SetupState):
+    """Deserialize SetupState.draft_proposals_json -> VibeProposalSet | None."""
+    if not state.draft_proposals_json:
+        return None
+    try:
+        from app.services.vibe_clusterer import VibeProposalSet
+        return VibeProposalSet.model_validate_json(state.draft_proposals_json)
+    except Exception:
+        return None
+
+
+@router.get("/setup", response_class=HTMLResponse)
+async def setup_step1(request: Request, session: Session = Depends(get_session)):
+    """Wizard Step 1 — confirm rated tracks (D-06 / WIZ-01)."""
+    templates = get_templates()
+    n_rated = _count_rated(session)
+    return templates.TemplateResponse(
+        request,
+        "pages/setup_step1.html",
+        {"n_rated": n_rated, "active_page": "setup"},
+    )
+
+
+@router.get("/setup/webhook", response_class=HTMLResponse)
+async def setup_step2(request: Request, session: Session = Depends(get_session)):
+    """Wizard Step 2 — webhook config (D-06 conditional)."""
+    templates = get_templates()
+    webhook_setting = get_setting(session, "webhook")
+    webhook_url = webhook_setting.url if webhook_setting else None
+    return templates.TemplateResponse(
+        request,
+        "pages/setup_step2.html",
+        {
+            "active_page": "setup",
+            "webhook_url": webhook_url,
+        },
+    )
+
+
+@router.get("/setup/propose", response_class=HTMLResponse)
+async def setup_step3(request: Request, session: Session = Depends(get_session)):
+    """Wizard Step 3 — initial proposal + refinement loop (THE flagship UX)."""
+    templates = get_templates()
+    state = _get_or_init_setup_state(session)
+    draft_proposals = _decode_draft(state)
+    return templates.TemplateResponse(
+        request,
+        "pages/setup_step3.html",
+        {
+            "active_page": "setup",
+            "draft_proposals": draft_proposals,
+            "refinement_turn_count": state.refinement_turn_count,
+        },
+    )
+
+
+@router.get("/setup/confirm", response_class=HTMLResponse)
+async def setup_step4(request: Request, session: Session = Depends(get_session)):
+    """Wizard Step 4 — final review + Push to Plex CTA."""
+    templates = get_templates()
+    state = _get_or_init_setup_state(session)
+    draft_proposals = _decode_draft(state)
+    return templates.TemplateResponse(
+        request,
+        "pages/setup_step4.html",
+        {
+            "active_page": "setup",
+            "draft_proposals": draft_proposals,
+        },
+    )
+
+
+@router.get("/setup/done", response_class=HTMLResponse)
+async def setup_done(request: Request, session: Session = Depends(get_session)):
+    """Wizard Step 5 — done page."""
+    templates = get_templates()
+    vibe_count = session.exec(select(func.count()).select_from(Vibe)).one()
+    if isinstance(vibe_count, tuple):
+        vibe_count = vibe_count[0]
+    return templates.TemplateResponse(
+        request,
+        "pages/setup_done.html",
+        {
+            "active_page": "setup",
+            "vibe_count": int(vibe_count),
+        },
+    )
+
+
+@router.get("/debug/vibes", response_class=HTMLResponse)
+async def debug_vibes(request: Request, session: Session = Depends(get_session)):
+    """Plan 04 stub — Step 5 'View vibes diagnostics' link target.
+
+    Plan 04 will fully populate this page; for now we render a minimal page so
+    the link doesn't 404.
+    """
+    templates = get_templates()
+    return templates.TemplateResponse(
+        request,
+        "pages/debug_vibes_stub.html",
+        {"active_page": "debug_vibes"},
     )

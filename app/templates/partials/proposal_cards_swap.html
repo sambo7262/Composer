@@ -1,0 +1,22 @@
+{# Phase 6 Plan 03 — proposal cards inner content (HTMX morph swap target).
+
+This is the inner HTML that replaces #proposal-cards on every refine cycle.
+Wrapped externally by the #proposal-cards div in setup_step3.html.
+#}
+{% if draft_proposals and draft_proposals.proposals %}
+  <div class="space-y-4">
+    {% for proposal in draft_proposals.proposals %}
+      {% set proposal_index = loop.index0 %}
+      {% include "partials/vibe_proposal_card.html" %}
+    {% endfor %}
+  </div>
+{% else %}
+  <p class="text-[13px] text-text-secondary">No proposals yet.</p>
+{% endif %}
+
+{# Refinement input ALWAYS visible (D-04 invariant: Looks good + Refine always available). #}
+{% include "partials/refinement_input.html" %}
+
+{% if refinement_turn_count and refinement_turn_count >= 10 %}
+  <p class="text-[13px] text-accent mt-2">Refinement 10 of 10 — save what you have or start over</p>
+{% endif %}

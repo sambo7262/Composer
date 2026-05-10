@@ -1,0 +1,17 @@
+{# Phase 6 Plan 03 — cold-start panel (<30 rated, no forward path).
+UI-SPEC §"Step 1" copy.
+#}
+<div class="bg-surface-card rounded-lg p-6 border border-border space-y-4">
+  <h2 class="text-[20px] font-semibold">Keep rating in Plexamp</h2>
+  <p id="rated-count-display" class="text-[14px] text-text-secondary">
+    Composer needs around 30 rated tracks to find your vibes. You have {{ n_rated }}.
+    Keep rating in Plexamp during normal listening; the wizard will pick up where it left off.
+  </p>
+  <button type="button"
+          hx-get="/api/setup/rated-count"
+          hx-target="#rated-count-display"
+          hx-swap="innerHTML"
+          class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold rounded-lg min-h-11 px-4 py-2 text-[14px]">
+    Refresh count
+  </button>
+</div>

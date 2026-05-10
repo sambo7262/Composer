@@ -1,0 +1,29 @@
+{% extends "partials/wizard_layout.html" %}
+{% block title %}Set up Composer — Step 1 of 5{% endblock %}
+{% set current_step_num = 1 %}
+{% set current_step_label = "Confirm your rated tracks" %}
+{% block wizard_content %}
+  <h1 class="text-[28px] font-semibold mb-2">Confirm your rated tracks</h1>
+  {% if n_rated < 30 %}
+    {% include "partials/cold_start_panel.html" %}
+  {% else %}
+    <p id="rated-count-display" class="text-[14px] text-text-secondary mb-4">
+      Composer turns your Plex star ratings into living vibe playlists. We found {{ n_rated }} rated tracks in your library.
+    </p>
+    {% if n_rated < 50 %}
+      <div class="bg-surface-card rounded-lg p-4 border border-border mb-4">
+        <h2 class="text-[20px] font-semibold">Single-vibe mode</h2>
+        <p class="text-[14px] text-text-secondary mt-2">
+          You have {{ n_rated }} rated tracks. That's enough to start with one vibe; we'll find more vibes once your rated set grows past 50. You can rename and refine the proposed vibe on the next screen.
+        </p>
+      </div>
+    {% endif %}
+  {% endif %}
+{% endblock %}
+{% block wizard_sticky_cta %}
+  {% if n_rated >= 30 %}
+    {% with cta_label="Continue to webhook setup", hx_post="/api/setup/step1/submit", button_type="button" %}
+      {% include "partials/wizard_sticky_cta.html" %}
+    {% endwith %}
+  {% endif %}
+{% endblock %}

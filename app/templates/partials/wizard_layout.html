@@ -1,0 +1,15 @@
+{# Phase 6 Plan 03 — wizard layout wrapper.
+Wraps each /setup/* page with the step indicator and a content block.
+Sticky-bottom CTA goes in the wizard_sticky_cta block.
+#}
+{% extends "base.html" %}
+{% block nav %}{# No nav bar on /setup pages — full-bleed wizard #}{% endblock %}
+{% block content %}
+  <div class="space-y-6 pb-32">
+    {% if current_step_num %}
+      {% include "partials/wizard_step_indicator.html" %}
+    {% endif %}
+    {% block wizard_content %}{% endblock %}
+  </div>
+  {% block wizard_sticky_cta %}{% endblock %}
+{% endblock %}

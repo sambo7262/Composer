@@ -1,0 +1,38 @@
+{% extends "partials/wizard_layout.html" %}
+{% block title %}Set up Composer — Step 4 of 5{% endblock %}
+{% set current_step_num = 4 %}
+{% set current_step_label = "Review your vibes" %}
+{% block wizard_content %}
+  <h1 class="text-[28px] font-semibold mb-2">Review your vibes</h1>
+  <p class="text-[14px] text-text-secondary mb-4">
+    Composer will create one Plex playlist per vibe, named "Composer · {Vibe name}". Existing playlists in your Plex library won't be touched.
+  </p>
+  {% if draft_proposals and draft_proposals.proposals %}
+    <div class="space-y-3">
+      {% for proposal in draft_proposals.proposals if proposal.action != "dropped" %}
+        <div class="bg-surface-card rounded-lg p-4 border border-border">
+          <p class="text-[14px] text-text-primary">Composer · {{ proposal.name }} — {{ proposal.seed_track_indices | length }} tracks</p>
+          {% if proposal.description %}
+            <p class="text-[13px] text-text-secondary mt-1">{{ proposal.description }}</p>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="text-[14px] text-text-secondary">No proposals to review. <a href="/setup/propose" class="underline">Back to refine</a>.</p>
+  {% endif %}
+  <a href="/setup/propose" class="block text-[13px] text-text-secondary underline mt-6 min-h-11 inline-flex items-center">
+    Back to refine
+  </a>
+{% endblock %}
+{% block wizard_sticky_cta %}
+  <form id="push-form"
+        hx-post="/api/setup/finalize"
+        hx-target="#push-banner"
+        hx-swap="outerHTML">
+    {% with cta_label="Push to Plex", form_id="push-form", button_type="submit" %}
+      {% include "partials/wizard_sticky_cta.html" %}
+    {% endwith %}
+  </form>
+  <div id="push-banner"></div>
+{% endblock %}

@@ -1,0 +1,55 @@
+{# Phase 6 Plan 03 — push-to-plex state machine (running / failed / completed / idle).
+Mirrors backfill_banner.html shape; D-25; UI-SPEC §"Step 4" copy.
+#}
+{% if state == "running" %}
+<div id="push-to-plex-banner"
+     hx-get="/api/setup/finalize/status"
+     hx-trigger="every 2s"
+     hx-target="#push-to-plex-banner"
+     hx-swap="outerHTML"
+     class="mb-6 p-4 rounded-lg border border-accent/30 bg-accent/5">
+  <div class="flex items-center justify-between mb-2">
+    <span class="text-text-primary text-[14px] font-medium">
+      Pushing… {{ created | default(0) }} / {{ total | default(0) }} playlists
+    </span>
+    <span class="text-text-secondary text-[13px]">
+      {{ ((created / total) * 100) | int if total else 0 }}%
+    </span>
+  </div>
+  <div class="w-full bg-surface-elevated rounded-full h-2">
+    <div class="bg-accent h-2 rounded-full transition-all duration-500"
+         style="width: {{ ((created / total) * 100) if total else 0 }}%"></div>
+  </div>
+</div>
+
+{% elif state == "failed" %}
+<div id="push-to-plex-banner" class="mb-6 p-4 rounded-lg border border-error/30 bg-error/5">
+  <div class="flex items-center justify-between gap-3 flex-wrap">
+    <span class="text-error text-[14px]">
+      Created {{ created | default(0) }} of {{ total | default(0) }} playlists. Retry the rest?
+    </span>
+    <button hx-post="/api/setup/finalize"
+            hx-target="#push-to-plex-banner"
+            hx-swap="outerHTML"
+            class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold rounded-lg min-h-11 px-4 py-2 text-[14px]">
+      Retry
+    </button>
+  </div>
+</div>
+
+{% elif state == "completed" %}
+<div id="push-to-plex-banner" class="mb-6 p-4 rounded-lg border border-accent/30 bg-accent/5">
+  <div class="flex items-center justify-between gap-3 flex-wrap">
+    <span class="text-text-primary text-[14px]">
+      Your {{ created | default(0) }} vibe playlists are live in Plex.
+    </span>
+    <a href="/setup/done"
+       class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold rounded-lg min-h-11 px-4 py-2 text-[14px] inline-flex items-center">
+      Continue →
+    </a>
+  </div>
+</div>
+
+{% else %}
+<div id="push-to-plex-banner"></div>
+{% endif %}

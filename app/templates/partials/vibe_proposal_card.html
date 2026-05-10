@@ -1,0 +1,26 @@
+{# Phase 6 Plan 03 — vibe proposal card (D-11).
+Click-to-edit name + description + chip + 5 seed tracks + members disclosure +
+silhouette score line.
+#}
+<div class="bg-surface-card rounded-lg p-4 border border-border" x-data>
+  {% include "partials/vibe_name_input.html" %}
+  <input type="text"
+         name="vibe_description_{{ proposal_index }}"
+         value="{{ proposal.description | default('') | e }}"
+         placeholder="One-line description (optional)"
+         class="w-full text-[14px] text-text-secondary bg-transparent border-b border-border min-h-11 outline-none focus:border-accent mb-4">
+  {% if proposal.centroid %}
+    {% set chip_text = feature_chip_text(proposal.centroid) %}
+    {% include "partials/feature_chip.html" %}
+  {% endif %}
+  <h4 class="text-[13px] text-text-secondary mt-4 mb-1">Closest tracks</h4>
+  <div class="space-y-1">
+    {% for track in (proposal.seed_tracks | default([])) %}
+      {% include "partials/seed_track_row.html" %}
+    {% endfor %}
+  </div>
+  {% include "partials/vibe_members_disclosure.html" %}
+  <p class="text-[13px] text-text-muted mt-4">
+    {{ proposal.member_count | default(proposal.seed_track_indices | length) }} tracks · silhouette {{ "%.2f"|format(proposal.silhouette or 0) }}
+  </p>
+</div>
