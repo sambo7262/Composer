@@ -162,22 +162,28 @@ def test_vibe_proposal_card_has_alpine_state():
 
 
 # ---------------------------------------------------------------------------
-# Test 8: force-k picker only on initial run (refinement_turn_count == 0; D-13)
+# Test 8 (Phase 6.1 D-NEW-06): force-k picker REMOVED in favor of textbox stack
 # ---------------------------------------------------------------------------
-def test_step3_force_k_picker_initial_only():
+def test_step3_textbox_stack_replaces_force_k_picker():
+    """Phase 6.1 supersedes Phase 6 D-13. The force-k picker is gone — Step 3
+    opens with a user-led textbox-stack input (3 inputs default, +Add up to 7).
+    """
     src = _read("setup_step3", "pages")
-    # The block must be guarded by `(refinement_turn_count or 0) == 0` (D-13).
-    assert (
-        "(refinement_turn_count or 0) == 0" in src
-        or "refinement_turn_count == 0" in src
-        or "not refinement_turn_count" in src
-    ), (
-        "setup_step3.html must only show the force-k picker on the initial run "
-        "(D-13: hide after first refinement turn)"
+    # forced_k must NOT appear — the picker is removed.
+    assert 'name="forced_k"' not in src, (
+        "setup_step3.html must NOT contain forced_k picker (Phase 6.1 D-NEW-06 "
+        "replaces it with the user-led textbox-stack input)"
     )
-    # And it must mention forced_k.
-    assert 'name="forced_k"' in src, (
-        "setup_step3.html force-k picker must POST forced_k field"
+    # The new textbox-stack input must exist.
+    assert 'name="vibe_names"' in src, (
+        "setup_step3.html must contain a vibe_names hidden input for the "
+        "textbox-stack form (D-NEW-06)"
+    )
+    assert "Cluster my library" in src, (
+        "setup_step3.html must contain the 'Cluster my library' CTA"
+    )
+    assert "+ Add another" in src, (
+        "setup_step3.html must contain the '+ Add another' button"
     )
 
 
@@ -296,3 +302,158 @@ def test_push_banner_has_state_machine_and_poll():
     assert "Pushing…" in src
     assert "live in Plex" in src
     assert "Retry the rest" in src
+
+
+# ===========================================================================
+# Phase 6.1 D-NEW-08 — fit-grade chip rendering on vibe_proposal_card.html.
+# All tests construct REAL VibeProposal instances (Blocker #1 — no dict
+# fixtures).
+# ===========================================================================
+
+def _make_vibe_proposal(
+    name="Workout",
+    description="High energy",
+    fit="strong",
+    fit_reason=None,
+    member_count=87,
+    n_seed_tracks=5,
+    n_members=87,
+):
+    """Helper — build a real VibeProposal per Plan 01 schema."""
+    from app.services.vibe_clusterer import VibeProposal
+    seed_tracks = [
+        {"title": f"Track {i}", "artist": f"Artist {i % 5}",
+         "rating_key": f"rk_{i}"}
+        for i in range(n_seed_tracks)
+    ]
+    members = [
+        {"title": f"Track {i}", "artist": f"Artist {i % 5}",
+         "rating_key": f"rk_{i}"}
+        for i in range(n_members)
+    ]
+    return VibeProposal(
+        name=name,
+        description=description,
+        action="new",
+        seed_track_indices=list(range(n_members)),
+        centroid={"energy": 0.8, "tempo": 130,
+                  "danceability": 0.7, "valence": 0.5},
+        spread={"energy": 0.1, "tempo": 10.0,
+                "danceability": 0.1, "valence": 0.1},
+        silhouette=0.42,
+        seed_tracks=seed_tracks,
+        members=members,
+        member_count=member_count,
+        fit=fit,
+        fit_reason=fit_reason,
+    )
+
+
+def _render_card(proposal):
+    from fastapi.templating import Jinja2Templates
+    from app.services.vibe_helpers import feature_chip_text
+    templates = Jinja2Templates(directory="app/templates")
+    templates.env.globals["feature_chip_text"] = feature_chip_text
+    t = templates.get_template("partials/vibe_proposal_card.html")
+    return t.render(proposal=proposal, proposal_index=0)
+
+
+def _render_members_disclosure(proposal):
+    from fastapi.templating import Jinja2Templates
+    templates = Jinja2Templates(directory="app/templates")
+    t = templates.get_template("partials/vibe_members_disclosure.html")
+    return t.render(proposal=proposal)
+
+
+def test_vibe_proposal_card_renders_fit_chip_strong_with_real_proposal():
+    p = _make_vibe_proposal(fit="strong", member_count=87)
+    html = _render_card(p)
+    assert "strong fit" in html
+    assert "✓" in html
+    assert "text-success" in html
+    # Count display uses member_count directly.
+    assert "87 tracks" in html
+
+
+def test_vibe_proposal_card_renders_fit_chip_weak_with_real_proposal():
+    p = _make_vibe_proposal(name="Mood", fit="weak", member_count=34)
+    html = _render_card(p)
+    assert "weak fit" in html
+    assert "⚠" in html
+    assert "text-accent" in html
+    assert "34 tracks" in html
+
+
+def test_vibe_proposal_card_renders_fit_chip_no_match_with_reason_and_real_proposal():
+    p = _make_vibe_proposal(
+        name="Ambient", fit="no_match",
+        fit_reason="Library has no ambient artists",
+        member_count=0, n_seed_tracks=0, n_members=0,
+    )
+    html = _render_card(p)
+    assert "no match" in html
+    assert "✗" in html
+    assert "text-error" in html
+    assert "Library has no ambient artists" in html
+
+
+def test_vibe_proposal_card_no_fit_chip_when_fit_is_none_with_real_proposal():
+    p = _make_vibe_proposal(fit=None)
+    html = _render_card(p)
+    assert "strong fit" not in html
+    assert "weak fit" not in html
+    assert "no match" not in html
+    # Color tokens specific to the fit chip absent.
+    assert "✓ strong fit" not in html
+    assert "⚠ weak fit" not in html
+    assert "✗ no match" not in html
+
+
+def test_vibe_proposal_card_uses_member_count_for_fit_chip_display():
+    """member_count is the source of truth for the fit-chip count, even when
+    len(seed_track_indices) disagrees (e.g. legacy proposal shapes).
+    """
+    from app.services.vibe_clusterer import VibeProposal
+    p = VibeProposal(
+        name="X", description="d", action="new",
+        seed_track_indices=[1, 2, 3],  # 3
+        centroid={"energy": 0.5, "tempo": 100,
+                  "danceability": 0.5, "valence": 0.5},
+        spread={"energy": 0.1, "tempo": 10.0,
+                "danceability": 0.1, "valence": 0.1},
+        silhouette=0.4,
+        seed_tracks=[],
+        members=[
+            {"title": f"T{i}", "artist": "A", "rating_key": f"rk_{i}"}
+            for i in range(87)
+        ],
+        member_count=87,
+        fit="strong",
+    )
+    html = _render_card(p)
+    # Fit chip count uses member_count=87, NOT len(seed_track_indices)=3.
+    # We look for the count next to the fit chip — "87 tracks" must appear,
+    # and "3 tracks" (the seed_track_indices length) must NOT.
+    assert "87 tracks" in html
+    assert " 3 tracks" not in html, (
+        f"member_count=87 should win over len(seed_track_indices)=3; "
+        f"found ' 3 tracks' in:\n{html}"
+    )
+
+
+def test_vibe_members_disclosure_renders_all_members_when_expanded():
+    """Blocker #1 follow-through: the disclosure pulls from proposal.members
+    (populated by Plan 01) — NOT an empty list. We assert the member <p>
+    elements are present in the static HTML (Alpine x-show hides at runtime
+    but the elements exist in the DOM).
+    """
+    p = _make_vibe_proposal(member_count=30, n_seed_tracks=5, n_members=30)
+    html = _render_members_disclosure(p)
+    # "Show all 30 tracks" button label uses member_count.
+    assert "Show all 30 tracks" in html
+    # All 30 member.title strings are present in the expanded <p> elements.
+    for i in range(30):
+        assert f"Track {i}" in html, (
+            f"Member {i} missing from disclosure HTML — "
+            f"proposal.members not rendered"
+        )
