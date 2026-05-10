@@ -154,7 +154,7 @@ Plans:
 - [x] 06-01-PLAN.md — Foundation: Vibe/TrackVibe/ManagedPlaylist/SetupState models, Track.pending_slot_in column, base.html alpine-morph + min-h-dvh + viewport-fit=cover, --touch-target-min CSS token, vibe_helpers.feature_chip_text, AST sklearn-allowlist test
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 06-02-PLAN.md — Slot-in pipeline: vibe_clusterer (sklearn k-means + silhouette + LLM naming + refinement turn), plex_playlist_service (create/update/archive/rename/is_managed; Pitfall 5 additive + Pitfall 6 post-push verify), vibe_service (slot_track + unslot_track + per-track lock + soft-margin + pending_slot_in), event_handlers + analysis_service hooks, extended AST static test
+- [x] 06-02-PLAN.md — Slot-in pipeline: vibe_clusterer (sklearn k-means + silhouette + LLM naming + refinement turn), plex_playlist_service (create/update/archive/rename/is_managed; Pitfall 5 additive + Pitfall 6 post-push verify), vibe_service (slot_track + unslot_track + per-track lock + soft-margin + pending_slot_in), event_handlers + analysis_service hooks, extended AST static test
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 06-03-PLAN.md — Wizard + conversational refinement loop: api_setup router (7 endpoints), 5 wizard pages (/setup, /setup/webhook, /setup/propose, /setup/confirm, /setup/done) + 10 partials, GET / wizard auto-redirect, refinement loop with HTMX morph swap (Pitfall 15) + 10-turn cap (D-04), finalize creates Composer · {name} Plex playlists under semaphore=1 (D-25)
