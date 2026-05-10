@@ -821,3 +821,432 @@ def test_slim_user_led_response_schema_only_has_mappings_field():
     assert fields == {"mappings"}, (
         f"LLMVibeMappingResponse must only have 'mappings'; got {fields}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.1 Plan 01 Task 2 — map_user_vibes_to_clusters + helpers
+# ---------------------------------------------------------------------------
+from unittest.mock import patch  # noqa: E402  (test-section-local import)
+
+
+def test_aggregate_rated_set_includes_genre_per_track(test_engine, monkeypatch):
+    """WARNING #2: tracks_for_prompt entries must carry Track.genre so
+    per-cluster top-genres aggregation in map_user_vibes_to_clusters works.
+    """
+    from sqlmodel import Session, SQLModel
+    from app.models.track import Track
+    from app.services import vibe_clusterer as vc
+
+    SQLModel.metadata.create_all(test_engine)
+    with Session(test_engine) as s:
+        for i in range(40):
+            s.add(Track(
+                plex_rating_key=f"rk_{i}", title=f"T{i}",
+                artist=f"A{i % 3}", album="X",
+                user_rating=8.0, energy=0.5, tempo=120.0,
+                danceability=0.5, valence=0.5,
+                genre=("synth-pop" if i % 2 == 0 else "synthwave"),
+            ))
+        s.commit()
+
+    monkeypatch.setattr(vc, "get_engine", lambda: test_engine)
+    agg = vc._aggregate_rated_set_sync()
+    assert agg["rated_track_count"] == 40
+    # Every prompt entry has a "genre" key (string).
+    for tp in agg["tracks_for_prompt"]:
+        assert "genre" in tp, "tracks_for_prompt entry missing 'genre' key"
+        assert isinstance(tp["genre"], str)
+
+
+@pytest.mark.asyncio
+async def test_map_user_vibes_rejects_count_below_3():
+    from app.services.vibe_clusterer import map_user_vibes_to_clusters
+    with pytest.raises(ValueError, match="vibe count must be 3-7"):
+        await map_user_vibes_to_clusters(["workout", "focus"])
+
+
+@pytest.mark.asyncio
+async def test_map_user_vibes_rejects_count_above_7():
+    from app.services.vibe_clusterer import map_user_vibes_to_clusters
+    with pytest.raises(ValueError, match="vibe count must be 3-7"):
+        await map_user_vibes_to_clusters(
+            ["a", "b", "c", "d", "e", "f", "g", "h"]
+        )
+
+
+@pytest.mark.asyncio
+async def test_map_user_vibes_rejects_blank_names():
+    from app.services.vibe_clusterer import map_user_vibes_to_clusters
+    with pytest.raises(ValueError, match="must not be blank"):
+        await map_user_vibes_to_clusters(["workout", "  ", "focus"])
+
+
+@pytest.mark.asyncio
+async def test_map_user_vibes_rejects_case_insensitive_duplicates():
+    from app.services.vibe_clusterer import map_user_vibes_to_clusters
+    with pytest.raises(ValueError, match="duplicate vibe names"):
+        await map_user_vibes_to_clusters(["Workout", "workout", "focus"])
+
+
+@pytest.mark.asyncio
+async def test_map_user_vibes_cold_start_under_30():
+    from app.services import vibe_clusterer as vc
+
+    # Mock the aggregate to return n_rated=20 → cold-start raises before LLM.
+    with patch.object(vc, "_aggregate_rated_set_sync") as mock_agg:
+        mock_agg.return_value = {
+            "rated_track_count": 20,
+            "feature_matrix": vc.np.zeros((20, 4)),
+            "rated_track_index_map": [],
+            "tracks_for_prompt": [],
+            "top_artists": [],
+            "top_genres": [],
+        }
+        with pytest.raises(ValueError, match="cold-start"):
+            await vc.map_user_vibes_to_clusters(["a", "b", "c"])
+
+
+def test_validate_mapping_permutation_detects_duplicate_cluster_index():
+    from app.services.vibe_clusterer import (
+        LLMVibeFit,
+        _validate_mapping_permutation,
+    )
+    mappings = [
+        LLMVibeFit(user_name="a", cluster_index=0, description="d", fit="strong"),
+        LLMVibeFit(user_name="b", cluster_index=0, description="d", fit="weak"),
+        LLMVibeFit(user_name="c", cluster_index=1, description="d", fit="strong"),
+    ]
+    err = _validate_mapping_permutation(mappings, n=3)
+    assert err is not None
+    assert "used more than once" in err
+
+
+def test_validate_mapping_permutation_detects_missing_reason_on_no_match():
+    from app.services.vibe_clusterer import (
+        LLMVibeFit,
+        _validate_mapping_permutation,
+    )
+    mappings = [
+        LLMVibeFit(user_name="a", cluster_index=0, description="d", fit="strong"),
+        LLMVibeFit(user_name="b", cluster_index=1, description="d", fit="no_match"),
+        LLMVibeFit(user_name="c", cluster_index=2, description="d", fit="strong"),
+    ]
+    err = _validate_mapping_permutation(mappings, n=3)
+    assert err is not None
+    assert "non-empty 'reason'" in err
+
+
+def test_validate_mapping_permutation_passes_valid_response():
+    from app.services.vibe_clusterer import (
+        LLMVibeFit,
+        _validate_mapping_permutation,
+    )
+    mappings = [
+        LLMVibeFit(user_name="a", cluster_index=0, description="d", fit="strong"),
+        LLMVibeFit(user_name="b", cluster_index=2, description="d", fit="weak"),
+        LLMVibeFit(user_name="c", cluster_index=1, description="d", fit="no_match",
+                  reason="no match"),
+    ]
+    assert _validate_mapping_permutation(mappings, n=3) is None
+
+
+def test_user_led_user_prompt_includes_positional_ids_top_genres_and_explicit_instruction():
+    """Combines positional-ID test (existing requirement) with WARNING #2:
+    top_genres MUST be present in the prompt payload.
+    """
+    from app.services.vibe_clusterer import (
+        _build_user_led_clustering_user_prompt,
+    )
+    names = ["workout", "focus", "synth heavy"]
+    summaries = [
+        {"cluster_index": 0, "centroid": {"energy": 0.8, "tempo": 130,
+         "danceability": 0.7, "valence": 0.5}, "top_artists": ["A1"],
+         "top_genres": ["edm", "house"], "closest_tracks": [], "member_count": 50},
+        {"cluster_index": 1, "centroid": {"energy": 0.3, "tempo": 90,
+         "danceability": 0.4, "valence": 0.3}, "top_artists": ["A2"],
+         "top_genres": ["ambient"], "closest_tracks": [], "member_count": 40},
+        {"cluster_index": 2, "centroid": {"energy": 0.6, "tempo": 110,
+         "danceability": 0.6, "valence": 0.5}, "top_artists": ["A3"],
+         "top_genres": ["synth-pop", "synthwave"], "closest_tracks": [],
+         "member_count": 35},
+    ]
+    prompt = _build_user_led_clustering_user_prompt(names, summaries)
+    # Positional cluster_index integers present.
+    assert "\"cluster_index\": 0" in prompt
+    assert "\"cluster_index\": 1" in prompt
+    assert "\"cluster_index\": 2" in prompt
+    # Explicit positional-ID instruction.
+    assert "integer `cluster_index` field" in prompt
+    # User names verbatim.
+    assert "workout" in prompt
+    assert "focus" in prompt
+    assert "synth heavy" in prompt
+    # WARNING #2 — top_genres serialized into the prompt.
+    assert "top_genres" in prompt
+    assert "synth-pop" in prompt
+    assert "synthwave" in prompt
+
+
+@pytest.mark.asyncio
+async def test_map_user_vibes_server_populates_seed_track_indices_seed_tracks_members():
+    """Combined invariant: LLM never picks members; server populates
+    seed_track_indices, seed_tracks (5 closest, dicts), members (all, dicts),
+    member_count.
+    """
+    from app.services import vibe_clusterer as vc
+
+    # Build a synthetic 90-track rated set with 3 clear clusters in 4-D space.
+    np_local = vc.np
+    cluster_a = np_local.random.RandomState(0).normal(
+        loc=[0.2, 80, 0.3, 0.2], scale=0.05, size=(30, 4)
+    )
+    cluster_b = np_local.random.RandomState(1).normal(
+        loc=[0.8, 140, 0.7, 0.7], scale=0.05, size=(30, 4)
+    )
+    cluster_c = np_local.random.RandomState(2).normal(
+        loc=[0.5, 100, 0.5, 0.5], scale=0.05, size=(30, 4)
+    )
+    feat = np_local.vstack([cluster_a, cluster_b, cluster_c])
+    index_map = [{"index": i, "rating_key": f"rk_{i}",
+                  "title": f"T{i}", "artist": f"A{i % 5}"}
+                 for i in range(90)]
+    tracks_for_prompt = [{"title": f"T{i}", "artist": f"A{i % 5}",
+                          "energy": float(feat[i, 0]),
+                          "tempo": float(feat[i, 1]),
+                          "danceability": float(feat[i, 2]),
+                          "valence": float(feat[i, 3]),
+                          "rating": 8.0,
+                          "genre": "synthwave" if i >= 60 else "rock"}
+                         for i in range(90)]
+
+    async def _fake_call(*, system_prompt, user_prompt, response_model, purpose):
+        assert purpose == "vibe_clustering_user_led"
+        return vc.LLMVibeMappingResponse(mappings=[
+            vc.LLMVibeFit(user_name="workout", cluster_index=1,
+                         description="High-energy", fit="strong"),
+            vc.LLMVibeFit(user_name="focus", cluster_index=0,
+                         description="Low energy", fit="strong"),
+            vc.LLMVibeFit(user_name="synth heavy", cluster_index=2,
+                         description="Synth-driven mids", fit="weak"),
+        ])
+
+    fake_client = AsyncMock()
+    fake_client.call_with_structured_output = AsyncMock(side_effect=_fake_call)
+
+    # materialize_clusters re-queries DB → no-op for this unit test.
+    with patch.object(vc, "_aggregate_rated_set_sync") as mock_agg, \
+         patch.object(vc, "get_anthropic_client_v2",
+                     return_value=fake_client), \
+         patch.object(vc, "materialize_clusters",
+                     side_effect=lambda p: p):
+        mock_agg.return_value = {
+            "rated_track_count": 90,
+            "feature_matrix": feat,
+            "rated_track_index_map": index_map,
+            "tracks_for_prompt": tracks_for_prompt,
+            "top_artists": [], "top_genres": [],
+        }
+        result = await vc.map_user_vibes_to_clusters(
+            ["workout", "focus", "synth heavy"]
+        )
+
+    # 3 proposals, one per user name.
+    assert len(result.proposals) == 3
+
+    # k-means labels partition the rated set.
+    total = sum(len(p.seed_track_indices) for p in result.proposals)
+    assert total == 90, (
+        f"k-means labels do not partition rated set: total={total} != 90"
+    )
+
+    # Blocker #1 regression — seed_tracks + members + member_count populated.
+    for p in result.proposals:
+        assert len(p.seed_track_indices) > 0
+        # seed_tracks is the top-5-closest list of dicts (or fewer if cluster
+        # has <5 members; in this fixture every cluster has 30 members).
+        assert len(p.seed_tracks) == 5, (
+            f"Proposal {p.name} seed_tracks should have 5 entries, "
+            f"got {len(p.seed_tracks)}"
+        )
+        for st in p.seed_tracks:
+            assert st["title"], f"seed_track missing title: {st}"
+            assert st["artist"], f"seed_track missing artist: {st}"
+            assert st["rating_key"], f"seed_track missing rating_key: {st}"
+        # members has ALL cluster members.
+        assert len(p.members) == len(p.seed_track_indices), (
+            f"members ({len(p.members)}) must equal seed_track_indices "
+            f"({len(p.seed_track_indices)})"
+        )
+        for mem in p.members:
+            assert mem["title"]
+            assert mem["artist"]
+            assert mem["rating_key"]
+        # member_count == len(members).
+        assert p.member_count == len(p.members)
+
+    # Fit grades round-trip from LLM response.
+    fits = {p.name: p.fit for p in result.proposals}
+    assert fits["workout"] == "strong"
+    assert fits["focus"] == "strong"
+    assert fits["synth heavy"] == "weak"
+
+
+@pytest.mark.asyncio
+async def test_map_user_vibes_preserves_user_name_casing_on_llm_lowercase_echo():
+    """WARNING #1 — server resolves LLM-echoed names back to user's casing
+    via case-insensitive lookup table.
+    """
+    from app.services import vibe_clusterer as vc
+
+    np_local = vc.np
+    feat = np_local.random.RandomState(0).normal(size=(45, 4))
+    feat[:, 1] = feat[:, 1] * 20 + 100
+
+    async def _fake_call(*, system_prompt, user_prompt, response_model, purpose):
+        # LLM lowercases the echoed names.
+        return vc.LLMVibeMappingResponse(mappings=[
+            vc.LLMVibeFit(user_name="workout", cluster_index=0,
+                         description="d", fit="strong"),
+            vc.LLMVibeFit(user_name="late night drive", cluster_index=1,
+                         description="d", fit="strong"),
+            vc.LLMVibeFit(user_name="synth heavy", cluster_index=2,
+                         description="d", fit="weak"),
+        ])
+
+    fake_client = AsyncMock()
+    fake_client.call_with_structured_output = AsyncMock(side_effect=_fake_call)
+
+    with patch.object(vc, "_aggregate_rated_set_sync") as mock_agg, \
+         patch.object(vc, "get_anthropic_client_v2",
+                     return_value=fake_client), \
+         patch.object(vc, "materialize_clusters",
+                     side_effect=lambda p: p):
+        mock_agg.return_value = {
+            "rated_track_count": 45,
+            "feature_matrix": feat,
+            "rated_track_index_map": [
+                {"index": i, "rating_key": f"rk_{i}",
+                 "title": f"T{i}", "artist": f"A{i}"} for i in range(45)
+            ],
+            "tracks_for_prompt": [
+                {"title": f"T{i}", "artist": f"A{i}",
+                 "energy": float(feat[i, 0]), "tempo": float(feat[i, 1]),
+                 "danceability": float(feat[i, 2]),
+                 "valence": float(feat[i, 3]), "rating": 8.0,
+                 "genre": ""}
+                for i in range(45)
+            ],
+            "top_artists": [], "top_genres": [],
+        }
+        # User input is MIXED CASE; LLM echoes lowercase.
+        result = await vc.map_user_vibes_to_clusters(
+            ["Workout", "Late Night Drive", "Synth Heavy"]
+        )
+
+    # Names preserve user's ORIGINAL casing despite LLM lowercase echo.
+    names = {p.name for p in result.proposals}
+    assert names == {"Workout", "Late Night Drive", "Synth Heavy"}, (
+        f"Names should preserve user casing; got {names}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_map_user_vibes_retries_once_on_permutation_failure_then_raises():
+    """LLM returns duplicate cluster_index twice → ValueError after retry."""
+    from app.services import vibe_clusterer as vc
+
+    call_count = {"n": 0}
+
+    async def _bad_call(*, system_prompt, user_prompt, response_model, purpose):
+        call_count["n"] += 1
+        # Return invalid (duplicate cluster_index) every time.
+        return vc.LLMVibeMappingResponse(mappings=[
+            vc.LLMVibeFit(user_name="a", cluster_index=0, description="d", fit="strong"),
+            vc.LLMVibeFit(user_name="b", cluster_index=0, description="d", fit="weak"),
+            vc.LLMVibeFit(user_name="c", cluster_index=2, description="d", fit="strong"),
+        ])
+
+    fake_client = AsyncMock()
+    fake_client.call_with_structured_output = AsyncMock(side_effect=_bad_call)
+
+    np_local = vc.np
+    feat = np_local.random.RandomState(0).normal(size=(45, 4))
+    feat[:, 1] = feat[:, 1] * 20 + 100
+
+    with patch.object(vc, "_aggregate_rated_set_sync") as mock_agg, \
+         patch.object(vc, "get_anthropic_client_v2",
+                     return_value=fake_client), \
+         patch.object(vc, "materialize_clusters",
+                     side_effect=lambda p: p):
+        mock_agg.return_value = {
+            "rated_track_count": 45,
+            "feature_matrix": feat,
+            "rated_track_index_map": [
+                {"index": i, "rating_key": f"rk_{i}",
+                 "title": f"T{i}", "artist": f"A{i}"} for i in range(45)
+            ],
+            "tracks_for_prompt": [
+                {"title": f"T{i}", "artist": f"A{i}",
+                 "energy": float(feat[i, 0]), "tempo": float(feat[i, 1]),
+                 "danceability": float(feat[i, 2]),
+                 "valence": float(feat[i, 3]), "rating": 8.0,
+                 "genre": ""}
+                for i in range(45)
+            ],
+            "top_artists": [], "top_genres": [],
+        }
+        with pytest.raises(ValueError, match="failed permutation validation"):
+            await vc.map_user_vibes_to_clusters(["a", "b", "c"])
+
+    # Verified: exactly 2 LLM calls — initial + ONE retry.
+    assert call_count["n"] == 2
+
+
+def test_carryover_fit_from_prior_matches_case_insensitive_name():
+    """Blocker #5 Option A — refine round-trip preserves fit/fit_reason."""
+    from app.services.vibe_clusterer import (
+        VibeProposal, _carryover_fit_from_prior,
+    )
+    priors = [
+        VibeProposal(name="Workout", description="d", action="keep",
+                    fit="strong", fit_reason=None),
+        VibeProposal(name="Focus", description="d", action="keep",
+                    fit="weak", fit_reason="Only 12 tracks match"),
+        VibeProposal(name="Late Night", description="d", action="keep",
+                    fit=None),
+    ]
+    # Refined proposal echoes name in different case — should match.
+    new1 = VibeProposal(name="workout", description="new desc", action="keep")
+    merged1 = _carryover_fit_from_prior(new1, priors)
+    assert merged1.fit == "strong"
+
+    new2 = VibeProposal(name="FOCUS", description="new desc", action="keep")
+    merged2 = _carryover_fit_from_prior(new2, priors)
+    assert merged2.fit == "weak"
+    assert merged2.fit_reason == "Only 12 tracks match"
+
+    # Brand-new proposal (action="new") — no prior match — fit stays None.
+    new3 = VibeProposal(name="brand new", description="d", action="new")
+    merged3 = _carryover_fit_from_prior(new3, priors)
+    assert merged3.fit is None
+
+    # Prior had fit=None — nothing to carry over.
+    new4 = VibeProposal(name="late night", description="d", action="keep")
+    merged4 = _carryover_fit_from_prior(new4, priors)
+    assert merged4.fit is None
+
+    # Idempotency: if new proposal already has fit, do not overwrite.
+    new5 = VibeProposal(name="workout", description="d", action="keep",
+                       fit="no_match", fit_reason="example")
+    merged5 = _carryover_fit_from_prior(new5, priors)
+    assert merged5.fit == "no_match"
+    assert merged5.fit_reason == "example"
+
+
+def test_carryover_fit_from_prior_with_no_priors_is_no_op():
+    from app.services.vibe_clusterer import (
+        VibeProposal, _carryover_fit_from_prior,
+    )
+    p = VibeProposal(name="x", description="d", action="new")
+    assert _carryover_fit_from_prior(p, None).fit is None
+    assert _carryover_fit_from_prior(p, []).fit is None
