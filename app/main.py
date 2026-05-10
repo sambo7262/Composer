@@ -21,6 +21,7 @@ from app.routers import (
     api_settings,
     api_setup,  # Phase 6
     api_sync,
+    api_vibes,  # Phase 6 Plan 04
     api_webhooks,
     pages,
 )
@@ -72,6 +73,7 @@ app.include_router(api_sync.router)
 app.include_router(api_webhooks.router)  # Phase 5
 app.include_router(api_rating_sync.router)  # Phase 5
 app.include_router(api_setup.router)  # Phase 6 — MUST be before pages.router
+app.include_router(api_vibes.router)  # Phase 6 Plan 04 — MUST be before pages.router
 
 # Register feature_chip_text helper as a Jinja2 global so templates can call it.
 from app.services.vibe_helpers import feature_chip_text  # noqa: E402

@@ -26,8 +26,12 @@
   </a>
 {% endblock %}
 {% block wizard_sticky_cta %}
+  {# Phase 6 Plan 04 (D-20): branch the commit endpoint based on
+     SetupState.recluster_mode. Initial wizard -> /api/setup/finalize;
+     re-cluster -> /api/vibes/recluster/commit (diff-based per D-21). #}
+  {% set commit_endpoint = "/api/vibes/recluster/commit" if (setup_state and setup_state.recluster_mode) else "/api/setup/finalize" %}
   <form id="push-form"
-        hx-post="/api/setup/finalize"
+        hx-post="{{ commit_endpoint }}"
         hx-target="#push-banner"
         hx-swap="outerHTML">
     {% with cta_label="Push to Plex", form_id="push-form", button_type="submit" %}

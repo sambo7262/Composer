@@ -297,7 +297,12 @@ async def setup_step3(request: Request, session: Session = Depends(get_session))
 
 @router.get("/setup/confirm", response_class=HTMLResponse)
 async def setup_step4(request: Request, session: Session = Depends(get_session)):
-    """Wizard Step 4 — final review + Push to Plex CTA."""
+    """Wizard Step 4 — final review + Push to Plex CTA.
+
+    Phase 6 Plan 04 (D-20): pass `setup_state` so the template can branch the
+    Push CTA's hx-post target between /api/setup/finalize (initial wizard) and
+    /api/vibes/recluster/commit (re-cluster — diff-based per D-21).
+    """
     templates = get_templates()
     state = _get_or_init_setup_state(session)
     draft_proposals = _decode_draft(state)
@@ -307,6 +312,7 @@ async def setup_step4(request: Request, session: Session = Depends(get_session))
         {
             "active_page": "setup",
             "draft_proposals": draft_proposals,
+            "setup_state": state,
         },
     )
 
