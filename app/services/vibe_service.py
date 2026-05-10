@@ -79,6 +79,13 @@ class SlotInResult:
     secondary_distance: Optional[float]
     pending: bool
     skipped_manual: bool = False
+    # WR-04: True when slot_track returned without slotting because no
+    # vibes exist yet (pre-wizard state) or no vibe has a complete centroid.
+    # maybe_reslot_pending_track uses this to leave Track.pending_slot_in
+    # set so a future slot pass (after the wizard creates vibes) will pick
+    # the track up — clearing the flag here would lose the retroactive
+    # slot-in opportunity (D-17).
+    skipped_no_vibes: bool = False
 
 
 @dataclass
@@ -402,6 +409,7 @@ async def _slot_track_inner(rating_key: str) -> SlotInResult:
             secondary_vibe_id=None,
             secondary_distance=None,
             pending=False,
+            skipped_no_vibes=True,
         )
 
     # Filter to vibes with complete centroid columns.
@@ -424,6 +432,7 @@ async def _slot_track_inner(rating_key: str) -> SlotInResult:
             secondary_vibe_id=None,
             secondary_distance=None,
             pending=False,
+            skipped_no_vibes=True,
         )
 
     # 5. Build per-dimension mean/std from the vibe centroids; z-score
@@ -633,9 +642,13 @@ async def maybe_reslot_pending_track(track_id: int) -> None:
         # next RatingChanged event will either re-slot or clear via unslot.
         return
     result = await slot_track(track.plex_rating_key)
-    if result.pending is False:
-        # Slot succeeded (or vibes don't exist yet). Clear the flag either
-        # way — slot_track already handled the no-vibes-yet case.
+    # WR-04: only clear the flag when slotting actually completed. If
+    # slot_track returned pending=False because no vibes exist yet
+    # (skipped_no_vibes=True), the flag MUST stay set so a later pass
+    # (after the wizard creates vibes, or via reslot_all_rated_tracks)
+    # picks the track up. Clearing the flag here would silently lose the
+    # retroactive slot-in opportunity (D-17).
+    if result.pending is False and not result.skipped_no_vibes:
         await asyncio.to_thread(_set_pending_slot_in_sync, track_id, False)
 
 
