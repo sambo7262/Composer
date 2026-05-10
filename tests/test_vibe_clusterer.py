@@ -729,3 +729,95 @@ def test_refine_user_prompt_includes_positional_ids():
     assert "use the integer" in prompt
     assert "'id'" in prompt
     assert "NOT the name string" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.1 Plan 01 Task 1 — schemas: LLMVibeFit, LLMVibeMappingResponse,
+# VibeProposal extensions (fit, fit_reason, seed_tracks, members, member_count)
+# ---------------------------------------------------------------------------
+def test_llm_vibe_fit_validates_required_fields():
+    from app.services.vibe_clusterer import LLMVibeFit
+    # Strong fit, no reason — OK.
+    f = LLMVibeFit(user_name="workout", cluster_index=0,
+                  description="High energy cardio", fit="strong")
+    assert f.fit == "strong"
+    assert f.reason is None
+    # no_match fit with reason — OK.
+    f2 = LLMVibeFit(user_name="ambient", cluster_index=2,
+                   description="No cluster matches", fit="no_match",
+                   reason="Library has no ambient artists")
+    assert f2.fit == "no_match"
+    assert f2.reason == "Library has no ambient artists"
+
+
+def test_llm_vibe_mapping_response_holds_list_of_fits():
+    from app.services.vibe_clusterer import LLMVibeFit, LLMVibeMappingResponse
+    m = LLMVibeMappingResponse(mappings=[
+        LLMVibeFit(user_name="a", cluster_index=0, description="d", fit="strong"),
+        LLMVibeFit(user_name="b", cluster_index=1, description="d", fit="weak"),
+    ])
+    assert len(m.mappings) == 2
+    assert m.mappings[0].cluster_index == 0
+    assert m.mappings[1].cluster_index == 1
+
+
+def test_vibe_proposal_accepts_fit_and_fit_reason_fields():
+    from app.services.vibe_clusterer import VibeProposal
+    p = VibeProposal(name="x", description="y", action="new",
+                    fit="weak", fit_reason="Only 12 tracks match")
+    assert p.fit == "weak"
+    assert p.fit_reason == "Only 12 tracks match"
+    # Defaults to None when omitted.
+    p2 = VibeProposal(name="x", description="y", action="new")
+    assert p2.fit is None
+    assert p2.fit_reason is None
+
+
+def test_vibe_proposal_accepts_seed_tracks_members_member_count_fields():
+    """Blocker #1: seed_tracks + members + member_count survive on VibeProposal
+    and round-trip through model_dump_json / model_validate_json. This is the
+    persistence path used by SetupState.draft_proposals_json in Plan 02.
+    """
+    from app.services.vibe_clusterer import VibeProposal, VibeProposalSet
+    track = {"title": "Night Drive", "artist": "Kavinsky",
+             "rating_key": "rk_42"}
+    p = VibeProposal(
+        name="late night",
+        description="Synth-driven cruising",
+        action="new",
+        seed_tracks=[track],
+        members=[track, {"title": "T2", "artist": "A2", "rating_key": "rk_43"}],
+        member_count=2,
+        fit="strong",
+    )
+    # Round-trip via VibeProposalSet.model_dump_json → model_validate_json.
+    pset = VibeProposalSet(proposals=[p], rated_track_count=2)
+    roundtripped = VibeProposalSet.model_validate_json(pset.model_dump_json())
+    rp = roundtripped.proposals[0]
+    assert rp.seed_tracks == [track]
+    assert len(rp.members) == 2
+    assert rp.members[0]["title"] == "Night Drive"
+    assert rp.member_count == 2
+    assert rp.fit == "strong"
+
+
+def test_vibe_proposal_default_seed_tracks_and_members_are_empty_lists():
+    """Defensive default: not None, but empty list — template default-filter
+    relies on this shape (proposal.seed_tracks | default([])).
+    """
+    from app.services.vibe_clusterer import VibeProposal
+    p = VibeProposal(name="x", description="y", action="new")
+    assert p.seed_tracks == []
+    assert p.members == []
+    assert p.member_count is None
+
+
+def test_slim_user_led_response_schema_only_has_mappings_field():
+    """Defense-in-depth: LLMVibeMappingResponse stays narrow.
+    Mirrors test_slim_llm_response_schema_has_no_rated_track_index_map_field.
+    """
+    from app.services.vibe_clusterer import LLMVibeMappingResponse
+    fields = set(LLMVibeMappingResponse.model_fields.keys())
+    assert fields == {"mappings"}, (
+        f"LLMVibeMappingResponse must only have 'mappings'; got {fields}"
+    )
