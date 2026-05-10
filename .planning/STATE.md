@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-05-08)
 ## Current Position
 
 Phase: 6.1
-Plan: Not yet planned
-Status: Context gathered — ready to plan
-Last activity: 2026-05-10 -- Phase 6.1 context captured (CONTEXT.md + DISCUSSION-LOG.md)
+Plan: 06.1-01 + 06.1-02 (both written, plan-checker PASS with notes)
+Status: Ready to execute — run /gsd-execute-phase 6.1
+Last activity: 2026-05-10 -- Phase 6.1 plans revised after plan-checker review; ready to execute
 
 ### v2.0 Phase Snapshot
 
