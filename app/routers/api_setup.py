@@ -339,6 +339,29 @@ async def finalize(request: Request, session: Session = Depends(get_session)):
 
     global _finalize_status
 
+    # WR-09: re-entrancy guard. The "Push to Plex" button (and the wizard's
+    # Retry on failed banner) is double-clickable, and HTMX does not debounce
+    # on its own. Two concurrent finalize POSTs would both proceed and clobber
+    # _finalize_status / _recluster_status, AND insert duplicate Vibe rows
+    # because the per-proposal idempotency-by-name is name-match only —
+    # interleaved inserts can both pass the check before either commits.
+    # While running, refuse the new call by re-rendering the in-progress
+    # banner with HTTP 200 (matches the existing error-partial swap
+    # convention; HTMX morphs it into the same target the original click
+    # was already polling).
+    if _finalize_status.state == "running":
+        templates = get_templates()
+        return templates.TemplateResponse(
+            request,
+            "partials/push_to_plex_banner.html",
+            {
+                "state": "running",
+                "created": _finalize_status.created,
+                "total": _finalize_status.total,
+                "error": None,
+            },
+        )
+
     state = _get_or_create_setup_state(session)
     if not state.draft_proposals_json:
         templates = get_templates()

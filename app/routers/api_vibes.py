@@ -221,6 +221,20 @@ async def recluster_commit(
 
     global _recluster_status
 
+    # WR-09: re-entrancy guard. The "Push to Plex" / Retry button on the
+    # recluster banner is double-clickable; HTMX does not debounce. Two
+    # concurrent commits would race on _recluster_status AND on the
+    # name-based idempotency check (interleaved INSERTs can both pass the
+    # check before either commits). While running, refuse the new call by
+    # re-rendering the in-progress banner with HTTP 200.
+    if _recluster_status.state == "running":
+        templates = get_templates()
+        return templates.TemplateResponse(
+            request,
+            "partials/push_to_plex_banner.html",
+            _state_to_banner_payload(),
+        )
+
     state = _get_or_create_setup_state(session)
     if not state.recluster_mode:
         templates = get_templates()
