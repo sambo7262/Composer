@@ -6,8 +6,12 @@ seconds. unslot_track is the cleared path (10 to 0).
 
 Per-track asyncio.Lock (D-16 / Pitfall 23) keyed on plex_rating_key —
 concurrent rate-correct events for the same track serialize. The lock dict
-is bounded at 100 entries; old locks are evicted via a simple LRU
-(``OrderedDict.popitem(last=False)``).
+is a ``weakref.WeakValueDictionary``: an entry survives only while a holder
+(an ``async with lock:`` block, or a callsite with a strong reference)
+keeps the lock alive. Once no holder remains, GC reclaims the entry. This
+preserves the per-track serialization invariant under burst — a previous
+LRU-eviction scheme could drop an in-use lock and let a second arrival
+construct a fresh, unheld lock for the same key (WR-01).
 
 Soft-membership rule (Pitfall 24 / VIBE-02): a track joins a second vibe
 only when its distance to the second-closest centroid is within 1 std-dev of
@@ -33,7 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import OrderedDict
+import weakref
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -56,8 +60,12 @@ logger = logging.getLogger(__name__)
 # Module-level state (D-16) — singleton lock dict + status
 # ---------------------------------------------------------------------------
 
-_slot_in_locks: OrderedDict[str, asyncio.Lock] = OrderedDict()
-_LOCK_DICT_MAX = 100
+# WR-01: WeakValueDictionary so locks held by an `async with` block (strong
+# refs on the awaiting coroutine's stack) keep themselves alive. An in-use
+# lock cannot be evicted; once no holder remains, GC reclaims the entry.
+_slot_in_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
 _STD_FLOOR = 1e-6
 
 
@@ -89,19 +97,22 @@ def get_vibe_service_status() -> VibeServiceStatus:
 
 
 def _get_lock(rating_key: str) -> asyncio.Lock:
-    """LRU-ish per-track lock dict (D-16). Bounded at _LOCK_DICT_MAX entries.
+    """Per-track lock (D-16) backed by a WeakValueDictionary.
 
-    On hit: move the lock to the end (most-recently-used).
-    On miss: create + insert at end. If size exceeds cap, popitem(last=False)
-    drops the least-recently-used lock.
+    Returns the existing lock for the key if any holder still references it,
+    or creates and registers a new one. The caller's `async with lock:` block
+    holds a strong reference for the duration of the critical section, so
+    concurrent arrivals for the same key receive the SAME lock instance and
+    serialize properly. Once all holders complete, GC reclaims the entry.
+
+    WR-01 fix: the previous bounded OrderedDict could evict an in-use lock
+    when the dict exceeded its cap, causing a second arrival to receive a
+    fresh, unheld lock and race the original holder.
     """
-    if rating_key in _slot_in_locks:
-        _slot_in_locks.move_to_end(rating_key)
-        return _slot_in_locks[rating_key]
-    lock = asyncio.Lock()
-    _slot_in_locks[rating_key] = lock
-    if len(_slot_in_locks) > _LOCK_DICT_MAX:
-        _slot_in_locks.popitem(last=False)
+    lock = _slot_in_locks.get(rating_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _slot_in_locks[rating_key] = lock
     return lock
 
 
