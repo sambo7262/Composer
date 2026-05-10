@@ -148,7 +148,19 @@ Plans:
   3. User edits a vibe name in the wizard ("Late Night Drives" → "Night Drives"); the corresponding Plex playlist is renamed to `Composer · Night Drives` and persists across container restart
   4. User triggers "Re-cluster vibes" from settings; the LLM proposes new clusters, the user reviews and confirms, and existing manual track→vibe overrides are preserved across the re-cluster
   5. With <30 rated tracks, the wizard refuses to cluster and surfaces the "rate more tracks" gate; with 30–49 rated tracks, single-vibe degraded mode runs; with ≥50, full clustering at silhouette ≥ 0.25
-**Plans**: TBD
+**Plans:** 4 plans
+Plans:
+**Wave 1**
+- [ ] 06-01-PLAN.md — Foundation: Vibe/TrackVibe/ManagedPlaylist/SetupState models, Track.pending_slot_in column, base.html alpine-morph + min-h-dvh + viewport-fit=cover, --touch-target-min CSS token, vibe_helpers.feature_chip_text, AST sklearn-allowlist test
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 06-02-PLAN.md — Slot-in pipeline: vibe_clusterer (sklearn k-means + silhouette + LLM naming + refinement turn), plex_playlist_service (create/update/archive/rename/is_managed; Pitfall 5 additive + Pitfall 6 post-push verify), vibe_service (slot_track + unslot_track + per-track lock + soft-margin + pending_slot_in), event_handlers + analysis_service hooks, extended AST static test
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 06-03-PLAN.md — Wizard + conversational refinement loop: api_setup router (7 endpoints), 5 wizard pages (/setup, /setup/webhook, /setup/propose, /setup/confirm, /setup/done) + 10 partials, GET / wizard auto-redirect, refinement loop with HTMX morph swap (Pitfall 15) + 10-turn cap (D-04), finalize creates Composer · {name} Plex playlists under semaphore=1 (D-25)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 06-04-PLAN.md — Re-cluster + settings + /debug/vibes: api_vibes router (recluster/start/commit/status + reslot-all), settings.html Vibes section + recluster_modal (Keep current vibes NOT Cancel — UI-SPEC BLOCK fix), /debug/vibes diagnostic page + 3 partials (vibe_diagnostic_card, slot_in_log_table, drift_indicator), SlotInLog table + SetupState.recluster_mode column, D-21 diff-based reconciliation, D-22 manual override preservation
 **UI hint**: yes
 **Key Concerns** (pitfalls to bake in):
   - **Cold-start gating** (Pitfall 3, VIBE-06): hard floor at <30 rated tracks (clustering disabled); 30–49 = single-vibe degraded mode; ≥50 = full clustering. `k_max = min(7, n_rated // 15)`. Silhouette ≥ 0.25 enforced; below threshold, surface a "your taste is tight, try k=2 or rate more" message — don't silently produce nonsense vibes.
