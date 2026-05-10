@@ -572,8 +572,13 @@ async def recluster_commit(
                         source_name_to_new_vibe_id[old_name] = existing.id
                         # Track the (possibly new) name as well
                         source_name_to_new_vibe_id[prop.name] = existing.id
+                        # CR-02: explicit continue prevents fall-through into
+                        # the elif chain below. The fallback path (existing is
+                        # None) does NOT continue — it reassigns action="new"
+                        # so the elif action == "new" branch handles it.
+                        continue
 
-                if action == "dropped":
+                elif action == "dropped":
                     src_id = (
                         prop.source_vibe_ids[0] if prop.source_vibe_ids else None
                     )
