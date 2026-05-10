@@ -176,13 +176,14 @@ Plans:
 
 ### Phase 06.1: Vibe Wizard Foundations: server-led clustering + user-led vibe input (INSERTED)
 
-**Goal:** [Urgent work - to be planned]
-**Requirements**: TBD
+**Goal:** Replace the broken Phase 6 initial-proposal flow with server-led k-means membership (every rated track lands in its nearest vibe) and user-led Step 3 input (user types 3–7 vibe names; ONE LLM call maps cluster centroids to names with a strong/weak/no_match fit grade); ship a one-shot first-deploy migration that archives existing Composer · Plex playlists and wipes the broken state
+**Requirements**: VIBE-02, VIBE-04, VIBE-05, VIBE-09, WIZ-05
 **Depends on:** Phase 6
-**Plans:** 0 plans
+**Plans:** 2 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 06.1 to break down)
+- [ ] 06.1-01-PLAN.md — Server-led clustering: LLMVibeFit + LLMVibeMappingResponse schemas, map_user_vibes_to_clusters (k-means labels drive seed_track_indices), permutation validator + retry-once, fit fields on VibeProposal
+- [ ] 06.1-02-PLAN.md — Wizard UI + finalize population + first-deploy migration: textbox-stack Step 3 input, fit-grade chip on proposal cards, propose/init endpoint rewire, finalize triggers reslot_all_rated_tracks, MigrationLog gate + run_phase_61_migration() in lifespan
 
 ### Phase 7: Suggestions Queue + v1 Chat Retirement
 **Goal**: User has a continuous `Composer · Suggestions` Plex playlist that drains as they listen and refills with taste-aware picks within 30 seconds; v1 mood-chat is retired; vibes home is the new landing page
