@@ -9,8 +9,8 @@ LLM proposes -> user types feedback -> LLM refines -> repeat up to 10 turns ->
 #proposal-cards (Pitfall 15 / D-09 alpine-morph) so each card's Alpine x-data
 state survives swaps.
 
-Form parsing: Annotated[str, Form()] + json.loads (NEVER pydantic.Json[Model] --
-D-05 / FastAPI #10997).
+Form parsing: Annotated[str, Form()] + json.loads. NEVER use pydantic-Json
+inside Form() (D-05 / FastAPI bug #10997 silently coerces wrong).
 """
 from __future__ import annotations
 
