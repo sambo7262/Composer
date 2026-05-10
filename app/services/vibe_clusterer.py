@@ -274,6 +274,10 @@ def _aggregate_rated_set_sync() -> dict:
                 "danceability": t.danceability,
                 "valence": t.valence,
                 "rating": t.user_rating,
+                # WARNING #2 (Phase 6.1): per-track genre, used by per-cluster
+                # top_genres aggregation in map_user_vibes_to_clusters. Track.genre
+                # is a (possibly empty) comma-separated string.
+                "genre": t.genre or "",
             }
         )
 
@@ -522,6 +526,127 @@ def _validate_seed_indices(
                     f"seed_track_indices contains out of range index {idx} "
                     f"(valid: 0..{n_rated - 1}); proposal name={prop.name!r}"
                 )
+
+
+def _build_user_led_clustering_user_prompt(
+    user_names: List[str],
+    cluster_summaries: List[dict],
+) -> str:
+    """User-prompt for the D-NEW-01 user-led mapping call (Phase 6.1).
+
+    Conventions (quick-260510-i1q positional-ID pattern carried forward):
+    - Each cluster gets a stable positional integer ``cluster_index`` (0..N-1).
+    - Explicit instruction: use the integer ``cluster_index`` field, NOT the
+      centroid description or top-artist name, in the response.
+    - User names are passed verbatim (no rewriting).
+
+    ``cluster_summaries`` is a list of dicts shaped:
+        {"cluster_index": int, "centroid": {energy, tempo, danceability,
+         valence}, "top_artists": [..3-5..], "top_genres": [..top 3..],
+         "closest_tracks": [..10 "Title — Artist"..], "member_count": int}
+
+    WARNING #2: top_genres is REQUIRED — the LLM uses it to map
+    genre-driven names like "synth heavy" to the correct cluster.
+    """
+    payload = {
+        "user_typed_vibe_names": user_names,
+        "clusters": cluster_summaries,
+        "task": (
+            "For each user-typed vibe name above, pick the ONE cluster from "
+            "the `clusters` list that best matches. Each cluster_index MUST "
+            "be used exactly once across all mappings (it is a permutation "
+            "of [0.." + str(len(user_names) - 1) + "]). Use the integer "
+            "`cluster_index` field, NOT the centroid description or any "
+            "top-artist name. Echo back the user's name verbatim in the "
+            "`user_name` field (server resolves casing via case-insensitive "
+            "lookup; you may use any casing). Grade fit as:\n"
+            "- 'strong': clear audio/genre match between name and cluster\n"
+            "- 'weak': partial match (e.g., one defining genre present but "
+            "broader cluster identity is different)\n"
+            "- 'no_match': cluster does not match the user's name at all; "
+            "include a 1-line 'reason' explaining why. Empty playlist is "
+            "still valid — the user can decide whether to keep it.\n"
+            "Write a 1-line `description` per cluster that summarizes its "
+            "audio/genre identity AS IT MAPS TO THE USER NAME. The "
+            "`top_genres` list per cluster is your primary signal for "
+            "genre-driven names (e.g. 'synth heavy', 'metal core')."
+        ),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _validate_mapping_permutation(
+    mappings: "List[LLMVibeFit]", n: int
+) -> Optional[str]:
+    """Validate the LLM mapping response (Phase 6.1 D-NEW-11).
+
+    Returns None if valid. Returns a corrective-prompt-friendly error string
+    if invalid (caller uses this in the retry user-prompt).
+
+    Checks:
+    1. len(mappings) == n (one mapping per user name).
+    2. cluster_index set is a permutation of [0..n-1] (no duplicates, all
+       in range).
+    3. Every fit="no_match" has a non-empty `reason` string.
+    """
+    if len(mappings) != n:
+        return f"Expected {n} mappings (one per user name); got {len(mappings)}."
+    seen = set()
+    for m in mappings:
+        if m.cluster_index < 0 or m.cluster_index >= n:
+            return (
+                f"cluster_index={m.cluster_index} for user_name="
+                f"'{m.user_name}' is out of range [0, {n - 1}]."
+            )
+        if m.cluster_index in seen:
+            return (
+                f"cluster_index={m.cluster_index} is used more than once. "
+                f"Each cluster_index MUST appear exactly once (permutation "
+                f"of [0..{n - 1}])."
+            )
+        seen.add(m.cluster_index)
+        if m.fit == "no_match" and (m.reason is None or not m.reason.strip()):
+            return (
+                f"fit='no_match' for user_name='{m.user_name}' MUST include "
+                f"a non-empty 'reason' explaining why no cluster matches."
+            )
+    return None
+
+
+def _carryover_fit_from_prior(
+    new_proposal: "VibeProposal",
+    prior_proposals: Optional[List["VibeProposal"]],
+) -> "VibeProposal":
+    """Blocker #5 Option A (Phase 6.1) — preserve fit + fit_reason through the
+    refine round-trip.
+
+    The LLM-side :class:`LLMVibeProposal` does NOT carry ``fit``/``fit_reason``;
+    so during refine the canonicalization step
+    (``LLMVibeProposal → VibeProposal``) drops those fields by default. This
+    helper looks up the new proposal's ``name`` in ``prior_proposals`` via
+    case-insensitive match and copies ``fit`` + ``fit_reason`` from the matched
+    prior.
+
+    Lookup is ``.strip().casefold()`` on ``name``. If the new proposal's name
+    has no case-insensitive match in priors (e.g. action="new" → vibe added in
+    this refine turn), fit stays None.
+
+    Idempotent: if ``new_proposal`` already has ``fit`` set (e.g. the LLM
+    unexpectedly populated it), DO NOT overwrite.
+    """
+    if new_proposal.fit is not None:
+        return new_proposal
+    if not prior_proposals:
+        return new_proposal
+    key = new_proposal.name.strip().casefold()
+    for prior in prior_proposals:
+        if prior.name.strip().casefold() == key and prior.fit is not None:
+            # Pydantic v2: model_copy with update is the safe path.
+            return new_proposal.model_copy(update={
+                "fit": prior.fit,
+                "fit_reason": prior.fit_reason,
+            })
+    return new_proposal
 
 
 def _resolve_source_vibe_ids(
@@ -846,6 +971,262 @@ async def refine_proposals(
     return proposals
 
 
+async def map_user_vibes_to_clusters(
+    user_names: List[str],
+) -> VibeProposalSet:
+    """User-led Step 3 mapping (Phase 6.1 D-NEW-01, D-NEW-04, D-NEW-10).
+
+    Pipeline:
+    1. Validate user_names (3-7, dedupe case-insensitive, non-empty trims).
+       WARNING #1: build a casefold lookup table so the LLM echo can be
+       resolved back to the user's ORIGINAL casing.
+    2. Aggregate the rated set; cold-start gate at n_rated < 30 raises ValueError.
+    3. z-score normalize and run k-means with k=N (len(user_names)).
+    4. Build per-cluster summaries (centroid + top artists + top_genres
+       (WARNING #2) + 10 closest-to-centroid tracks + member_count).
+    5. ONE LLM call: purpose='vibe_clustering_user_led', response_model=
+       LLMVibeMappingResponse. Retry-once on permutation/reason validation
+       failure with a corrective user prompt.
+    6. Server assembles VibeProposalSet: each proposal's seed_track_indices
+       comes from the k-means labels for the mapped cluster (server-side,
+       never the LLM). Each proposal additionally carries:
+       - seed_tracks: 5 closest-to-centroid as
+         [{title, artist, rating_key}, ...] for the card template.
+       - members: ALL cluster members as the same shape, for the
+         "Show all N tracks" disclosure.
+       - member_count: = len(members), for the fit-chip display.
+       - fit, fit_reason: from the LLM mapping.
+       - name: resolved via casefold lookup → user's ORIGINAL casing.
+       - description: from the LLM mapping.
+    7. materialize_clusters() fills centroid + spread + silhouette per proposal
+       (does NOT clobber seed_tracks/members/member_count/fit/fit_reason —
+       mutates centroid/spread/silhouette only).
+    """
+    # --- Input validation ---
+    if len(user_names) < 3 or len(user_names) > 7:
+        raise ValueError(
+            f"vibe count must be 3-7; got {len(user_names)}"
+        )
+    normalized = [n.strip() for n in user_names]
+    if any(not n for n in normalized):
+        raise ValueError("vibe names must not be blank")
+    # WARNING #1: casefold lookup table — preserves the user's exact casing.
+    # Key = lowercased+stripped; value = the ORIGINAL user-typed string.
+    name_lookup: dict[str, str] = {}
+    for n in normalized:
+        key = n.casefold()
+        if key in name_lookup:
+            raise ValueError(f"duplicate vibe names: '{n}'")
+        name_lookup[key] = n
+
+    n_targets = len(normalized)
+
+    # --- Aggregate + cold-start gate ---
+    agg = await asyncio.to_thread(_aggregate_rated_set_sync)
+    n_rated = agg["rated_track_count"]
+    if n_rated < COLD_START_FLOOR:
+        raise ValueError(
+            f"cold-start: <{COLD_START_FLOOR} rated tracks "
+            f"(have {n_rated}); rate more tracks in Plexamp first"
+        )
+
+    # --- k-means with forced k=N ---
+    feature_matrix: np.ndarray = agg["feature_matrix"]
+    mean = feature_matrix.mean(axis=0)
+    std = feature_matrix.std(axis=0)
+    X_normalized = _z_score_normalize(feature_matrix, mean, std)
+    chosen_k, labels, centroids_norm, sil, degraded = _pick_best_k(
+        X_normalized, n_rated, forced_k=n_targets
+    )
+    logger.info(
+        "vibe_clusterer user-led: n_rated=%d k=%d silhouette=%.3f degraded=%s "
+        "user_names=%s",
+        n_rated, chosen_k, sil, degraded, normalized,
+    )
+
+    # --- Build per-cluster summaries for the LLM prompt ---
+    index_map = agg["rated_track_index_map"]
+    tracks_for_prompt = agg["tracks_for_prompt"]
+    cluster_summaries: List[dict] = []
+    # Per-cluster member index lists (used twice: prompt + later
+    # seed_tracks/members construction).
+    cluster_members: dict[int, List[int]] = {ci: [] for ci in range(chosen_k)}
+    for i, lab in enumerate(labels.tolist()):
+        cluster_members[int(lab)].append(i)
+
+    # Cache per-cluster sorted-by-distance member indices (closest first).
+    # Reused for both the prompt's closest_tracks AND the proposal's
+    # seed_tracks (top 5) + members (all, in distance order).
+    cluster_sorted_members: dict[int, List[int]] = {}
+
+    for ci in range(chosen_k):
+        member_idxs = cluster_members[ci]
+        if not member_idxs:
+            cluster_sorted_members[ci] = []
+            cluster_summaries.append({
+                "cluster_index": ci,
+                "centroid": {"energy": 0.0, "tempo": 0.0,
+                             "danceability": 0.0, "valence": 0.0},
+                "top_artists": [],
+                "top_genres": [],
+                "closest_tracks": [],
+                "member_count": 0,
+            })
+            continue
+        member_features = feature_matrix[member_idxs]
+        c_raw = member_features.mean(axis=0)
+
+        # Top artists in this cluster.
+        artist_counter: Counter = Counter()
+        for mi in member_idxs:
+            t = tracks_for_prompt[mi]
+            if t.get("artist"):
+                artist_counter[t["artist"]] += 1
+        top_artists = [a for a, _ in artist_counter.most_common(5)]
+
+        # WARNING #2 — Per-cluster top 3 genres (frequency across members).
+        # Track.genre is comma-separated; split + strip + count.
+        genre_counter: Counter = Counter()
+        for mi in member_idxs:
+            t = tracks_for_prompt[mi]
+            raw_genre = t.get("genre") or ""
+            for g in raw_genre.split(","):
+                g = g.strip()
+                if g:
+                    genre_counter[g] += 1
+        top_genres = [g for g, _ in genre_counter.most_common(3)]
+
+        # Distance-sorted members for prompt (closest 10) + proposal
+        # construction (seed_tracks=5 closest, members=all in distance
+        # order).
+        centroid_norm = centroids_norm[ci]
+        dists = []
+        for mi in member_idxs:
+            d = float(np.linalg.norm(X_normalized[mi] - centroid_norm))
+            dists.append((mi, d))
+        dists.sort(key=lambda x: x[1])
+        sorted_member_idxs = [mi for mi, _d in dists]
+        cluster_sorted_members[ci] = sorted_member_idxs
+
+        closest_tracks = []
+        for mi in sorted_member_idxs[:10]:
+            t = tracks_for_prompt[mi]
+            closest_tracks.append(
+                f"{t.get('title', '?')} — {t.get('artist', '?')}"
+            )
+
+        cluster_summaries.append({
+            "cluster_index": ci,
+            "centroid": {
+                "energy": float(c_raw[0]),
+                "tempo": float(c_raw[1]),
+                "danceability": float(c_raw[2]),
+                "valence": float(c_raw[3]),
+            },
+            "top_artists": top_artists,
+            "top_genres": top_genres,
+            "closest_tracks": closest_tracks,
+            "member_count": len(member_idxs),
+        })
+
+    # --- LLM call: structured output, retry-once on validation failure ---
+    system_prompt = _build_clustering_system_prompt(
+        n_rated,
+        agg["top_artists"],
+        agg["top_genres"],
+        agg["tracks_for_prompt"],
+        agg["rated_track_index_map"],
+    )
+    user_prompt = _build_user_led_clustering_user_prompt(
+        normalized, cluster_summaries
+    )
+
+    # Lazy session — module-local re-export shim so tests can monkeypatch.
+    client = get_anthropic_client_v2(None)
+
+    async def _one_call(prompt: str) -> LLMVibeMappingResponse:
+        return await client.call_with_structured_output(
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            response_model=LLMVibeMappingResponse,
+            purpose="vibe_clustering_user_led",
+        )
+
+    response = await _one_call(user_prompt)
+    err = _validate_mapping_permutation(response.mappings, n_targets)
+    if err is not None:
+        # Retry once with corrective prompt (mirrors _validate_seed_indices).
+        logger.warning(
+            "user-led mapping validation failed; retrying once: %s", err
+        )
+        corrective = (
+            user_prompt
+            + "\n\nPREVIOUS RESPONSE WAS INVALID: "
+            + err
+            + " Please return a new mapping that satisfies the constraints."
+        )
+        response = await _one_call(corrective)
+        err2 = _validate_mapping_permutation(response.mappings, n_targets)
+        if err2 is not None:
+            raise ValueError(
+                f"LLMVibeMappingResponse failed permutation validation after "
+                f"retry: {err2}"
+            )
+
+    # --- Server-assembled VibeProposalSet ---
+    # For each LLM mapping, build a canonical VibeProposal with:
+    #  - seed_track_indices = ALL track indices assigned to its mapped cluster
+    #    (server-led membership — the LLM never picks members).
+    #  - seed_tracks = top 5 by distance-to-centroid as {title, artist, rating_key}.
+    #  - members = ALL members, same shape, in distance order.
+    #  - member_count = len(members).
+    #  - name = user's ORIGINAL casing (via WARNING #1 casefold lookup).
+    proposals: List[VibeProposal] = []
+    for m in response.mappings:
+        sorted_idxs = cluster_sorted_members.get(m.cluster_index, [])
+        # WARNING #1 — preserve user's exact casing.
+        resolved_name = name_lookup.get(
+            m.user_name.strip().casefold(), m.user_name
+        )
+
+        def _mk_track_dict(mi: int) -> dict:
+            t = tracks_for_prompt[mi]
+            im = index_map[mi]
+            return {
+                "title": t.get("title", "") or im.get("title", ""),
+                "artist": t.get("artist", "") or im.get("artist", ""),
+                "rating_key": im.get("rating_key", ""),
+            }
+
+        seed_tracks = [_mk_track_dict(mi) for mi in sorted_idxs[:5]]
+        members = [_mk_track_dict(mi) for mi in sorted_idxs]
+
+        proposals.append(VibeProposal(
+            name=resolved_name,
+            description=m.description,
+            action="new",
+            source_vibe_ids=[],
+            seed_track_indices=list(sorted_idxs),
+            seed_tracks=seed_tracks,
+            members=members,
+            member_count=len(members),
+            fit=m.fit,
+            fit_reason=m.reason,
+        ))
+
+    proposal_set = VibeProposalSet(
+        proposals=proposals,
+        rated_track_count=n_rated,
+        silhouette_avg=sil,
+        forced_k=n_targets,
+        degraded_mode=degraded,
+        rated_track_index_map=index_map,
+    )
+
+    proposal_set = materialize_clusters(proposal_set)
+    return proposal_set
+
+
 async def _call_llm_with_validation(
     *,
     system_prompt: str,
@@ -913,6 +1294,20 @@ async def _call_llm_with_validation(
     canonical_proposals = _canonicalize_llm_proposals(
         llm_response.proposals, prior_proposals
     )
+
+    # Phase 6.1 Blocker #5 Option A — refine round-trip: preserve fit +
+    # fit_reason from prior_proposals by case-insensitive name match. The
+    # canonicalization step above drops fit/fit_reason because the LLM-side
+    # LLMVibeProposal schema doesn't carry them. Refine callers pass
+    # prior_proposals so the prior fit grade survives the round-trip; initial
+    # callers pass None (and map_user_vibes_to_clusters resolves fit directly
+    # from the LLM mapping, never via this helper).
+    prior_list = (
+        prior_proposals.proposals if prior_proposals is not None else None
+    )
+    canonical_proposals = [
+        _carryover_fit_from_prior(p, prior_list) for p in canonical_proposals
+    ]
 
     # Assemble the full VibeProposalSet server-side.
     return VibeProposalSet(
