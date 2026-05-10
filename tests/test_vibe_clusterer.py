@@ -264,6 +264,90 @@ async def test_initial_proposal_picks_silhouette_optimal_k(db_with_phase6, monke
 
 
 # ---------------------------------------------------------------------------
+# Regression: production 500 — slim LLM response succeeds end-to-end
+# (quick-260510-das)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_initial_proposal_succeeds_with_slim_llm_response(
+    db_with_phase6, monkeypatch
+):
+    """Regression: prod 500 on POST /api/setup/propose/init.
+
+    Before the fix, the LLM was asked to return rated_track_index_map; Claude
+    returned `{}` (empty dict for empty collection — known JSON shape ambiguity),
+    failing Pydantic validation against `List[dict]` at anthropic_client.py:128.
+
+    After the fix, the LLM is constrained to VibeProposalSetLLMResponse
+    (proposals only), and the server assembles VibeProposalSet from the LLM
+    response + aggregate data. Validation cannot fail on a server-controlled
+    field because the LLM never sees it.
+    """
+    _seed_tracks(db_with_phase6, count=60, well_separated=True)
+
+    # Build a slim LLM response — the new contract.
+    from app.services.vibe_clusterer import (
+        VibeProposal,
+        VibeProposalSet,
+        VibeProposalSetLLMResponse,
+    )
+    canned = VibeProposalSetLLMResponse(
+        proposals=[
+            VibeProposal(
+                name=f"Vibe {i+1}",
+                description=f"Description {i+1}",
+                action="new",
+                source_vibe_ids=[],
+                seed_track_indices=list(range(i * 20, (i + 1) * 20)),
+            )
+            for i in range(3)
+        ],
+    )
+
+    fake_client = MagicMock()
+    fake_client.call_with_structured_output = AsyncMock(return_value=canned)
+    monkeypatch.setattr(
+        "app.services.vibe_clusterer.get_anthropic_client_v2",
+        lambda session: fake_client,
+    )
+
+    from app.services.vibe_clusterer import initial_cluster_proposal
+    result = await initial_cluster_proposal()
+
+    # Server populated the fields the LLM no longer sees.
+    assert isinstance(result, VibeProposalSet)
+    assert result.rated_track_count == 60
+    assert isinstance(result.rated_track_index_map, list)
+    assert len(result.rated_track_index_map) == 60
+    assert result.degraded_mode is False  # n_rated >= 30, well-separated
+    assert len(result.proposals) == 3
+
+    # Confirm the LLM was asked for the slim model, NOT the full one.
+    kwargs = fake_client.call_with_structured_output.await_args.kwargs
+    assert kwargs["response_model"] is VibeProposalSetLLMResponse
+
+
+# ---------------------------------------------------------------------------
+# Defensive: slim LLM contract MUST NOT regress to include server fields
+# (quick-260510-das)
+# ---------------------------------------------------------------------------
+def test_slim_llm_response_schema_has_no_rated_track_index_map_field():
+    """Defensive: the slim LLM contract MUST NOT contain rated_track_index_map.
+
+    If a future refactor accidentally re-adds it, this test fails immediately —
+    preventing the production 500 from regressing.
+    """
+    from app.services.vibe_clusterer import VibeProposalSetLLMResponse
+
+    fields = VibeProposalSetLLMResponse.model_fields
+    assert set(fields.keys()) == {"proposals"}, (
+        f"VibeProposalSetLLMResponse must contain ONLY `proposals`; "
+        f"got {set(fields.keys())}. Adding server-controlled fields here "
+        "re-opens the prod bug where Claude returns "
+        "`rated_track_index_map: {}` and Pydantic validation fails."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test 4: forced_k override
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
