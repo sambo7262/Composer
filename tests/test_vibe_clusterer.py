@@ -155,8 +155,20 @@ def _seed_tracks(session: Session, count: int, *, well_separated: bool = False) 
 
 
 def _make_proposal_set(n_proposals: int, n_rated: int):
-    """Build a canned VibeProposalSet with valid integer indices."""
-    from app.services.vibe_clusterer import VibeProposal, VibeProposalSet
+    """Build a canned VibeProposalSetLLMResponse with valid integer indices.
+
+    Returns the slim LLM-side shape (post quick-260510-das refactor) — the
+    server assembles the full VibeProposalSet inside _call_llm_with_validation
+    from this slim response + aggregate / clustering parameters.
+
+    Use :func:`_make_full_proposal_set` when you need a full
+    :class:`VibeProposalSet` (e.g. as the ``prior`` argument to
+    ``refine_proposals``).
+    """
+    from app.services.vibe_clusterer import (
+        VibeProposal,
+        VibeProposalSetLLMResponse,
+    )
 
     proposals = []
     chunk = max(1, n_rated // n_proposals)
@@ -172,8 +184,22 @@ def _make_proposal_set(n_proposals: int, n_rated: int):
                 seed_track_indices=list(range(start, end)),
             )
         )
+    return VibeProposalSetLLMResponse(proposals=proposals)
+
+
+def _make_full_proposal_set(n_proposals: int, n_rated: int):
+    """Build a full VibeProposalSet — used as the ``prior`` arg to refine_proposals.
+
+    The slim :class:`VibeProposalSetLLMResponse` from :func:`_make_proposal_set`
+    is the *mock return value* shape; the *prior* shape passed into
+    ``refine_proposals`` is still the full :class:`VibeProposalSet` (with
+    server-controlled fields like ``forced_k`` and ``degraded_mode`` populated).
+    """
+    from app.services.vibe_clusterer import VibeProposalSet
+
+    slim = _make_proposal_set(n_proposals, n_rated)
     return VibeProposalSet(
-        proposals=proposals,
+        proposals=slim.proposals,
         rated_track_count=n_rated,
     )
 
@@ -238,6 +264,90 @@ async def test_initial_proposal_picks_silhouette_optimal_k(db_with_phase6, monke
 
 
 # ---------------------------------------------------------------------------
+# Regression: production 500 — slim LLM response succeeds end-to-end
+# (quick-260510-das)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_initial_proposal_succeeds_with_slim_llm_response(
+    db_with_phase6, monkeypatch
+):
+    """Regression: prod 500 on POST /api/setup/propose/init.
+
+    Before the fix, the LLM was asked to return rated_track_index_map; Claude
+    returned `{}` (empty dict for empty collection — known JSON shape ambiguity),
+    failing Pydantic validation against `List[dict]` at anthropic_client.py:128.
+
+    After the fix, the LLM is constrained to VibeProposalSetLLMResponse
+    (proposals only), and the server assembles VibeProposalSet from the LLM
+    response + aggregate data. Validation cannot fail on a server-controlled
+    field because the LLM never sees it.
+    """
+    _seed_tracks(db_with_phase6, count=60, well_separated=True)
+
+    # Build a slim LLM response — the new contract.
+    from app.services.vibe_clusterer import (
+        VibeProposal,
+        VibeProposalSet,
+        VibeProposalSetLLMResponse,
+    )
+    canned = VibeProposalSetLLMResponse(
+        proposals=[
+            VibeProposal(
+                name=f"Vibe {i+1}",
+                description=f"Description {i+1}",
+                action="new",
+                source_vibe_ids=[],
+                seed_track_indices=list(range(i * 20, (i + 1) * 20)),
+            )
+            for i in range(3)
+        ],
+    )
+
+    fake_client = MagicMock()
+    fake_client.call_with_structured_output = AsyncMock(return_value=canned)
+    monkeypatch.setattr(
+        "app.services.vibe_clusterer.get_anthropic_client_v2",
+        lambda session: fake_client,
+    )
+
+    from app.services.vibe_clusterer import initial_cluster_proposal
+    result = await initial_cluster_proposal()
+
+    # Server populated the fields the LLM no longer sees.
+    assert isinstance(result, VibeProposalSet)
+    assert result.rated_track_count == 60
+    assert isinstance(result.rated_track_index_map, list)
+    assert len(result.rated_track_index_map) == 60
+    assert result.degraded_mode is False  # n_rated >= 30, well-separated
+    assert len(result.proposals) == 3
+
+    # Confirm the LLM was asked for the slim model, NOT the full one.
+    kwargs = fake_client.call_with_structured_output.await_args.kwargs
+    assert kwargs["response_model"] is VibeProposalSetLLMResponse
+
+
+# ---------------------------------------------------------------------------
+# Defensive: slim LLM contract MUST NOT regress to include server fields
+# (quick-260510-das)
+# ---------------------------------------------------------------------------
+def test_slim_llm_response_schema_has_no_rated_track_index_map_field():
+    """Defensive: the slim LLM contract MUST NOT contain rated_track_index_map.
+
+    If a future refactor accidentally re-adds it, this test fails immediately —
+    preventing the production 500 from regressing.
+    """
+    from app.services.vibe_clusterer import VibeProposalSetLLMResponse
+
+    fields = VibeProposalSetLLMResponse.model_fields
+    assert set(fields.keys()) == {"proposals"}, (
+        f"VibeProposalSetLLMResponse must contain ONLY `proposals`; "
+        f"got {set(fields.keys())}. Adding server-controlled fields here "
+        "re-opens the prod bug where Claude returns "
+        "`rated_track_index_map: {}` and Pydantic validation fails."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test 4: forced_k override
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
@@ -298,10 +408,14 @@ async def test_refine_proposals_validates_seed_indices_in_range(db_with_phase6, 
     """LLM returns out-of-range index → retry once → second failure raises ValueError."""
     _seed_tracks(db_with_phase6, 60, well_separated=True)
 
-    from app.services.vibe_clusterer import VibeProposal, VibeProposalSet
+    from app.services.vibe_clusterer import (
+        VibeProposal,
+        VibeProposalSetLLMResponse,
+    )
 
     # Build a bad proposal: index 60 is out-of-range for n_rated=60 (valid: 0..59).
-    bad_set = VibeProposalSet(
+    # NOTE: mock returns the slim LLM-side model post quick-260510-das.
+    bad_set = VibeProposalSetLLMResponse(
         proposals=[
             VibeProposal(
                 name="Bad",
@@ -311,7 +425,6 @@ async def test_refine_proposals_validates_seed_indices_in_range(db_with_phase6, 
                 seed_track_indices=[60],  # out-of-range
             )
         ],
-        rated_track_count=60,
     )
     fake_client = MagicMock()
     fake_client.call_with_structured_output = AsyncMock(side_effect=[bad_set, bad_set])
@@ -322,7 +435,7 @@ async def test_refine_proposals_validates_seed_indices_in_range(db_with_phase6, 
 
     from app.services.vibe_clusterer import refine_proposals
 
-    prior = _make_proposal_set(3, 60)
+    prior = _make_full_proposal_set(3, 60)
     with pytest.raises(ValueError, match="out of range"):
         await refine_proposals(prior, "do something bad")
     # The mock was called TWICE (initial + 1 retry).
@@ -347,7 +460,7 @@ async def test_refine_proposals_uses_recluster_purpose_when_flag_set(db_with_pha
 
     from app.services.vibe_clusterer import refine_proposals
 
-    prior = _make_proposal_set(3, 60)
+    prior = _make_full_proposal_set(3, 60)
 
     # Refine mode: purpose=vibe_clustering_refine
     await refine_proposals(prior, "merge two", recluster_mode=False)
