@@ -46,12 +46,19 @@ def get_session() -> Generator[Session, None, None]:
 
 
 def _migrate_add_columns(engine) -> None:
-    """Add any missing columns to existing tables (lightweight schema migration)."""
+    """Add any missing columns to existing tables (lightweight schema migration).
+
+    WR-08: routes through engine.raw_connection() instead of opening a fresh
+    sqlite3.connect(). The engine's @event.listens_for(_engine, "connect")
+    pragma listener fires on the pooled connection (sets journal_mode=WAL +
+    foreign_keys=ON), so the migration runs in the same WAL/FK regime as
+    every other engine connection. Avoids brief journal-mode conflicts with
+    pool readers and ensures any future migration that touches FK columns
+    enforces them during the migration itself.
+    """
     import logging
     import sqlite3
-    url = str(engine.url)
-    db_path = url.replace("sqlite:///", "")
-    conn = sqlite3.connect(db_path)
+    conn = engine.raw_connection()
     cursor = conn.cursor()
 
     # Get existing columns for the track table
