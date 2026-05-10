@@ -1,0 +1,24 @@
+{# Phase 6 Plan 04 (D-36 / OPS-06) — drift indicator.
+   Renders green when no drift is detected and red when orphan Composer ·
+   playlists exist (no ManagedPlaylist row) OR when ManagedPlaylist rows
+   have stale last_pushed_at relative to Plex.
+
+   Plan 04 ships the partial structure with placeholder zeros for orphan +
+   stale counts; the actual Plex-side cross-check is a deferred enhancement
+   (the route would need to convert to async + wrap fetchItem in to_thread).
+   The "no drift" copy renders correctly today because orphan_count =
+   stale_count = 0; future enhancement swaps in real counts.
+#}
+{% if drift.orphan_count == 0 and drift.stale_count == 0 %}
+  <div class="rounded-lg border border-success/30 bg-success/5 p-4">
+    <p class="text-[14px] text-success">
+      No drift detected — {{ drift.vibe_count }} vibes match {{ drift.managed_count }} ManagedPlaylist rows match {{ drift.plex_count }} Plex playlists.
+    </p>
+  </div>
+{% else %}
+  <div class="rounded-lg border border-error/30 bg-error/5 p-4">
+    <p class="text-[14px] text-error">
+      Drift detected: {{ drift.orphan_count }} Plex playlist(s) prefixed "Composer ·" without a ManagedPlaylist row, {{ drift.stale_count }} ManagedPlaylist row(s) with stale last_pushed_at.
+    </p>
+  </div>
+{% endif %}

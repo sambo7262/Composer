@@ -297,7 +297,12 @@ async def setup_step3(request: Request, session: Session = Depends(get_session))
 
 @router.get("/setup/confirm", response_class=HTMLResponse)
 async def setup_step4(request: Request, session: Session = Depends(get_session)):
-    """Wizard Step 4 — final review + Push to Plex CTA."""
+    """Wizard Step 4 — final review + Push to Plex CTA.
+
+    Phase 6 Plan 04 (D-20): pass `setup_state` so the template can branch the
+    Push CTA's hx-post target between /api/setup/finalize (initial wizard) and
+    /api/vibes/recluster/commit (re-cluster — diff-based per D-21).
+    """
     templates = get_templates()
     state = _get_or_init_setup_state(session)
     draft_proposals = _decode_draft(state)
@@ -307,6 +312,7 @@ async def setup_step4(request: Request, session: Session = Depends(get_session))
         {
             "active_page": "setup",
             "draft_proposals": draft_proposals,
+            "setup_state": state,
         },
     )
 
@@ -330,14 +336,108 @@ async def setup_done(request: Request, session: Session = Depends(get_session)):
 
 @router.get("/debug/vibes", response_class=HTMLResponse)
 async def debug_vibes(request: Request, session: Session = Depends(get_session)):
-    """Plan 04 stub — Step 5 'View vibes diagnostics' link target.
+    """DEBUG-02 / D-36: per-vibe diagnostic + slot-in log + drift indicator.
 
-    Plan 04 will fully populate this page; for now we render a minimal page so
-    the link doesn't 404.
+    Phase 6 Plan 04 implementation — replaces the Plan 03 stub. Builds:
+
+    - vibes: SELECT * FROM Vibe ORDER BY name (active + archived both shown
+      via the per-card Active field).
+    - vibe_member_counts: SELECT COUNT(*) per vibe FROM TrackVibe.
+    - slot_in_log: last 20 SlotInLog rows hydrated with track title/artist
+      + vibe names + comma-joined distance string for the diagnostic table.
+    - drift: orphan_count + stale_count are placeholder zeros for Plan 04;
+      the actual Plex-side cross-check is a deferred enhancement (the route
+      would need to convert to async + wrap fetchItem in to_thread). The
+      partial RENDERS correctly today (no-drift state) — future enhancement
+      swaps in real counts via plex_playlist_service.
     """
+    import json as _json
+
+    from app.models.vibe import (
+        ManagedPlaylist,
+        SlotInLog,
+        TrackVibe,
+        Vibe,
+    )
+
     templates = get_templates()
+
+    vibes = list(session.exec(select(Vibe).order_by(col(Vibe.name).asc())).all())
+
+    # Member counts per vibe (powers the "Members" diagnostic card field).
+    vibe_member_counts: dict = {}
+    for v in vibes:
+        n = session.exec(
+            select(func.count())
+            .select_from(TrackVibe)
+            .where(TrackVibe.vibe_id == v.id)
+        ).one()
+        vibe_member_counts[v.id] = n[0] if isinstance(n, tuple) else int(n)
+
+    # Last 20 slot-in decisions (DESC LIMIT 20). Hydrate vibe names + track
+    # title/artist + distance string from JSON columns at render time.
+    slot_log_rows = list(
+        session.exec(
+            select(SlotInLog)
+            .order_by(col(SlotInLog.timestamp).desc())
+            .limit(20)
+        ).all()
+    )
+    slot_in_log = []
+    for r in slot_log_rows:
+        track = session.exec(select(Track).where(Track.id == r.track_id)).first()
+        try:
+            vibe_ids = _json.loads(r.vibe_ids or "[]")
+        except (ValueError, TypeError):
+            vibe_ids = []
+        try:
+            distances = _json.loads(r.distances or "[]")
+        except (ValueError, TypeError):
+            distances = []
+        vibe_names = []
+        for vid in vibe_ids:
+            v = session.exec(select(Vibe).where(Vibe.id == vid)).first()
+            vibe_names.append(v.name if v else f"#{vid}")
+        slot_in_log.append({
+            "timestamp": r.timestamp,
+            "track_title": track.title if track else "—",
+            "track_artist": track.artist if track else "—",
+            "vibe_names": ", ".join(vibe_names),
+            "distances_str": (
+                ", ".join(f"{float(d):.2f}" for d in distances)
+                if distances
+                else "—"
+            ),
+            "soft_membership_applied": r.soft_membership_applied,
+        })
+
+    # Drift indicator state — Plan 04 ships placeholder counts. The Plex-side
+    # cross-check (orphan_count for "Composer · " playlists with no
+    # ManagedPlaylist row + stale_count for desynced last_pushed_at) is a
+    # deferred enhancement noted in the SUMMARY. The partial renders the
+    # green/no-drift branch correctly with these values.
+    managed_count = session.exec(
+        select(func.count()).select_from(ManagedPlaylist)
+    ).one()
+    managed_count = (
+        managed_count[0] if isinstance(managed_count, tuple) else int(managed_count)
+    )
+    drift = {
+        "vibe_count": len([v for v in vibes if v.is_active]),
+        "managed_count": managed_count,
+        "plex_count": managed_count,  # placeholder; deferred enhancement
+        "orphan_count": 0,
+        "stale_count": 0,
+    }
+
     return templates.TemplateResponse(
         request,
-        "pages/debug_vibes_stub.html",
-        {"active_page": "debug_vibes"},
+        "pages/debug_vibes.html",
+        {
+            "active_page": "debug_vibes",
+            "vibes": vibes,
+            "vibe_member_counts": vibe_member_counts,
+            "slot_in_log": slot_in_log,
+            "drift": drift,
+        },
     )

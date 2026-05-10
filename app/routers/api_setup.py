@@ -220,7 +220,15 @@ async def propose_init(
 
     state.draft_proposals_json = proposals.model_dump_json()
     state.refinement_turn_count = 0
-    state.last_llm_call_id = _latest_llm_call_id(session, "vibe_clustering_initial")
+    # Phase 6 Plan 04 (D-20 / D-34): when /api/vibes/recluster/start primed
+    # SetupState.recluster_mode=True, the proposal call still goes through
+    # initial_cluster_proposal (which uses purpose=vibe_clustering_initial),
+    # but downstream refine turns will use vibe_clustering_recluster. The
+    # Re-show last cluster proposal diagnostic (Plan 04 Task 4) reads ALL
+    # vibe_clustering_* purposes so it surfaces whichever was last.
+    state.last_llm_call_id = _latest_llm_call_id(
+        session, "vibe_clustering_"
+    )
     session.add(state)
     session.commit()
 
@@ -261,8 +269,13 @@ async def refine(
 
     prior = VibeProposalSet.model_validate_json(state.draft_proposals_json)
 
+    # Phase 6 Plan 04 (D-20 / D-34) — when SetupState.recluster_mode is True,
+    # pass it down so vibe_clusterer.refine_proposals uses purpose=
+    # vibe_clustering_recluster (lets the Phase 7 cost dashboard segment).
     try:
-        proposals = await refine_proposals(prior, message, recluster_mode=False)
+        proposals = await refine_proposals(
+            prior, message, recluster_mode=bool(state.recluster_mode)
+        )
     except Exception as exc:  # noqa: BLE001 — surface any LLM failure to the user
         logger.exception("refine_proposals failed")
         templates = get_templates()
@@ -513,6 +526,9 @@ async def reset(session: Session = Depends(get_session)):
     state.draft_proposals_json = ""
     state.refinement_turn_count = 0
     state.last_llm_call_id = None
+    # Phase 6 Plan 04 (D-20) — clear recluster_mode on full reset; "Run setup
+    # wizard again" should NOT silently leave us in re-cluster mode.
+    state.recluster_mode = False
     session.add(state)
     session.commit()
     return Response(status_code=204, headers={"HX-Redirect": "/setup"})

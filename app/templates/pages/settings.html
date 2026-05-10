@@ -47,10 +47,38 @@
   </div>
 </div>
 
-<!-- Phase 5: D-22 diagnostics footer link -->
-<footer class="mt-12 pt-6 border-t border-border">
-  <a href="/debug/events" class="text-[13px] text-text-secondary hover:text-accent">
-    View diagnostics →
+<!-- Phase 6 Plan 04 (D-20, VIBE-11): Vibes section.
+     Re-cluster button dispatches an Alpine event the recluster_modal listens for.
+     The modal is included once at the bottom of this section. -->
+<div class="mt-6">
+  <h2 class="text-[20px] font-semibold text-text-primary mb-3">Vibes</h2>
+  <button x-data
+          @click="$dispatch('open-recluster')"
+          class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold rounded-lg min-h-11 px-4 py-2 text-[14px]">
+    Re-cluster vibes
+  </button>
+  <p class="text-[13px] text-text-secondary mt-2">
+    Run the AI proposer again. Your current Plex playlists stay intact during refinement.
+  </p>
+  <a href="/setup"
+     hx-post="/api/setup/reset"
+     hx-trigger="click"
+     class="block text-[13px] text-text-secondary hover:text-accent mt-4 underline min-h-11 inline-flex items-center">
+    Run setup wizard again →
+  </a>
+</div>
+
+{% include "partials/recluster_modal.html" %}
+
+<!-- Phase 6 Plan 04 (D-37): dual diagnostics footer (replaces single link from Phase 5).
+     "View diagnostics →" was renamed "View event diagnostics →" to disambiguate
+     from the new "View vibes diagnostics →" link. -->
+<footer class="mt-12 pt-6 border-t border-border space-y-1">
+  <a href="/debug/events" class="block text-[13px] text-text-secondary hover:text-accent">
+    View event diagnostics →
+  </a>
+  <a href="/debug/vibes" class="block text-[13px] text-text-secondary hover:text-accent">
+    View vibes diagnostics →
   </a>
 </footer>
 {% endblock %}

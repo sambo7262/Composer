@@ -525,3 +525,148 @@ async def test_reslot_all_rated_tracks_iterates_with_semaphore(db_with_phase6, m
     assert count == 5
     # D-25 semaphore=1 → never more than 1 active.
     assert concurrent_count["max"] == 1
+
+
+# ===========================================================================
+# Phase 6 Plan 04 — SlotInLog best-effort write hooks (D-36)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_slot_track_writes_slotinlog_row(db_with_phase6, monkeypatch):
+    """D-36: slot_track writes a SlotInLog row with action='slot' on each decision."""
+    import json
+    _patch_plex_helpers(monkeypatch)
+    v = _add_vibe(db_with_phase6, "Target", 0.5, 120.0, 0.5, 0.5)
+    t = _add_track(db_with_phase6, rk="t-log-1", rating=8.0,
+                   energy=0.5, tempo=120.0, danceability=0.5, valence=0.5)
+
+    from app.services.vibe_service import slot_track
+    from app.models.vibe import SlotInLog
+
+    result = await slot_track("t-log-1")
+    assert result.primary_vibe_id == v.id
+
+    rows = db_with_phase6.exec(
+        select(SlotInLog).where(SlotInLog.track_id == t.id)
+    ).all()
+    assert len(rows) == 1, "Expected exactly 1 SlotInLog row for the slot decision"
+    row = rows[0]
+    assert row.action == "slot"
+    assert json.loads(row.vibe_ids) == [v.id]
+    distances = json.loads(row.distances)
+    assert len(distances) == 1
+    assert row.soft_membership_applied is False
+    assert row.timestamp  # ISO 8601 string set
+
+
+@pytest.mark.asyncio
+async def test_slot_track_with_soft_membership_logs_two_vibes(db_with_phase6, monkeypatch):
+    """D-36: when soft 2nd vibe is added, SlotInLog row carries both ids + distances."""
+    import json
+    _patch_plex_helpers(monkeypatch)
+    v_a = _add_vibe(db_with_phase6, "A", 0.50, 120.0, 0.50, 0.50)  # closest
+    v_b = _add_vibe(db_with_phase6, "B", 0.52, 121.0, 0.52, 0.52)  # near (within 1 std)
+    t = _add_track(db_with_phase6, rk="t-log-2", rating=8.0,
+                   energy=0.50, tempo=120.0, danceability=0.50, valence=0.50)
+
+    from app.services.vibe_service import slot_track
+    from app.models.vibe import SlotInLog
+
+    result = await slot_track("t-log-2")
+
+    rows = db_with_phase6.exec(
+        select(SlotInLog).where(SlotInLog.track_id == t.id)
+    ).all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.action == "slot"
+
+    # Either soft 2nd vibe applied (most likely with these centroids) or not —
+    # just verify the log faithfully reports what the slot path did.
+    logged_vibe_ids = json.loads(row.vibe_ids)
+    logged_distances = json.loads(row.distances)
+    assert v_a.id in logged_vibe_ids
+    assert len(logged_vibe_ids) == len(logged_distances)
+    if result.secondary_vibe_id is not None:
+        assert v_b.id in logged_vibe_ids
+        assert len(logged_vibe_ids) == 2
+        assert row.soft_membership_applied is True
+    else:
+        # Should still be a single-vibe log — but for these very-close
+        # centroids, soft membership IS expected. If it isn't, the test still
+        # passes faithfully reporting the actual behavior.
+        assert len(logged_vibe_ids) == 1
+        assert row.soft_membership_applied is False
+
+
+@pytest.mark.asyncio
+async def test_unslot_track_writes_slotinlog_row(db_with_phase6, monkeypatch):
+    """D-36: unslot_track writes a SlotInLog row with action='unslot' + affected vibe_ids."""
+    import json
+    _patch_plex_helpers(monkeypatch)
+
+    v1 = _add_vibe(db_with_phase6, "V1", 0.4, 110.0, 0.4, 0.4)
+    v2 = _add_vibe(db_with_phase6, "V2", 0.6, 130.0, 0.6, 0.6)
+    t = _add_track(db_with_phase6, rk="t-unslot-log", rating=8.0)
+
+    from app.models.vibe import TrackVibe, SlotInLog
+    db_with_phase6.add(
+        TrackVibe(track_id=t.id, vibe_id=v1.id, distance=0.1,
+                  assigned_at=datetime.now(timezone.utc).isoformat(),
+                  assigned_by="auto-slot")
+    )
+    db_with_phase6.add(
+        TrackVibe(track_id=t.id, vibe_id=v2.id, distance=0.2,
+                  assigned_at=datetime.now(timezone.utc).isoformat(),
+                  assigned_by="auto-slot")
+    )
+    db_with_phase6.commit()
+
+    from app.services.vibe_service import unslot_track
+
+    await unslot_track("t-unslot-log")
+
+    rows = db_with_phase6.exec(
+        select(SlotInLog).where(SlotInLog.track_id == t.id)
+    ).all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.action == "unslot"
+    affected = json.loads(row.vibe_ids)
+    assert set(affected) == {v1.id, v2.id}
+    assert json.loads(row.distances) == []
+    assert row.soft_membership_applied is False
+
+
+@pytest.mark.asyncio
+async def test_slotinlog_failure_does_not_break_slot_path(db_with_phase6, monkeypatch):
+    """D-36 invariant: SlotInLog write failure NEVER breaks the slot path."""
+    _patch_plex_helpers(monkeypatch)
+    v = _add_vibe(db_with_phase6, "Target", 0.5, 120.0, 0.5, 0.5)
+    t = _add_track(db_with_phase6, rk="t-fail-log", rating=8.0,
+                   energy=0.5, tempo=120.0, danceability=0.5, valence=0.5)
+
+    from app.models.vibe import TrackVibe
+
+    # Patch _insert_slot_in_log_sync to ALWAYS raise.
+    def _raising_insert(*args, **kwargs):
+        raise RuntimeError("simulated SlotInLog write failure")
+
+    monkeypatch.setattr(
+        "app.services.vibe_service._insert_slot_in_log_sync", _raising_insert
+    )
+
+    from app.services.vibe_service import slot_track
+
+    # Slot must STILL complete successfully despite the log raise.
+    result = await slot_track("t-fail-log")
+    assert result.primary_vibe_id == v.id
+    assert result.pending is False
+
+    # TrackVibe row created — slot succeeded.
+    rows = db_with_phase6.exec(
+        select(TrackVibe).where(TrackVibe.track_id == t.id)
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].vibe_id == v.id
+    assert rows[0].assigned_by == "auto-slot"
