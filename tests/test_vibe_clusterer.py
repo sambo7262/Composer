@@ -157,16 +157,18 @@ def _seed_tracks(session: Session, count: int, *, well_separated: bool = False) 
 def _make_proposal_set(n_proposals: int, n_rated: int):
     """Build a canned VibeProposalSetLLMResponse with valid integer indices.
 
-    Returns the slim LLM-side shape (post quick-260510-das refactor) — the
-    server assembles the full VibeProposalSet inside _call_llm_with_validation
-    from this slim response + aggregate / clustering parameters.
+    Returns the slim LLM-side shape: each proposal is :class:`LLMVibeProposal`
+    (permissive on ``source_vibe_ids``, accepting ``List[Union[int, str]]``)
+    post quick-260510-i1q. The server canonicalizes to :class:`VibeProposal`
+    inside ``_call_llm_with_validation`` from this slim response + aggregate /
+    clustering parameters.
 
     Use :func:`_make_full_proposal_set` when you need a full
     :class:`VibeProposalSet` (e.g. as the ``prior`` argument to
     ``refine_proposals``).
     """
     from app.services.vibe_clusterer import (
-        VibeProposal,
+        LLMVibeProposal,
         VibeProposalSetLLMResponse,
     )
 
@@ -176,7 +178,7 @@ def _make_proposal_set(n_proposals: int, n_rated: int):
         start = i * chunk
         end = min(n_rated, start + chunk)
         proposals.append(
-            VibeProposal(
+            LLMVibeProposal(
                 name=f"Vibe {i+1}",
                 description=f"Description {i+1}",
                 action="new",
@@ -193,13 +195,27 @@ def _make_full_proposal_set(n_proposals: int, n_rated: int):
     The slim :class:`VibeProposalSetLLMResponse` from :func:`_make_proposal_set`
     is the *mock return value* shape; the *prior* shape passed into
     ``refine_proposals`` is still the full :class:`VibeProposalSet` (with
-    server-controlled fields like ``forced_k`` and ``degraded_mode`` populated).
+    server-controlled fields like ``forced_k`` and ``degraded_mode`` populated)
+    and its proposals are the strict canonical :class:`VibeProposal`.
     """
-    from app.services.vibe_clusterer import VibeProposalSet
+    from app.services.vibe_clusterer import VibeProposal, VibeProposalSet
 
     slim = _make_proposal_set(n_proposals, n_rated)
+    # Canonicalize slim → strict VibeProposal for the prior side. The slim
+    # helper builds with empty source_vibe_ids and integer seed indices, so the
+    # conversion is lossless here.
+    canonical = [
+        VibeProposal(
+            name=p.name,
+            description=p.description,
+            action=p.action,
+            source_vibe_ids=[],
+            seed_track_indices=list(p.seed_track_indices),
+        )
+        for p in slim.proposals
+    ]
     return VibeProposalSet(
-        proposals=slim.proposals,
+        proposals=canonical,
         rated_track_count=n_rated,
     )
 
@@ -286,13 +302,13 @@ async def test_initial_proposal_succeeds_with_slim_llm_response(
 
     # Build a slim LLM response — the new contract.
     from app.services.vibe_clusterer import (
-        VibeProposal,
+        LLMVibeProposal,
         VibeProposalSet,
         VibeProposalSetLLMResponse,
     )
     canned = VibeProposalSetLLMResponse(
         proposals=[
-            VibeProposal(
+            LLMVibeProposal(
                 name=f"Vibe {i+1}",
                 description=f"Description {i+1}",
                 action="new",
@@ -409,15 +425,16 @@ async def test_refine_proposals_validates_seed_indices_in_range(db_with_phase6, 
     _seed_tracks(db_with_phase6, 60, well_separated=True)
 
     from app.services.vibe_clusterer import (
-        VibeProposal,
+        LLMVibeProposal,
         VibeProposalSetLLMResponse,
     )
 
     # Build a bad proposal: index 60 is out-of-range for n_rated=60 (valid: 0..59).
-    # NOTE: mock returns the slim LLM-side model post quick-260510-das.
+    # NOTE: mock returns the slim LLM-side model (LLMVibeProposal post
+    # quick-260510-i1q).
     bad_set = VibeProposalSetLLMResponse(
         proposals=[
-            VibeProposal(
+            LLMVibeProposal(
                 name="Bad",
                 description="d",
                 action="new",
@@ -526,3 +543,189 @@ async def test_materialize_clusters_assigns_centroids_and_spreads(db_with_phase6
         assert set(prop.spread.keys()) == {"energy", "tempo", "danceability", "valence"}
         assert prop.silhouette is not None
         assert isinstance(prop.silhouette, float)
+
+
+# ---------------------------------------------------------------------------
+# quick-260510-i1q regression tests: LLM returning vibe names (strings) in
+# source_vibe_ids must be resolved to positional integer indices, not crash
+# Pydantic validation.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_refine_resolves_string_source_vibe_ids_to_indices(
+    db_with_phase6, monkeypatch
+):
+    """Live prod crash: LLM returns source_vibe_ids=['Neon Nights', 'Hyperdrive'].
+
+    Expectation: server name-matches against prior_proposals and produces
+    canonical source_vibe_ids=[0, 1] (positional indices).
+    """
+    _seed_tracks(db_with_phase6, 60, well_separated=True)
+
+    from app.services.vibe_clusterer import (
+        LLMVibeProposal,
+        VibeProposal,
+        VibeProposalSet,
+        VibeProposalSetLLMResponse,
+    )
+
+    # Prior proposals as Claude would have seen them — names in canonical order.
+    prior = VibeProposalSet(
+        proposals=[
+            VibeProposal(
+                name="Neon Nights",
+                description="late-night synthwave",
+                action="new",
+                source_vibe_ids=[],
+                seed_track_indices=list(range(0, 20)),
+            ),
+            VibeProposal(
+                name="Hyperdrive",
+                description="high-energy fast happy",
+                action="new",
+                source_vibe_ids=[],
+                seed_track_indices=list(range(20, 40)),
+            ),
+        ],
+        rated_track_count=60,
+    )
+
+    # Mock LLM returns a merged_from proposal whose source_vibe_ids are NAMES,
+    # not integers — exactly the prod failure shape.
+    bad_slim = VibeProposalSetLLMResponse(
+        proposals=[
+            LLMVibeProposal(
+                name="Neon Hyperdrive",
+                description="merged the two",
+                action="merged_from",
+                source_vibe_ids=["Neon Nights", "Hyperdrive"],
+                seed_track_indices=list(range(0, 40)),
+            )
+        ],
+    )
+    fake_client = MagicMock()
+    fake_client.call_with_structured_output = AsyncMock(return_value=bad_slim)
+    monkeypatch.setattr(
+        "app.services.vibe_clusterer.get_anthropic_client_v2",
+        lambda s: fake_client,
+    )
+
+    from app.services.vibe_clusterer import refine_proposals
+
+    result = await refine_proposals(prior, "merge them")
+
+    assert isinstance(result, VibeProposalSet)
+    assert len(result.proposals) == 1
+    canonical = result.proposals[0]
+    # Strict canonical typed as List[int] — values resolved positionally.
+    assert canonical.source_vibe_ids == [0, 1]
+    assert all(isinstance(x, int) for x in canonical.source_vibe_ids)
+
+
+@pytest.mark.asyncio
+async def test_refine_drops_unresolvable_string_source_vibe_id(
+    db_with_phase6, monkeypatch, caplog
+):
+    """Unmatched name strings are dropped with a warning; matched ones survive."""
+    import logging as _logging
+
+    _seed_tracks(db_with_phase6, 60, well_separated=True)
+
+    from app.services.vibe_clusterer import (
+        LLMVibeProposal,
+        VibeProposal,
+        VibeProposalSet,
+        VibeProposalSetLLMResponse,
+    )
+
+    prior = VibeProposalSet(
+        proposals=[
+            VibeProposal(
+                name="Hyperdrive",
+                description="fast",
+                action="new",
+                source_vibe_ids=[],
+                seed_track_indices=list(range(0, 30)),
+            ),
+        ],
+        rated_track_count=60,
+    )
+
+    bad_slim = VibeProposalSetLLMResponse(
+        proposals=[
+            LLMVibeProposal(
+                name="Mystery Merge",
+                description="weird merge",
+                action="merged_from",
+                # 'Nonexistent Vibe' has NO match in prior; 'Hyperdrive' matches index 0.
+                source_vibe_ids=["Nonexistent Vibe", "Hyperdrive"],
+                seed_track_indices=list(range(0, 30)),
+            )
+        ],
+    )
+    fake_client = MagicMock()
+    fake_client.call_with_structured_output = AsyncMock(return_value=bad_slim)
+    monkeypatch.setattr(
+        "app.services.vibe_clusterer.get_anthropic_client_v2",
+        lambda s: fake_client,
+    )
+
+    from app.services.vibe_clusterer import refine_proposals
+
+    with caplog.at_level(_logging.WARNING, logger="app.services.vibe_clusterer"):
+        result = await refine_proposals(prior, "merge them")
+
+    assert len(result.proposals) == 1
+    canonical = result.proposals[0]
+    # Unresolvable string dropped; matched string → positional index 0.
+    assert canonical.source_vibe_ids == [0]
+    # The warning fired for the unresolvable entry.
+    assert any(
+        "unresolvable name" in rec.getMessage()
+        and "'Nonexistent Vibe'" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+def test_refine_user_prompt_includes_positional_ids():
+    """Refinement user prompt must inject 'id': N per prior proposal + an
+    explicit instruction telling Claude to use the integer 'id' field.
+
+    Without this anchor Claude falls back to the vibe name string as the most
+    stable identifier visible in the prompt and crashes Pydantic on the strict
+    canonical source_vibe_ids: List[int] schema (quick-260510-i1q prod crash).
+    """
+    from app.services.vibe_clusterer import (
+        VibeProposal,
+        VibeProposalSet,
+        _build_clustering_user_prompt,
+    )
+
+    prior = VibeProposalSet(
+        proposals=[
+            VibeProposal(
+                name="Neon Nights",
+                description="late-night synthwave",
+                action="new",
+                source_vibe_ids=[],
+                seed_track_indices=list(range(0, 20)),
+            ),
+            VibeProposal(
+                name="Hyperdrive",
+                description="high-energy fast happy",
+                action="new",
+                source_vibe_ids=[],
+                seed_track_indices=list(range(20, 40)),
+            ),
+        ],
+        rated_track_count=60,
+    )
+
+    prompt = _build_clustering_user_prompt(prior, "merge them")
+
+    # Positional integer 'id' fields are present in the JSON dump.
+    assert '"id": 0' in prompt
+    assert '"id": 1' in prompt
+    # Explicit instruction telling Claude to use the integer id (not the name).
+    assert "use the integer" in prompt
+    assert "'id'" in prompt
+    assert "NOT the name string" in prompt
