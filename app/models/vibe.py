@@ -134,3 +134,59 @@ class SetupState(SQLModel, table=True):
     completed_at: Optional[str] = None
     refinement_turn_count: int = 0   # D-04 / D-08
     last_llm_call_id: Optional[int] = None  # soft FK to LLMUsage.id (D-08, D-36)
+    # Phase 6 Plan 04 (D-20) — distinguishes wizard re-run from initial.
+    # Set True by POST /api/vibes/recluster/start; read by /api/setup/propose/init
+    # + /api/setup/refine to switch the LLM purpose to vibe_clustering_recluster
+    # (D-34) and by /setup/confirm to dispatch the commit to
+    # /api/vibes/recluster/commit (diff-based reconciliation per D-21) instead of
+    # /api/setup/finalize (initial bulk push). Cleared on commit.
+    # ``sa_column_kwargs={"server_default": "0"}`` ensures the SQLite column
+    # has a SQL DEFAULT 0, so legacy DBs using raw INSERT (without specifying
+    # this column) get the correct value — needed for the Plan 04 migration
+    # test that simulates an old INSERT path on a fresh schema.
+    recluster_mode: bool = Field(
+        default=False, sa_column_kwargs={"server_default": "0"}
+    )
+
+
+class SlotInLog(SQLModel, table=True):
+    """D-36 / Phase 6 Plan 04: feed for /debug/vibes 'Last 20 slot-in decisions'.
+
+    Lightweight log table; rows inserted best-effort by
+    :func:`app.services.vibe_service.slot_track` and
+    :func:`app.services.vibe_service.unslot_track` (lazy import + try/except so
+    log failure never breaks the slot path).
+
+    Field semantics:
+
+    - ``timestamp``: ISO 8601 UTC string. Indexed (``ix_slotinlog_timestamp``)
+      for the ``ORDER BY timestamp DESC LIMIT 20`` query that powers the
+      diagnostic table.
+    - ``track_id``: soft FK to ``Track.id`` (no SQLite FK constraint — matches
+      the existing convention; the diagnostic page hydrates ``Track.title`` and
+      ``Track.artist`` at render time).
+    - ``vibe_ids``: JSON list (encoded string) of vibe ids assigned on this
+      decision (1 or 2 — soft membership cap=2 per D-19).
+    - ``distances``: JSON list (encoded string) of computed distances, parallel
+      to ``vibe_ids`` (empty for action="unslot" — no distance for removal).
+    - ``soft_membership_applied``: True if a 2nd vibe was added via the
+      1-std-dev margin (Pitfall 24 / VIBE-02).
+    - ``action``: ``"slot"`` | ``"unslot"`` | ``"manual_override_lost"``
+      (D-22 — re-cluster commit logs lost manual overrides here).
+    - ``note``: free text for diagnostic context (e.g. "track 42 had manual
+      override on 'Late Night' but vibe was dropped without successor").
+
+    Rotation policy: D-36 deferred ideas list says "first version logs every
+    slot-in. If it grows unbounded, add a 30-day rotation. Revisit when the
+    table size hits 100k rows." Conservative estimate ~50 rows/year per the
+    Plan 04 threat model — no rotation needed at Phase 6 scale.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    timestamp: str = Field(index=True)  # ISO 8601 UTC; ix_slotinlog_timestamp
+    track_id: int  # soft FK to Track.id (no FK constraint — matches convention)
+    vibe_ids: str = Field(default="[]")  # JSON list of vibe ids (1 or 2)
+    distances: str = Field(default="[]")  # JSON list of distances, parallel
+    soft_membership_applied: bool = Field(default=False)
+    action: str  # "slot" | "unslot" | "manual_override_lost"
+    note: Optional[str] = None  # free text for diagnostic context

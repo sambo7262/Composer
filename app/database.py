@@ -114,6 +114,32 @@ def _migrate_add_columns(engine) -> None:
         "WHERE pending_slot_in = 1"
     )
 
+    # Phase 6 Plan 04 (D-20) — recluster_mode flag for SetupState.
+    # SetupState is a single-row table (id=1); ALTER ADD COLUMN with DEFAULT 0
+    # is safe and additive (Pitfall 19). Guarded by column-existence check so
+    # the migration is idempotent when re-run on already-migrated DBs.
+    try:
+        cursor.execute("PRAGMA table_info(setupstate)")
+        setupstate_cols = {row[1] for row in cursor.fetchall()}
+        if "recluster_mode" not in setupstate_cols:
+            cursor.execute(
+                "ALTER TABLE setupstate ADD COLUMN recluster_mode INTEGER DEFAULT 0"
+            )
+    except sqlite3.OperationalError:
+        # Table doesn't exist yet (very early init order); create_all will make
+        # it correctly from the SQLModel definition. Plan 04 ALTER is only for
+        # legacy DBs that were created on Plan 01-03 schema.
+        pass
+
+    # Phase 6 Plan 04 (D-36) — ix_slotinlog_timestamp for the
+    # "Last 20 slot-in decisions" diagnostic feed (ORDER BY timestamp DESC LIMIT 20).
+    # SQLModel ships a column-level index=True via the model definition; this
+    # CREATE INDEX IF NOT EXISTS is the explicit migration pin so the index
+    # exists even if create_all skipped it (legacy DB path).
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS ix_slotinlog_timestamp ON slotinlog(timestamp)"
+    )
+
     # Recalculate energy as weighted combination of loudness, tempo, complexity.
     # Old energy was spectral_rms-only which is unreliable (mastering-dependent).
     # New formula uses loudness (35%), existing energy/rms (25%), tempo (25%), complexity (15%).
@@ -150,6 +176,7 @@ def init_db() -> None:
     from app.models.vibe import (  # noqa: F401
         ManagedPlaylist,
         SetupState,
+        SlotInLog,  # Phase 6 Plan 04 (D-36)
         TrackVibe,
         Vibe,
     )

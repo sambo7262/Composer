@@ -41,6 +41,7 @@ def db_with_phase6(test_engine) -> Generator[Session, None, None]:
     from app.models.vibe import (  # noqa: F401
         ManagedPlaylist,
         SetupState,
+        SlotInLog,
         TrackVibe,
         Vibe,
     )
@@ -289,3 +290,138 @@ def test_setupstate_id_one_upsert_friendly(db_with_phase6):
     )
     assert rows[0].id == 1
     assert rows[0].step == "confirming"
+
+
+# ===========================================================================
+# Phase 6 Plan 04 — SlotInLog table + SetupState.recluster_mode column
+# ===========================================================================
+
+def test_slotinlog_table_created(test_engine):
+    """D-36: after init_db, slotinlog table is registered with the expected columns."""
+    from app.database import init_db
+
+    init_db()
+
+    table_names = set(SQLModel.metadata.tables.keys())
+    assert "slotinlog" in table_names, (
+        f"slotinlog table not registered. Got: {sorted(table_names)}"
+    )
+
+    db_path = str(test_engine.url).replace("sqlite:///", "")
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute("PRAGMA table_info(slotinlog)")
+        cols = {row[1] for row in cur.fetchall()}
+        for required in (
+            "id",
+            "timestamp",
+            "track_id",
+            "vibe_ids",
+            "distances",
+            "soft_membership_applied",
+            "action",
+            "note",
+        ):
+            assert required in cols, (
+                f"slotinlog missing column {required!r}. Got: {sorted(cols)}"
+            )
+    finally:
+        conn.close()
+
+
+def test_slotinlog_timestamp_indexed(test_engine):
+    """ix_slotinlog_timestamp index exists for the 'Last 20' ORDER BY DESC LIMIT 20 query."""
+    from app.database import init_db
+
+    init_db()
+    db_path = str(test_engine.url).replace("sqlite:///", "")
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute("PRAGMA index_list('slotinlog')")
+        idx_names = {row[1] for row in cur.fetchall()}
+        assert "ix_slotinlog_timestamp" in idx_names, (
+            f"ix_slotinlog_timestamp missing from slotinlog. Got: {sorted(idx_names)}"
+        )
+    finally:
+        conn.close()
+
+
+def test_setup_state_recluster_mode_column_added(test_engine):
+    """D-20: SetupState.recluster_mode column added via migration; default 0 (False).
+
+    Two-phase test: simulate a Plan 01-shape DB by creating the setupstate table
+    WITHOUT the recluster_mode column, then run init_db and verify the migration
+    added it.
+    """
+    from app.database import init_db
+
+    # First init creates the schema fully (including recluster_mode if model present).
+    init_db()
+    db_path = str(test_engine.url).replace("sqlite:///", "")
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute("PRAGMA table_info(setupstate)")
+        cols = {row[1] for row in cur.fetchall()}
+        assert "recluster_mode" in cols, (
+            f"setupstate missing recluster_mode column. Got: {sorted(cols)}"
+        )
+
+        # Insert a row without recluster_mode and verify default is 0.
+        cur.execute(
+            "INSERT INTO setupstate (id, step, draft_proposals_json, "
+            "refinement_turn_count) VALUES (?, ?, ?, ?)",
+            (1, "rating_source", "", 0),
+        )
+        conn.commit()
+        cur.execute("SELECT recluster_mode FROM setupstate WHERE id = 1")
+        val = cur.fetchone()[0]
+        assert val == 0, f"recluster_mode default should be 0; got {val!r}"
+    finally:
+        conn.close()
+
+
+def test_setup_state_recluster_mode_migration_on_legacy_db(test_engine):
+    """Simulate a Plan 01-shape DB that lacks recluster_mode and verify migration adds it."""
+    db_path = str(test_engine.url).replace("sqlite:///", "")
+
+    # Create a legacy setupstate WITHOUT recluster_mode column.
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE setupstate ("
+        "id INTEGER PRIMARY KEY, "
+        "step TEXT, "
+        "draft_proposals_json TEXT, "
+        "started_at TEXT, "
+        "completed_at TEXT, "
+        "refinement_turn_count INTEGER DEFAULT 0, "
+        "last_llm_call_id INTEGER"
+        ")"
+    )
+    cur.execute(
+        "INSERT INTO setupstate (id, step) VALUES (?, ?)",
+        (1, "rating_source"),
+    )
+    conn.commit()
+    conn.close()
+
+    from app.database import init_db
+    init_db()
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute("PRAGMA table_info(setupstate)")
+        cols = {row[1] for row in cur.fetchall()}
+        assert "recluster_mode" in cols, (
+            f"recluster_mode not added by migration. Got: {sorted(cols)}"
+        )
+        # The pre-existing row's recluster_mode should default to 0.
+        cur.execute("SELECT recluster_mode FROM setupstate WHERE id = 1")
+        val = cur.fetchone()[0]
+        assert val == 0, f"recluster_mode default should be 0; got {val!r}"
+    finally:
+        conn.close()

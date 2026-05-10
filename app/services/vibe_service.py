@@ -43,7 +43,7 @@ from sqlmodel import Session, select
 
 from app.database import get_engine
 from app.models.track import Track
-from app.models.vibe import ManagedPlaylist, TrackVibe, Vibe
+from app.models.vibe import ManagedPlaylist, SlotInLog, TrackVibe, Vibe
 from app.services.plex_playlist_service import (
     remove_from_playlist,
     update_playlist_items,
@@ -272,6 +272,36 @@ def _get_plex_credentials_sync() -> Tuple[str, str]:
         return url, token
 
 
+def _insert_slot_in_log_sync(
+    track_id: int,
+    vibe_ids_json: str,
+    distances_json: str,
+    soft_membership_applied: bool,
+    action: str,
+    note: Optional[str],
+) -> None:
+    """Best-effort INSERT into the SlotInLog diagnostic feed (D-36).
+
+    Phase 6 Plan 04 — feeds /debug/vibes "Last 20 slot-in decisions" table.
+    Single INSERT, single commit. Caller wraps in try/except so a log-write
+    failure NEVER breaks the slot/unslot path (Test 7 of Plan 04 enforces).
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with Session(get_engine()) as session:
+        session.add(
+            SlotInLog(
+                timestamp=now,
+                track_id=track_id,
+                vibe_ids=vibe_ids_json,
+                distances=distances_json,
+                soft_membership_applied=soft_membership_applied,
+                action=action,
+                note=note,
+            )
+        )
+        session.commit()
+
+
 # ---------------------------------------------------------------------------
 # Public async API
 # ---------------------------------------------------------------------------
@@ -469,6 +499,29 @@ async def _slot_track_inner(rating_key: str) -> SlotInResult:
                     )
 
     _status.last_slot_at = datetime.now(timezone.utc).isoformat()
+
+    # Phase 6 Plan 04 (D-36) — best-effort SlotInLog write for the
+    # /debug/vibes "Last 20 slot-in decisions" feed. Wrapped in try/except so
+    # a log-write failure NEVER breaks the slot path (Plan 04 Task 1 Test 7).
+    try:
+        import json as _json
+        logged_vibe_ids = [closest_vibe.id]
+        logged_distances = [closest_distance]
+        if secondary_vibe is not None and secondary_distance is not None:
+            logged_vibe_ids.append(secondary_vibe.id)
+            logged_distances.append(secondary_distance)
+        await asyncio.to_thread(
+            _insert_slot_in_log_sync,
+            track.id,
+            _json.dumps(logged_vibe_ids),
+            _json.dumps(logged_distances),
+            secondary_vibe is not None,
+            "slot",
+            None,
+        )
+    except Exception:
+        logger.exception("SlotInLog insert failed; slot succeeded")
+
     return SlotInResult(
         track_id=track.id,
         rating_key=rating_key,
@@ -533,6 +586,23 @@ async def _unslot_track_inner(rating_key: str) -> None:
                 )
 
     await asyncio.to_thread(_delete_trackvibes_sync, track.id)
+
+    # Phase 6 Plan 04 (D-36) — best-effort SlotInLog write on unslot. Same
+    # try/except convention as slot_track — log failure must NEVER break the
+    # unslot path. Distances list is empty (no distance for removal).
+    try:
+        import json as _json
+        await asyncio.to_thread(
+            _insert_slot_in_log_sync,
+            track.id,
+            _json.dumps(affected_vibe_ids),
+            _json.dumps([]),
+            False,
+            "unslot",
+            None,
+        )
+    except Exception:
+        logger.exception("SlotInLog insert failed; unslot succeeded")
 
 
 async def maybe_reslot_pending_track(track_id: int) -> None:
