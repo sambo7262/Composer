@@ -190,3 +190,16 @@ class SlotInLog(SQLModel, table=True):
     soft_membership_applied: bool = Field(default=False)
     action: str  # "slot" | "unslot" | "manual_override_lost"
     note: Optional[str] = None  # free text for diagnostic context
+
+
+class MigrationLog(SQLModel, table=True):
+    """Phase 6.1 D-NEW-09 gate: one row per phase migration that has run.
+
+    Used to make one-shot migrations idempotent across container restarts.
+    ``phase_id`` is the primary key; ``completed_at`` is NULL during in-flight
+    migrations (defensive — never read in current code path, future migrations
+    can use it for crash-recovery detection).
+    """
+
+    phase_id: str = Field(primary_key=True)
+    completed_at: Optional[str] = Field(default=None)

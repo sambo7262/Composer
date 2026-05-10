@@ -180,8 +180,10 @@ def init_db() -> None:
     from app.models.llm_usage import LLMUsage  # noqa: F401
     from app.models.taste_profile import TasteProfile  # noqa: F401
     # Phase 6 (D-28) — register vibe tables before create_all
+    # Phase 6.1 (D-NEW-09) — register MigrationLog for the one-shot migration gate.
     from app.models.vibe import (  # noqa: F401
         ManagedPlaylist,
+        MigrationLog,
         SetupState,
         SlotInLog,  # Phase 6 Plan 04 (D-36)
         TrackVibe,
