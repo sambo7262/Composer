@@ -45,6 +45,14 @@ class Track(SQLModel, table=True):
     view_count: Optional[int] = Field(default=0)
     rating_changed_at: Optional[str] = Field(default=None)
 
+    # Phase 6 (D-29 / D-17) — retroactive auto-slot flag. SQLite has no BOOL,
+    # so we store INTEGER 0/1; SQLModel maps Optional[int] over the column.
+    # The DB-side column was added in Plan 01's _migrate_add_columns shim;
+    # Plan 02 promotes it to a SQLModel-visible field so vibe_service can
+    # read/write it via the ORM. The partial index ix_track_pending_slot_in
+    # (added in Plan 01) covers WHERE pending_slot_in = 1 lookups.
+    pending_slot_in: Optional[int] = Field(default=0)
+
 
 class SyncState(SQLModel, table=True):
     """Tracks the last sync timestamp and total track count."""

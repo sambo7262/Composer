@@ -181,6 +181,23 @@ async def handle_rating_changed(event: RatingChangedEvent) -> None:
             "Taste profile recompute hook failed; rating update succeeded"
         )
 
+    # Phase 6 D-15 / D-18: Slot the track into matching vibes (or unslot if
+    # the rating was cleared). Best-effort second hook — runs AFTER the
+    # taste-profile recompute so the LLM-driven re-cluster path (Plan 04)
+    # sees a current taste profile when it fires. Lazy import mirrors the
+    # taste-profile recompute hook above (avoids circular-dep risk).
+    try:
+        from app.services.vibe_service import slot_track, unslot_track
+
+        if event.new_rating is None or event.new_rating == 0:
+            await unslot_track(event.plex_rating_key)
+        else:
+            await slot_track(event.plex_rating_key)
+    except Exception:
+        logger.exception(
+            "Vibe slot-in hook failed; rating update succeeded"
+        )
+
 
 async def handle_track_played(event: TrackPlayedEvent) -> None:
     """RATE-04: increment Track.view_count + update Track.last_viewed_at.

@@ -246,6 +246,20 @@ async def run_analysis() -> None:
 
             if result["success"]:
                 _analysis_status.analyzed_tracks += 1
+                # Phase 6 D-17: retroactive slot-in. After audio features
+                # are written for a rated track that was waiting on
+                # analysis, slot it into matching vibes and clear the
+                # pending_slot_in flag. Lazy import mirrors event_handlers'
+                # taste-profile recompute hook (avoids circular-dep risk).
+                try:
+                    from app.services.vibe_service import (
+                        maybe_reslot_pending_track,
+                    )
+                    await maybe_reslot_pending_track(track_id)
+                except Exception:
+                    logger.exception(
+                        "Reslot pending track hook failed; analysis succeeded"
+                    )
             else:
                 _analysis_status.failed_tracks += 1
                 # T-03-06: Only track title + generic error (no full paths in API)
