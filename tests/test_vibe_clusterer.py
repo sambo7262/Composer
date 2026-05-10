@@ -155,8 +155,20 @@ def _seed_tracks(session: Session, count: int, *, well_separated: bool = False) 
 
 
 def _make_proposal_set(n_proposals: int, n_rated: int):
-    """Build a canned VibeProposalSet with valid integer indices."""
-    from app.services.vibe_clusterer import VibeProposal, VibeProposalSet
+    """Build a canned VibeProposalSetLLMResponse with valid integer indices.
+
+    Returns the slim LLM-side shape (post quick-260510-das refactor) — the
+    server assembles the full VibeProposalSet inside _call_llm_with_validation
+    from this slim response + aggregate / clustering parameters.
+
+    Use :func:`_make_full_proposal_set` when you need a full
+    :class:`VibeProposalSet` (e.g. as the ``prior`` argument to
+    ``refine_proposals``).
+    """
+    from app.services.vibe_clusterer import (
+        VibeProposal,
+        VibeProposalSetLLMResponse,
+    )
 
     proposals = []
     chunk = max(1, n_rated // n_proposals)
@@ -172,8 +184,22 @@ def _make_proposal_set(n_proposals: int, n_rated: int):
                 seed_track_indices=list(range(start, end)),
             )
         )
+    return VibeProposalSetLLMResponse(proposals=proposals)
+
+
+def _make_full_proposal_set(n_proposals: int, n_rated: int):
+    """Build a full VibeProposalSet — used as the ``prior`` arg to refine_proposals.
+
+    The slim :class:`VibeProposalSetLLMResponse` from :func:`_make_proposal_set`
+    is the *mock return value* shape; the *prior* shape passed into
+    ``refine_proposals`` is still the full :class:`VibeProposalSet` (with
+    server-controlled fields like ``forced_k`` and ``degraded_mode`` populated).
+    """
+    from app.services.vibe_clusterer import VibeProposalSet
+
+    slim = _make_proposal_set(n_proposals, n_rated)
     return VibeProposalSet(
-        proposals=proposals,
+        proposals=slim.proposals,
         rated_track_count=n_rated,
     )
 
@@ -298,10 +324,14 @@ async def test_refine_proposals_validates_seed_indices_in_range(db_with_phase6, 
     """LLM returns out-of-range index → retry once → second failure raises ValueError."""
     _seed_tracks(db_with_phase6, 60, well_separated=True)
 
-    from app.services.vibe_clusterer import VibeProposal, VibeProposalSet
+    from app.services.vibe_clusterer import (
+        VibeProposal,
+        VibeProposalSetLLMResponse,
+    )
 
     # Build a bad proposal: index 60 is out-of-range for n_rated=60 (valid: 0..59).
-    bad_set = VibeProposalSet(
+    # NOTE: mock returns the slim LLM-side model post quick-260510-das.
+    bad_set = VibeProposalSetLLMResponse(
         proposals=[
             VibeProposal(
                 name="Bad",
@@ -311,7 +341,6 @@ async def test_refine_proposals_validates_seed_indices_in_range(db_with_phase6, 
                 seed_track_indices=[60],  # out-of-range
             )
         ],
-        rated_track_count=60,
     )
     fake_client = MagicMock()
     fake_client.call_with_structured_output = AsyncMock(side_effect=[bad_set, bad_set])
@@ -322,7 +351,7 @@ async def test_refine_proposals_validates_seed_indices_in_range(db_with_phase6, 
 
     from app.services.vibe_clusterer import refine_proposals
 
-    prior = _make_proposal_set(3, 60)
+    prior = _make_full_proposal_set(3, 60)
     with pytest.raises(ValueError, match="out of range"):
         await refine_proposals(prior, "do something bad")
     # The mock was called TWICE (initial + 1 retry).
@@ -347,7 +376,7 @@ async def test_refine_proposals_uses_recluster_purpose_when_flag_set(db_with_pha
 
     from app.services.vibe_clusterer import refine_proposals
 
-    prior = _make_proposal_set(3, 60)
+    prior = _make_full_proposal_set(3, 60)
 
     # Refine mode: purpose=vibe_clustering_refine
     await refine_proposals(prior, "merge two", recluster_mode=False)

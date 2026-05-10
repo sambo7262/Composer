@@ -90,8 +90,32 @@ class VibeProposal(BaseModel):
     silhouette: Optional[float] = None
 
 
+class VibeProposalSetLLMResponse(BaseModel):
+    """Slim LLM contract — the only fields the LLM is asked to return.
+
+    The server assembles the full :class:`VibeProposalSet` from this slim
+    response plus aggregate / clustering parameters. Keeping the LLM-facing
+    model narrow eliminates an entire class of LLM-shape-mismatch bugs at the
+    structured-output boundary (e.g. Claude returning ``rated_track_index_map:
+    {}`` for an empty collection — `quick-260510-das` regression).
+
+    DO NOT add server-controlled fields here. The defensive test
+    ``test_slim_llm_response_schema_has_no_rated_track_index_map_field`` will
+    fail loudly if anything other than ``proposals`` lands on this model.
+    """
+
+    proposals: List[VibeProposal]
+
+
 class VibeProposalSet(BaseModel):
-    """The full LLM proposal — Plan 03's wizard consumes this verbatim."""
+    """The full LLM proposal — Plan 03's wizard consumes this verbatim.
+
+    Server-controlled fields (``rated_track_count``, ``silhouette_avg``,
+    ``forced_k``, ``degraded_mode``, ``rated_track_index_map``) are populated
+    inside :func:`_call_llm_with_validation` after the slim LLM response is
+    validated. The LLM never sees these fields — see
+    :class:`VibeProposalSetLLMResponse`.
+    """
 
     proposals: List[VibeProposal]
     rated_track_count: int
@@ -282,17 +306,17 @@ def _build_clustering_system_prompt(
     parts.append("")
     parts.append("## Output format")
     parts.append(
-        'Return JSON matching VibeProposalSet: '
-        '{"proposals": [{"name", "description", "action", '
-        '"source_vibe_ids", "seed_track_indices"}, ...], '
-        '"rated_track_count", "silhouette_avg", "forced_k", '
-        '"degraded_mode", "rated_track_index_map"}'
+        'Return JSON matching VibeProposalSetLLMResponse: '
+        '{"proposals": [{"name": "...", "description": "...", "action": "...", '
+        '"source_vibe_ids": [...], "seed_track_indices": [...]}, ...]}'
     )
     parts.append(
         "action ∈ {keep, new, merged_from, split_from, renamed_from, dropped}. "
         "seed_track_indices MUST be integers in [0, rated_track_count). "
         "NEVER use raw Plex ratingKey strings (Pitfall 10). "
-        "Do NOT set centroid / spread / silhouette — server computes those."
+        "Do NOT set centroid / spread / silhouette — server computes those. "
+        'Return ONLY {"proposals": [...]}. The server populates rated_track_count, '
+        "silhouette_avg, forced_k, degraded_mode, and rated_track_index_map."
     )
     parts.append("")
     parts.append(
@@ -365,9 +389,9 @@ def _build_clustering_user_prompt(
     )
 
 
-def _validate_seed_indices(proposals: VibeProposalSet, n_rated: int) -> None:
+def _validate_seed_indices(proposals: List[VibeProposal], n_rated: int) -> None:
     """Raise ValueError if any seed_track_indices is out of [0, n_rated). Pitfall 10."""
-    for prop in proposals.proposals:
+    for prop in proposals:
         for idx in prop.seed_track_indices:
             if not (0 <= idx < n_rated):
                 raise ValueError(
@@ -564,14 +588,11 @@ async def initial_cluster_proposal(
         user_prompt=user_prompt,
         purpose="vibe_clustering_initial",
         n_rated=n_rated,
+        rated_track_index_map=agg["rated_track_index_map"],
+        forced_k=forced_k,
+        degraded=degraded,
+        silhouette_avg=sil,
     )
-
-    # Override what the LLM returned for server-controlled fields.
-    proposals.rated_track_count = n_rated
-    proposals.rated_track_index_map = agg["rated_track_index_map"]
-    proposals.forced_k = forced_k
-    proposals.degraded_mode = degraded
-    proposals.silhouette_avg = sil
 
     proposals = materialize_clusters(proposals)
     return proposals
@@ -605,70 +626,86 @@ async def refine_proposals(
         prior_proposals=prior, user_message=user_message
     )
 
+    # degraded_mode and silhouette_avg propagate from prior unless caller
+    # explicitly recomputes; refinement turns reuse the prior measurement.
     proposals = await _call_llm_with_validation(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         purpose=purpose,
         n_rated=n_rated,
+        rated_track_index_map=agg["rated_track_index_map"],
+        forced_k=prior.forced_k,
+        degraded=prior.degraded_mode,
+        silhouette_avg=prior.silhouette_avg,
     )
-
-    proposals.rated_track_count = n_rated
-    proposals.rated_track_index_map = agg["rated_track_index_map"]
-    proposals.forced_k = prior.forced_k
-    # degraded_mode and silhouette_avg propagate from prior unless caller
-    # explicitly recomputes; refinement turns reuse the prior measurement.
-    proposals.degraded_mode = prior.degraded_mode
-    proposals.silhouette_avg = prior.silhouette_avg
 
     proposals = materialize_clusters(proposals)
     return proposals
 
 
 async def _call_llm_with_validation(
+    *,
     system_prompt: str,
     user_prompt: str,
     purpose: str,
     n_rated: int,
+    rated_track_index_map: list,
+    forced_k: Optional[int],
+    degraded: bool,
+    silhouette_avg: Optional[float],
 ) -> VibeProposalSet:
-    """LLM call + Pydantic validation + range check on seed_track_indices.
+    """LLM call + slim-schema Pydantic validation + server-side assembly.
 
-    Retries ONCE with a corrective user prompt on out-of-range indices
-    (Pitfall 10). Second failure raises ValueError.
+    The LLM is constrained to :class:`VibeProposalSetLLMResponse` (only
+    ``proposals``); server-controlled fields are assembled here from the
+    aggregate / clustering parameters, NOT from the LLM. This eliminates the
+    ``rated_track_index_map: {}`` shape-mismatch class of bugs (the LLM never
+    sees the field).
+
+    Retries ONCE with a corrective user prompt on out-of-range
+    ``seed_track_indices`` (Pitfall 10). Second failure raises ``ValueError``.
     """
     with Session(get_engine()) as session:
         client = get_anthropic_client_v2(session)
 
-    # First attempt.
-    proposals = await client.call_with_structured_output(
+    # First attempt — slim LLM contract.
+    llm_response = await client.call_with_structured_output(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
-        response_model=VibeProposalSet,
+        response_model=VibeProposalSetLLMResponse,
         purpose=purpose,
     )
     try:
-        _validate_seed_indices(proposals, n_rated)
-        return proposals
+        _validate_seed_indices(llm_response.proposals, n_rated)
     except ValueError as first_err:
         logger.warning(
             "LLM returned out-of-range seed_track_indices; retrying once: %s",
             first_err,
         )
+        # Retry once with a corrective addendum.
+        corrective_user_prompt = (
+            f"{user_prompt}\n\nPREVIOUS RESPONSE FAILED VALIDATION: "
+            f"seed_track_indices contained an integer outside the valid range "
+            f"[0, {n_rated}). Reissue the response ensuring every index "
+            f"is in that range."
+        )
+        llm_response = await client.call_with_structured_output(
+            system_prompt=system_prompt,
+            user_prompt=corrective_user_prompt,
+            response_model=VibeProposalSetLLMResponse,
+            purpose=purpose,
+        )
+        _validate_seed_indices(llm_response.proposals, n_rated)
 
-    # Retry once with a corrective addendum.
-    corrective_user_prompt = (
-        f"{user_prompt}\n\nPREVIOUS RESPONSE FAILED VALIDATION: "
-        f"seed_track_indices contained an integer outside the valid range "
-        f"[0, {n_rated}). Reissue the VibeProposalSet ensuring every index "
-        f"is in that range."
+    # Assemble the full VibeProposalSet server-side.
+    return VibeProposalSet(
+        proposals=llm_response.proposals,
+        rated_track_count=n_rated,
+        silhouette_avg=silhouette_avg,
+        forced_k=forced_k,
+        degraded_mode=degraded,
+        rated_track_index_map=rated_track_index_map,
     )
-    proposals = await client.call_with_structured_output(
-        system_prompt=system_prompt,
-        user_prompt=corrective_user_prompt,
-        response_model=VibeProposalSet,
-        purpose=purpose,
-    )
-    _validate_seed_indices(proposals, n_rated)
-    return proposals
 
 
 # ---------------------------------------------------------------------------
