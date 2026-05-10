@@ -160,7 +160,7 @@ Plans:
 - [x] 06-03-PLAN.md — Wizard + conversational refinement loop: api_setup router (7 endpoints), 5 wizard pages (/setup, /setup/webhook, /setup/propose, /setup/confirm, /setup/done) + 10 partials, GET / wizard auto-redirect, refinement loop with HTMX morph swap (Pitfall 15) + 10-turn cap (D-04), finalize creates Composer · {name} Plex playlists under semaphore=1 (D-25)
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 06-04-PLAN.md — Re-cluster + settings + /debug/vibes: api_vibes router (recluster/start/commit/status + reslot-all), settings.html Vibes section + recluster_modal (Keep current vibes NOT Cancel — UI-SPEC BLOCK fix), /debug/vibes diagnostic page + 3 partials (vibe_diagnostic_card, slot_in_log_table, drift_indicator), SlotInLog table + SetupState.recluster_mode column, D-21 diff-based reconciliation, D-22 manual override preservation
+- [x] 06-04-PLAN.md — Re-cluster + settings + /debug/vibes: api_vibes router (recluster/start/commit/status + reslot-all), settings.html Vibes section + recluster_modal (Keep current vibes NOT Cancel — UI-SPEC BLOCK fix), /debug/vibes diagnostic page + 3 partials (vibe_diagnostic_card, slot_in_log_table, drift_indicator), SlotInLog table + SetupState.recluster_mode column, D-21 diff-based reconciliation, D-22 manual override preservation
 **UI hint**: yes
 **Key Concerns** (pitfalls to bake in):
   - **Cold-start gating** (Pitfall 3, VIBE-06): hard floor at <30 rated tracks (clustering disabled); 30–49 = single-vibe degraded mode; ≥50 = full clustering. `k_max = min(7, n_rated // 15)`. Silhouette ≥ 0.25 enforced; below threshold, surface a "your taste is tight, try k=2 or rate more" message — don't silently produce nonsense vibes.
