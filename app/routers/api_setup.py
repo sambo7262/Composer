@@ -246,6 +246,31 @@ async def refine(
 
     state = _get_or_create_setup_state(session)
 
+    # WR-05: reject empty messages BEFORE any LLM call. An empty textarea
+    # would otherwise trigger a full LLM round-trip with user_message=""
+    # (wasting a daily-cap turn from the Phase 5 LLMUsage 50/day circuit
+    # breaker) and uselessly increment refinement_turn_count. We render
+    # refine_error.html and return HTTP 200 so HTMX swaps the partial
+    # into #proposal-cards (the existing morph:innerHTML target) — same
+    # convention as the LLM-failure exception handler below. The user
+    # sees a visible error and the prior proposal is preserved.
+    if not message.strip():
+        prior = (
+            VibeProposalSet.model_validate_json(state.draft_proposals_json)
+            if state.draft_proposals_json
+            else None
+        )
+        templates = get_templates()
+        return templates.TemplateResponse(
+            request,
+            "partials/refine_error.html",
+            {
+                "reason": "Please enter what to change",
+                "refinement_turn_count": state.refinement_turn_count,
+                "draft_proposals": prior,
+            },
+        )
+
     # D-04 hard cap at 10. Re-render with cap copy + same prior proposals.
     if state.refinement_turn_count >= 10:
         prior = (
