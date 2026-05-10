@@ -1,0 +1,12 @@
+{# Phase 6 Plan 03 — sticky-bottom CTA bar (Pitfall 16, 17 / UI-04).
+Uses env(safe-area-inset-bottom) so iOS toolbar doesn't cover it.
+44px tap target via min-h-12.
+#}
+<div class="fixed bottom-0 left-0 right-0 z-30 bg-surface-elevated/95 backdrop-blur border-t border-border px-4 pt-4 pb-[calc(16px+env(safe-area-inset-bottom))]">
+  <button type="{{ button_type | default('submit') }}"
+          {% if hx_post %}hx-post="{{ hx_post }}"{% endif %}
+          {% if form_id %}form="{{ form_id }}"{% endif %}
+          class="block w-full text-center bg-accent hover:bg-accent-hover text-surface-primary font-semibold rounded-lg min-h-12 text-[14px] px-4 py-3">
+    {{ cta_label }}
+  </button>
+</div>

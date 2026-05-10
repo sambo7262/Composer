@@ -1,0 +1,31 @@
+{# Phase 6 Plan 03 — conversational refinement input (D-12).
+Textarea + Refine button + turn counter; HTMX morph-swap target #proposal-cards.
+#}
+<form hx-post="/api/setup/refine"
+      hx-target="#proposal-cards"
+      hx-swap="morph:innerHTML"
+      hx-indicator="#refine-thinking"
+      class="bg-surface-card rounded-lg p-4 border border-border mt-6 space-y-3">
+  <textarea name="message"
+            placeholder='Try: "merge Late Night and Chill", "add a pre-workout playlist", "drop the Workout vibe", "rename Sunday Mornings to Coffee"'
+            class="w-full min-h-24 bg-surface-elevated text-[14px] text-text-primary rounded p-3 outline-none focus:ring-2 focus:ring-accent"></textarea>
+  <p class="text-[13px] text-text-secondary">
+    The AI can rename, drop, merge, split, or add vibes. To move individual tracks, edit in Plexamp.
+  </p>
+  <div class="flex items-center justify-between gap-3 flex-wrap">
+    <button type="submit"
+            class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold rounded-lg min-h-11 px-4 py-2 text-[14px]">
+      Refine
+    </button>
+    <span id="refine-thinking" class="htmx-indicator text-[13px] text-text-secondary">Thinking…</span>
+    <span class="{% if refinement_turn_count and refinement_turn_count >= 8 %}text-accent{% else %}text-text-secondary{% endif %} text-[13px]">
+      {% if refinement_turn_count and refinement_turn_count == 10 %}
+        Refinement 10 of 10 — save what you have or start over
+      {% elif refinement_turn_count and refinement_turn_count >= 8 %}
+        Refinement {{ refinement_turn_count }} of 10 — almost at the cap
+      {% else %}
+        Refinement {{ refinement_turn_count or 0 }} of 10
+      {% endif %}
+    </span>
+  </div>
+</form>

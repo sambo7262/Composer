@@ -1,0 +1,26 @@
+{% extends "partials/wizard_layout.html" %}
+{% block title %}Set up Composer — Step 2 of 5{% endblock %}
+{% set current_step_num = 2 %}
+{% set current_step_label = "Configure Plex webhooks" %}
+{% block wizard_content %}
+  <h1 class="text-[28px] font-semibold mb-2">Configure Plex webhooks</h1>
+  <p class="text-[14px] text-text-secondary mb-4">
+    Plex pushes events to Composer when you rate or play a track. Pick a URL Plex can reach, then send a test from Plex Web → Account → Webhooks.
+  </p>
+  <div hx-get="/api/settings/webhook/section"
+       hx-trigger="load"
+       hx-target="this"
+       hx-swap="innerHTML">
+    <p class="text-[13px] text-text-secondary">Loading webhook configuration…</p>
+  </div>
+  <a href="#"
+     hx-post="/api/setup/step2/submit"
+     class="block text-[13px] text-text-secondary underline mt-4 min-h-11 inline-flex items-center">
+    Skip — set up later in Settings
+  </a>
+{% endblock %}
+{% block wizard_sticky_cta %}
+  {% with cta_label="Continue to your vibes", hx_post="/api/setup/step2/submit", button_type="button" %}
+    {% include "partials/wizard_sticky_cta.html" %}
+  {% endwith %}
+{% endblock %}

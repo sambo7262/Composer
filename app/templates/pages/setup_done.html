@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block nav %}{# No nav on done — clean exit #}{% endblock %}
+{% block title %}Composer — You're all set{% endblock %}
+{% block content %}
+  <div class="flex flex-col items-center justify-center min-h-[80vh] text-center pb-32">
+    <h1 class="text-[28px] font-semibold mb-4">You're all set</h1>
+    <p class="text-[14px] text-text-secondary mb-8 max-w-md">
+      Your {{ vibe_count }} vibe playlists are live in Plex. New ratings will slot into matching vibes within a few seconds.
+    </p>
+    <a href="/" class="inline-flex items-center bg-accent hover:bg-accent-hover text-surface-primary font-semibold px-6 py-3 rounded-lg min-h-12 text-[14px]">
+      Open vibes home →
+    </a>
+    <a href="/debug/vibes" class="block text-[13px] text-text-secondary underline mt-6 min-h-11 inline-flex items-center">
+      View vibes diagnostics
+    </a>
+  </div>
+{% endblock %}

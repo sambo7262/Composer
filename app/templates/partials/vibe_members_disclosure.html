@@ -1,0 +1,16 @@
+{# Phase 6 Plan 03 — Alpine x-collapse expanding member list (D-11).
+Click "Show all N tracks" -> expands the scrollable full member list.
+#}
+<div x-data="{ expanded: false }" class="mt-2">
+  <button type="button"
+          @click="expanded = !expanded"
+          class="text-[13px] text-text-secondary underline min-h-11 flex items-center gap-1">
+    <span x-show="!expanded">Show all {{ proposal.member_count | default(proposal.seed_track_indices | length) }} tracks</span>
+    <span x-show="expanded">Hide all tracks</span>
+  </button>
+  <div x-show="expanded" x-collapse class="mt-2 max-h-64 overflow-y-auto bg-surface-elevated rounded p-2">
+    {% for member in (proposal.members | default([])) %}
+      <p class="text-[13px] text-text-secondary truncate">{{ member.title }} — {{ member.artist }}</p>
+    {% endfor %}
+  </div>
+</div>

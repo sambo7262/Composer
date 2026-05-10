@@ -1,0 +1,55 @@
+{% extends "partials/wizard_layout.html" %}
+{% block title %}Set up Composer — Step 3 of 5{% endblock %}
+{% set current_step_num = 3 %}
+{% set current_step_label = "Find your vibes" %}
+{% block wizard_content %}
+  <h1 class="text-[28px] font-semibold mb-2">Find your vibes</h1>
+  <p class="text-[14px] text-text-secondary mb-4">
+    {% if draft_proposals and draft_proposals.proposals %}
+      We grouped your {{ draft_proposals.rated_track_count }} rated tracks into {{ draft_proposals.proposals|length }} vibes. Edit names, or tell us what to change in plain English.
+    {% else %}
+      Loading initial proposal…
+    {% endif %}
+  </p>
+
+  {# Force-k picker — INITIAL run only (D-13). Hidden after first refinement turn. #}
+  {% if (refinement_turn_count or 0) == 0 %}
+    <form hx-post="/api/setup/propose/init"
+          hx-target="#proposal-cards"
+          hx-swap="morph:innerHTML"
+          class="mb-4 flex items-center gap-3">
+      <label for="forced-k-select" class="text-[13px] text-text-secondary">Find</label>
+      <select id="forced-k-select"
+              name="forced_k"
+              hx-trigger="change"
+              class="bg-surface-elevated text-[14px] text-text-primary rounded px-3 min-h-11 border border-border">
+        {% for k in [3, 4, 5, 6, 7] %}
+          <option value="{{ k }}"
+                  {% if draft_proposals and draft_proposals.forced_k == k %}selected{% endif %}>
+            {{ k }} vibes{% if draft_proposals and not draft_proposals.forced_k and (draft_proposals.proposals|length) == k %} (suggested){% endif %}
+          </option>
+        {% endfor %}
+      </select>
+    </form>
+  {% endif %}
+
+  {# Proposal cards — HTMX morph swap target (Pitfall 15 / D-09). #}
+  <div id="proposal-cards"
+       {% if not draft_proposals %}hx-post="/api/setup/propose/init" hx-trigger="load" hx-swap="morph:innerHTML"{% endif %}
+       class="space-y-4">
+    {% if draft_proposals and draft_proposals.proposals %}
+      {% include "partials/proposal_cards_swap.html" %}
+    {% else %}
+      <p class="text-[13px] text-text-secondary">Thinking…</p>
+    {% endif %}
+  </div>
+{% endblock %}
+{% block wizard_sticky_cta %}
+  <form id="looks-good-form"
+        action="/setup/confirm"
+        method="get">
+    {% with cta_label="Looks good", form_id="looks-good-form", button_type="submit" %}
+      {% include "partials/wizard_sticky_cta.html" %}
+    {% endwith %}
+  </form>
+{% endblock %}

@@ -1,0 +1,9 @@
+{# Phase 6 Plan 03 — refine error banner (UI-SPEC copy). #}
+<div class="bg-error/5 border border-error/30 rounded-lg p-4 mb-4">
+  <p class="text-error text-[14px]">
+    Couldn't refine your vibes. {{ reason }}. Your last proposal is still here — try again.
+  </p>
+</div>
+{% if draft_proposals %}
+  {% include "partials/proposal_cards_swap.html" %}
+{% endif %}
