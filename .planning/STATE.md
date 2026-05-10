@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-05-08)
 
 Phase: 6.1
 Plan: Not yet planned
-Status: Ready to discuss/plan
-Last activity: 2026-05-10 -- Phase 6 UAT exposed foundational gaps; inserted Phase 6.1
+Status: Context gathered — ready to plan
+Last activity: 2026-05-10 -- Phase 6.1 context captured (CONTEXT.md + DISCUSSION-LOG.md)
 
 ### v2.0 Phase Snapshot
 
