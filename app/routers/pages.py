@@ -383,9 +383,16 @@ async def debug_vibes(request: Request, session: Session = Depends(get_session))
             .limit(20)
         ).all()
     )
-    slot_in_log = []
+
+    # IN-06: batch-hydrate tracks + vibes referenced by the 20 SlotInLog rows.
+    # Previously this loop fired ~20 Track lookups + up to 20*N Vibe lookups
+    # (one per vibe id per row) — N+1 with N as high as 60 in the worst case.
+    # Replace with two WHERE id IN (...) queries: total query count drops to
+    # 1 (SlotInLog) + 1 (Track) + 1 (Vibe) regardless of row count.
+    track_ids = {r.track_id for r in slot_log_rows if r.track_id is not None}
+    referenced_vibe_ids: set[int] = set()
+    parsed_per_row: list[tuple[list, list]] = []
     for r in slot_log_rows:
-        track = session.exec(select(Track).where(Track.id == r.track_id)).first()
         try:
             vibe_ids = _json.loads(r.vibe_ids or "[]")
         except (ValueError, TypeError):
@@ -394,10 +401,35 @@ async def debug_vibes(request: Request, session: Session = Depends(get_session))
             distances = _json.loads(r.distances or "[]")
         except (ValueError, TypeError):
             distances = []
-        vibe_names = []
+        parsed_per_row.append((vibe_ids, distances))
         for vid in vibe_ids:
-            v = session.exec(select(Vibe).where(Vibe.id == vid)).first()
-            vibe_names.append(v.name if v else f"#{vid}")
+            if isinstance(vid, int):
+                referenced_vibe_ids.add(vid)
+
+    track_by_id = {}
+    if track_ids:
+        track_by_id = {
+            t.id: t
+            for t in session.exec(
+                select(Track).where(col(Track.id).in_(track_ids))
+            ).all()
+        }
+    vibe_by_id = {}
+    if referenced_vibe_ids:
+        vibe_by_id = {
+            v.id: v
+            for v in session.exec(
+                select(Vibe).where(col(Vibe.id).in_(referenced_vibe_ids))
+            ).all()
+        }
+
+    slot_in_log = []
+    for r, (vibe_ids, distances) in zip(slot_log_rows, parsed_per_row):
+        track = track_by_id.get(r.track_id)
+        vibe_names = [
+            (vibe_by_id[vid].name if vid in vibe_by_id else f"#{vid}")
+            for vid in vibe_ids
+        ]
         slot_in_log.append({
             "timestamp": r.timestamp,
             "track_title": track.title if track else "—",
