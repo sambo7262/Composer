@@ -157,7 +157,7 @@ Plans:
 - [x] 06-02-PLAN.md — Slot-in pipeline: vibe_clusterer (sklearn k-means + silhouette + LLM naming + refinement turn), plex_playlist_service (create/update/archive/rename/is_managed; Pitfall 5 additive + Pitfall 6 post-push verify), vibe_service (slot_track + unslot_track + per-track lock + soft-margin + pending_slot_in), event_handlers + analysis_service hooks, extended AST static test
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 06-03-PLAN.md — Wizard + conversational refinement loop: api_setup router (7 endpoints), 5 wizard pages (/setup, /setup/webhook, /setup/propose, /setup/confirm, /setup/done) + 10 partials, GET / wizard auto-redirect, refinement loop with HTMX morph swap (Pitfall 15) + 10-turn cap (D-04), finalize creates Composer · {name} Plex playlists under semaphore=1 (D-25)
+- [x] 06-03-PLAN.md — Wizard + conversational refinement loop: api_setup router (7 endpoints), 5 wizard pages (/setup, /setup/webhook, /setup/propose, /setup/confirm, /setup/done) + 10 partials, GET / wizard auto-redirect, refinement loop with HTMX morph swap (Pitfall 15) + 10-turn cap (D-04), finalize creates Composer · {name} Plex playlists under semaphore=1 (D-25)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 06-04-PLAN.md — Re-cluster + settings + /debug/vibes: api_vibes router (recluster/start/commit/status + reslot-all), settings.html Vibes section + recluster_modal (Keep current vibes NOT Cancel — UI-SPEC BLOCK fix), /debug/vibes diagnostic page + 3 partials (vibe_diagnostic_card, slot_in_log_table, drift_indicator), SlotInLog table + SetupState.recluster_mode column, D-21 diff-based reconciliation, D-22 manual override preservation
