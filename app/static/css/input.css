@@ -14,4 +14,8 @@
   --color-border: #3a3a42;
   --color-border-focus: #e5a00d;
   --font-family-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  /* Phase 6 (Pitfall 17 / UI-04) — minimum touch-target size for mobile-first
+     wizard surfaces. Applied at use sites via Tailwind utilities (min-h-11,
+     min-w-11). Declared here as the single project-wide source of truth. */
+  --touch-target-min: 44px;
 }
