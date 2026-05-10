@@ -77,6 +77,9 @@ def _migrate_add_columns(engine) -> None:
         "last_viewed_at": "TEXT",
         "view_count": "INTEGER DEFAULT 0",
         "rating_changed_at": "TEXT",
+        # Phase 6 (D-29) — pending slot-in flag (D-17 retroactive auto-slot).
+        # SQLite has no BOOL; INTEGER 0/1 with DEFAULT 0.
+        "pending_slot_in": "INTEGER DEFAULT 0",
     }
 
     for col_name, col_type in new_columns.items():
@@ -89,6 +92,26 @@ def _migrate_add_columns(engine) -> None:
     # CREATE IF NOT EXISTS guards against re-running on existing DBs.
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS ix_eventlog_received_at_desc ON eventlog(received_at)"
+    )
+
+    # Phase 6 (D-30) — vibe-clustering indexes.
+    # ix_trackvibe_vibe_id: "show me a vibe's members" queries (/debug/vibes,
+    # future vibe detail page). Composite-PK already indexes (track_id, vibe_id)
+    # leftmost — this adds the right-leading index for the reverse direction.
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS ix_trackvibe_vibe_id ON trackvibe(vibe_id)"
+    )
+    # ix_managedplaylist_kind: filter "vibe" vs "suggestions" (Phase 7) playlists.
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS ix_managedplaylist_kind ON managedplaylist(kind)"
+    )
+    # ix_track_pending_slot_in: PARTIAL index on the analysis-service post-hook
+    # selector "WHERE pending_slot_in = 1 AND user_rating > 0" (D-17). Partial
+    # because the vast majority of tracks have pending_slot_in=0 — full index
+    # would be wasted I/O.
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS ix_track_pending_slot_in ON track(pending_slot_in) "
+        "WHERE pending_slot_in = 1"
     )
 
     # Recalculate energy as weighted combination of loudness, tempo, complexity.
@@ -123,6 +146,13 @@ def init_db() -> None:
     from app.models.event_log import EventLog  # noqa: F401
     from app.models.llm_usage import LLMUsage  # noqa: F401
     from app.models.taste_profile import TasteProfile  # noqa: F401
+    # Phase 6 (D-28) — register vibe tables before create_all
+    from app.models.vibe import (  # noqa: F401
+        ManagedPlaylist,
+        SetupState,
+        TrackVibe,
+        Vibe,
+    )
 
     engine = get_engine()
     # create_all MUST run before _migrate_add_columns so the eventlog table exists
