@@ -202,6 +202,12 @@ def test_finalize_integration_creates_three_vibes_and_three_playlists(
         return new_key
 
     monkeypatch.setattr(api_setup, "create_playlist", fake_create_playlist)
+    # Phase 6.1 Blocker #7 Option A: finalize now AWAITS reslot_all_rated_tracks
+    # after the success branch — mock to avoid real Plex slot_track calls.
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(
+        api_setup, "reslot_all_rated_tracks", AsyncMock(return_value=0)
+    )
 
     response = client_with_phase6.post("/api/setup/finalize")
     assert response.status_code == 200, response.text
@@ -272,6 +278,14 @@ def test_finalize_integration_handles_partial_failure(
         return new_key
 
     monkeypatch.setattr(api_setup, "create_playlist", fake_create_playlist)
+    # Phase 6.1 Blocker #7 Option A: mock reslot to avoid real Plex slot_track.
+    # On partial failure, reslot is NOT called — but this monkeypatch is a
+    # safety net for the success branch should the failure branch behaviour
+    # ever change.
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(
+        api_setup, "reslot_all_rated_tracks", AsyncMock(return_value=0)
+    )
 
     response = client_with_phase6.post("/api/setup/finalize")
     assert response.status_code == 200
@@ -331,6 +345,11 @@ def test_finalize_uses_semaphore_one(client_with_phase6, test_engine, monkeypatc
         return new_key
 
     monkeypatch.setattr(api_setup, "create_playlist", fake_create_playlist)
+    # Phase 6.1 Blocker #7 Option A: mock reslot to avoid real Plex slot_track.
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(
+        api_setup, "reslot_all_rated_tracks", AsyncMock(return_value=0)
+    )
 
     response = client_with_phase6.post("/api/setup/finalize")
     assert response.status_code == 200

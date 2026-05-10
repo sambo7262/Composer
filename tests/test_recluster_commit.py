@@ -692,28 +692,45 @@ def test_recluster_commit_re_runnable_after_partial_failure(
 def test_post_setup_propose_init_records_recluster_purpose(
     client_with_phase6, test_engine, monkeypatch
 ):
-    """When SetupState.recluster_mode=True, propose/init still calls
-    initial_cluster_proposal but the LAST llm call id reflects the purpose
-    surface (vibe_clustering_*). Also: refine endpoint forwards recluster_mode
-    to vibe_clusterer.refine_proposals (covered by test_api_vibes.py)."""
+    """When SetupState.recluster_mode=True, propose/init still records the
+    LAST llm call id reflecting any vibe_clustering_* purpose. Phase 6.1
+    rewires the endpoint to call map_user_vibes_to_clusters (Plan 01) with
+    the user-typed names from the textbox-stack form — but the recluster_mode
+    plumbing through last_llm_call_id is independent of the LLM dispatcher.
+    """
     from app.models.vibe import SetupState
     from app.models.llm_usage import LLMUsage
     from app.services.vibe_clusterer import VibeProposalSet, VibeProposal
 
-    async def fake_init(forced_k=None):
+    async def fake_map(names):
         return VibeProposalSet(
             proposals=[
                 VibeProposal(
-                    name="X", description="d", action="new",
-                    seed_track_indices=[0],
-                )
+                    name=names[0] if names else "X", description="d",
+                    action="new", seed_track_indices=[0],
+                    seed_tracks=[], members=[], member_count=1,
+                    fit="strong",
+                ),
+                VibeProposal(
+                    name=names[1] if len(names) > 1 else "Y", description="d",
+                    action="new", seed_track_indices=[1],
+                    seed_tracks=[], members=[], member_count=1,
+                    fit="strong",
+                ),
+                VibeProposal(
+                    name=names[2] if len(names) > 2 else "Z", description="d",
+                    action="new", seed_track_indices=[2],
+                    seed_tracks=[], members=[], member_count=1,
+                    fit="strong",
+                ),
             ],
             rated_track_count=10,
-            rated_track_index_map=[{"index": 0, "rating_key": "100"}],
+            rated_track_index_map=[{"index": i, "rating_key": str(100 + i)}
+                                   for i in range(3)],
         )
 
     monkeypatch.setattr(
-        "app.routers.api_setup.initial_cluster_proposal", fake_init
+        "app.routers.api_setup.map_user_vibes_to_clusters", fake_map
     )
 
     # Prime SetupState recluster_mode + a fake LLMUsage row that we can
@@ -738,7 +755,10 @@ def test_post_setup_propose_init_records_recluster_purpose(
         ))
         s.commit()
 
-    resp = client_with_phase6.post("/api/setup/propose/init")
+    resp = client_with_phase6.post(
+        "/api/setup/propose/init",
+        data={"vibe_names": '["A", "B", "C"]'},
+    )
     assert resp.status_code == 200
 
     # SetupState.last_llm_call_id should pick up the most recent

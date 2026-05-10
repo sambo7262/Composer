@@ -13,6 +13,42 @@ silhouette score line.
     {% set chip_text = feature_chip_text(proposal.centroid) %}
     {% include "partials/feature_chip.html" %}
   {% endif %}
+  {# Phase 6.1 D-NEW-08 — fit-grade chip. Only renders when proposal.fit is set
+     (user-led mapping path; not present on refinement-loop-derived proposals
+     UNLESS carried over by name match — see Plan 01 _carryover_fit_from_prior).
+     Count uses proposal.member_count (canonical field populated by Plan 01),
+     which falls back to len(seed_track_indices) via the default filter when
+     proposals come from the legacy initial_cluster_proposal path. #}
+  {% if proposal.fit %}
+    <div class="mt-3 flex items-center gap-2 flex-wrap"
+         x-data="{ showReason: false }">
+      {% if proposal.fit == "strong" %}
+        <span class="text-[13px] text-success font-semibold">✓ strong fit</span>
+      {% elif proposal.fit == "weak" %}
+        <span class="text-[13px] text-accent font-semibold">⚠ weak fit</span>
+      {% elif proposal.fit == "no_match" %}
+        <span class="text-[13px] text-error font-semibold">✗ no match</span>
+        {% if proposal.fit_reason %}
+          <button type="button"
+                  @click="showReason = !showReason"
+                  aria-label="Show reason for no match"
+                  class="text-[13px] text-text-secondary min-h-11 min-w-11 underline">
+            Why?
+          </button>
+        {% endif %}
+      {% endif %}
+      <span class="text-[13px] text-text-secondary">
+        · {{ proposal.member_count | default(proposal.seed_track_indices | length) }} tracks
+      </span>
+      {% if proposal.fit == "no_match" and proposal.fit_reason %}
+        <p x-show="showReason"
+           x-cloak
+           class="text-[13px] text-text-secondary mt-1 w-full">
+          {{ proposal.fit_reason | e }}
+        </p>
+      {% endif %}
+    </div>
+  {% endif %}
   <h4 class="text-[13px] text-text-secondary mt-4 mb-1">Closest tracks</h4>
   <div class="space-y-1">
     {% for track in (proposal.seed_tracks | default([])) %}

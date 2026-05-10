@@ -63,6 +63,27 @@ async def create_playlist(*args, **kwargs):
     return await _fn(*args, **kwargs)
 
 
+async def map_user_vibes_to_clusters(*args, **kwargs):
+    """Phase 6.1 D-NEW-01 — lazy import shim so tests can monkeypatch this
+    attribute on the module without touching the underlying service.
+    """
+    from app.services.vibe_clusterer import (
+        map_user_vibes_to_clusters as _fn,
+    )
+    return await _fn(*args, **kwargs)
+
+
+async def reslot_all_rated_tracks(*args, **kwargs):
+    """Phase 6.1 Blocker #7 Option A — lazy import shim so finalize() can
+    AWAIT reslot synchronously after Vibes are committed.  Tests monkeypatch
+    this attribute to avoid hitting real Plex via slot_track.
+    """
+    from app.services.vibe_service import (
+        reslot_all_rated_tracks as _fn,
+    )
+    return await _fn(*args, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Module-level finalize status — mirrors backfill_service._backfill_status.
 # Used by GET /api/setup/finalize/status (Plan 03 Task 3).
@@ -198,34 +219,120 @@ async def step2_submit(session: Session = Depends(get_session)):
 @router.post("/propose/init", response_class=HTMLResponse)
 async def propose_init(
     request: Request,
-    forced_k: Optional[int] = Form(None),
+    vibe_names: Annotated[str, Form()],
     session: Session = Depends(get_session),
 ):
-    """Initial cluster proposal (D-13 force-k picker on initial run only).
+    """User-led Step 3 cluster proposal (Phase 6.1 D-NEW-01, D-NEW-06, D-NEW-07).
 
-    Idempotent: if SetupState.draft_proposals_json is already populated AND
-    forced_k is None, returns the existing cards WITHOUT calling the LLM
-    (cost guard — T-06-03-07 mitigation).
+    ``vibe_names`` is a JSON-array string sent by the textbox-stack form. Server
+    parses, trims, case-insensitive dedupes, validates count (3-7), then calls
+    :func:`app.services.vibe_clusterer.map_user_vibes_to_clusters` (Plan 01)
+    for the LLM mapping. Server-led k-means populates every cluster's
+    seed_track_indices, seed_tracks, members, and member_count — the LLM is
+    demoted to namer/describer/grader.
+
+    Form-parsing convention (Phase 6 D-05 / Pitfall 1): Annotated[str, Form()]
+    + json.loads — NEVER pydantic.Json[Model] inside Form() (FastAPI #10997).
     """
-    from app.services.vibe_clusterer import VibeProposalSet
-
+    templates = get_templates()
     state = _get_or_create_setup_state(session)
 
-    if state.draft_proposals_json and forced_k is None:
-        # Idempotent re-render: reuse existing proposals (cost guard).
-        existing = VibeProposalSet.model_validate_json(state.draft_proposals_json)
-        return _render_proposal_cards(request, existing, state.refinement_turn_count)
+    # --- Parse vibe_names ---
+    try:
+        raw_names = json.loads(vibe_names)
+    except (json.JSONDecodeError, TypeError):
+        return templates.TemplateResponse(
+            request,
+            "partials/refine_error.html",
+            {
+                "reason": "Couldn't parse vibe names. Try again",
+                "refinement_turn_count": 0,
+            },
+        )
+    if not isinstance(raw_names, list):
+        return templates.TemplateResponse(
+            request,
+            "partials/refine_error.html",
+            {
+                "reason": "Vibe names must be a list",
+                "refinement_turn_count": 0,
+            },
+        )
 
-    proposals = await initial_cluster_proposal(forced_k=forced_k)
+    # --- Trim + drop blanks + dedupe case-insensitive ---
+    trimmed: list[str] = []
+    seen_cf: set[str] = set()
+    had_duplicate = False
+    for n in raw_names:
+        if not isinstance(n, str):
+            continue
+        t = n.strip()
+        if not t:
+            continue
+        key = t.casefold()
+        if key in seen_cf:
+            had_duplicate = True
+            continue
+        seen_cf.add(key)
+        trimmed.append(t)
+
+    if had_duplicate:
+        return templates.TemplateResponse(
+            request,
+            "partials/refine_error.html",
+            {
+                "reason": (
+                    "Duplicate vibe names (case-insensitive). "
+                    "Each vibe needs a unique name"
+                ),
+                "refinement_turn_count": 0,
+            },
+        )
+
+    if len(trimmed) < 3 or len(trimmed) > 7:
+        return templates.TemplateResponse(
+            request,
+            "partials/refine_error.html",
+            {
+                "reason": (
+                    f"Type 3 to 7 vibe names "
+                    f"(after trimming blanks, got {len(trimmed)})"
+                ),
+                "refinement_turn_count": 0,
+            },
+        )
+
+    # --- LLM mapping call ---
+    try:
+        proposals = await map_user_vibes_to_clusters(trimmed)
+    except ValueError as exc:
+        logger.warning(
+            "map_user_vibes_to_clusters rejected input: %s", exc
+        )
+        return templates.TemplateResponse(
+            request,
+            "partials/refine_error.html",
+            {
+                "reason": str(exc),
+                "refinement_turn_count": 0,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("map_user_vibes_to_clusters failed")
+        return templates.TemplateResponse(
+            request,
+            "partials/refine_error.html",
+            {
+                "reason": f"Couldn't cluster your library: {exc}",
+                "refinement_turn_count": 0,
+            },
+        )
 
     state.draft_proposals_json = proposals.model_dump_json()
     state.refinement_turn_count = 0
-    # Phase 6 Plan 04 (D-20 / D-34): when /api/vibes/recluster/start primed
-    # SetupState.recluster_mode=True, the proposal call still goes through
-    # initial_cluster_proposal (which uses purpose=vibe_clustering_initial),
-    # but downstream refine turns will use vibe_clustering_recluster. The
-    # Re-show last cluster proposal diagnostic (Plan 04 Task 4) reads ALL
-    # vibe_clustering_* purposes so it surfaces whichever was last.
+    # Phase 6 Plan 04 (D-20 / D-34) plumbing: the "Re-show last cluster proposal"
+    # diagnostic reads any vibe_clustering_* purpose, so the user-led call
+    # (vibe_clustering_user_led) surfaces too.
     state.last_llm_call_id = _latest_llm_call_id(
         session, "vibe_clustering_"
     )
@@ -515,6 +622,31 @@ async def finalize(request: Request, session: Session = Depends(get_session)):
             break
 
     if created_count == total:
+        # Phase 6.1 D-NEW-01 / D-NEW-03 / Blocker #7 Option A:
+        # Now that all Vibe + ManagedPlaylist rows exist, AWAIT
+        # reslot_all_rated_tracks SYNCHRONOUSLY so EVERY rated track lands in
+        # its nearest vibe via the existing slot_track logic (per-track lock,
+        # soft-margin cap=2, additive Plex push). The HTTP response will NOT
+        # return until slotting completes — on a 600-track library this can
+        # take ~30-90s; the wizard's sticky CTA already shows a loading state
+        # during the in-flight POST (Phase 6 D-09).
+        #
+        # Why synchronous (not fire-and-forget): success criterion "≥30
+        # tracks/vibe after finalize" must be user-observable when /setup/done
+        # renders. Fire-and-forget would let the user navigate to "All set!"
+        # while slotting is still in progress.
+        try:
+            slotted = await reslot_all_rated_tracks()
+            logger.info(
+                "Phase 6.1 finalize: reslot_all_rated_tracks slotted %d tracks",
+                slotted,
+            )
+        except Exception:  # noqa: BLE001 — never break finalize on reslot
+            logger.exception(
+                "Phase 6.1 finalize: reslot_all_rated_tracks failed; "
+                "user can recover via /debug/vibes reslot button"
+            )
+
         state.step = "done"
         state.completed_at = _now_iso()
         session.add(state)
