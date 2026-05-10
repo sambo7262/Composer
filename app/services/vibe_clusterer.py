@@ -77,6 +77,18 @@ class VibeProposal(BaseModel):
     ``VibeProposalSet.rated_track_index_map`` — NEVER raw ratingKey strings
     (Pitfall 10). ``centroid`` and ``spread`` are server-computed during
     ``materialize_clusters`` — the LLM never sets these.
+
+    Phase 6.1 extensions:
+    - ``seed_tracks`` + ``members`` + ``member_count`` (Blocker #1): server-
+      populated, JSON-serialisable lists used by ``vibe_proposal_card.html``
+      (seed_tracks → "Closest tracks" rows) and ``vibe_members_disclosure.html``
+      (members → "Show all N tracks" panel). Each entry is
+      ``{"title": str, "artist": str, "rating_key": str}``.
+    - ``fit`` + ``fit_reason`` (D-NEW-08/11): user-led mapping fit grade per
+      proposal. ``fit`` is None for refinement-loop-derived proposals UNLESS
+      carried over by case-insensitive name match in
+      :func:`_call_llm_with_validation` via :func:`_carryover_fit_from_prior`
+      (Blocker #5 Option A).
     """
 
     name: str
@@ -89,6 +101,22 @@ class VibeProposal(BaseModel):
     centroid: Optional[dict] = None
     spread: Optional[dict] = None
     silhouette: Optional[float] = None
+    # Phase 6.1 Blocker #1 — server-populated, JSON-serialisable lists used
+    # by vibe_proposal_card.html (seed_tracks → "Closest tracks" rows) and
+    # vibe_members_disclosure.html (members → "Show all N tracks" panel).
+    # Each entry is {"title": str, "artist": str, "rating_key": str}.
+    seed_tracks: List[dict] = Field(default_factory=list)
+    members: List[dict] = Field(default_factory=list)
+    # member_count = len(members); used by the fit-chip display in
+    # vibe_proposal_card.html. Falls back to len(seed_track_indices) in
+    # template default-filter when this is None.
+    member_count: Optional[int] = None
+    # Phase 6.1 D-NEW-08 — fit grade per proposal (user-led mapping only;
+    # None for refinement-loop-derived proposals UNLESS carried over by
+    # name match in _call_llm_with_validation — Blocker #5 Option A).
+    fit: Optional[Literal["strong", "weak", "no_match"]] = None
+    # Phase 6.1 D-NEW-11 — LLM's rationale when fit == "no_match".
+    fit_reason: Optional[str] = None
 
 
 class LLMVibeProposal(BaseModel):
@@ -146,6 +174,36 @@ class VibeProposalSetLLMResponse(BaseModel):
     """
 
     proposals: List[LLMVibeProposal]
+
+
+class LLMVibeFit(BaseModel):
+    """LLM-side response: one user-typed name mapped to one k-means cluster.
+
+    Phase 6.1 D-NEW-11. The LLM returns N of these (one per user-typed vibe name)
+    in a permutation against [0..N-1]. ``fit`` grades how well the user's name
+    matches the cluster's audio/artist/genre profile. ``reason`` is required when
+    ``fit == 'no_match'`` (server-validates).
+    """
+    user_name: str
+    cluster_index: int
+    description: str
+    fit: Literal["strong", "weak", "no_match"]
+    reason: Optional[str] = None
+
+
+class LLMVibeMappingResponse(BaseModel):
+    """Slim LLM contract for the user-led mapping call (D-NEW-01).
+
+    Sibling to :class:`VibeProposalSetLLMResponse`. The LLM is ONLY asked for
+    the mappings list — server assembles the full :class:`VibeProposalSet` from
+    the mappings plus the server-computed cluster labels + rated_track_index_map
+    + seed_tracks + members.
+
+    DO NOT add server-controlled fields here. The defensive test
+    ``test_slim_user_led_response_schema_only_has_mappings_field`` will fail
+    loudly if anything other than ``mappings`` lands on this model.
+    """
+    mappings: List[LLMVibeFit]
 
 
 class VibeProposalSet(BaseModel):
