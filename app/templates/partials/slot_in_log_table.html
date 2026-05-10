@@ -1,0 +1,33 @@
+{# Phase 6 Plan 04 (D-36) — Last 20 slot-in decisions.
+   Mirrors pages/debug_events.html "Last 50 events" table shape (font-mono +
+   text-[12px]). The route in pages.py hydrates each row with vibe names +
+   track title/artist + comma-joined distance string before passing context. #}
+<section>
+  <h2 class="text-[20px] font-semibold mb-2">Last 20 slot-in decisions</h2>
+  <table class="w-full text-[12px] font-mono">
+    <thead class="text-text-secondary">
+      <tr>
+        <th class="text-left p-1">time</th>
+        <th class="text-left p-1">track</th>
+        <th class="text-left p-1">vibe(s)</th>
+        <th class="text-left p-1">distance(s)</th>
+        <th class="text-left p-1">2nd vibe?</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if slot_in_log %}
+        {% for row in slot_in_log %}
+        <tr class="border-t border-border">
+          <td class="p-1 align-top">{{ row.timestamp }}</td>
+          <td class="p-1 align-top">{{ row.track_title or "—" }} <span class="text-text-secondary">— {{ row.track_artist or "—" }}</span></td>
+          <td class="p-1 align-top">{{ row.vibe_names or "—" }}</td>
+          <td class="p-1 align-top">{{ row.distances_str or "—" }}</td>
+          <td class="p-1 align-top">{{ "yes" if row.soft_membership_applied else "no" }}</td>
+        </tr>
+        {% endfor %}
+      {% else %}
+        <tr><td colspan="5" class="text-text-secondary p-2">No auto-slot decisions yet. Rate a track in Plexamp to see Composer in action.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>

@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Diagnostics — Vibes{% endblock %}
+{% block content %}
+{# Phase 6 Plan 04 (DEBUG-02 / D-36) — operator-facing diagnostic page.
+   Mirrors pages/debug_events.html shape exactly: library-at-a-glance header
+   + H1 + Tailscale-only access lead + sectioned diagnostic state.
+   Header copy verbatim from /debug/events for consistency. #}
+<div hx-get="/api/library/stats"
+     hx-trigger="load"
+     hx-target="this"
+     hx-swap="innerHTML"
+     class="mb-4">
+  <p class="text-[12px] text-text-secondary">Loading stats…</p>
+</div>
+
+<div class="space-y-6 pb-12">
+  <header>
+    <h1 class="text-[28px] font-semibold text-text-primary">Vibe Diagnostics</h1>
+    <p class="text-text-secondary text-[13px] mt-1">
+      For diagnostics only. Visible to anyone reachable on this URL — Composer assumes Tailscale-only access.
+    </p>
+  </header>
+
+  {% include "partials/drift_indicator.html" %}
+
+  <section>
+    <h2 class="text-[20px] font-semibold mb-3">Vibes</h2>
+    {% if vibes %}
+      <div class="space-y-4">
+        {% for vibe in vibes %}
+          {% with member_count = vibe_member_counts.get(vibe.id, 0) %}
+            {% include "partials/vibe_diagnostic_card.html" %}
+          {% endwith %}
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="text-[14px] text-text-secondary">
+        No vibes yet. <a href="/setup" class="text-accent underline">Run the setup wizard</a> to create your first vibes.
+      </p>
+    {% endif %}
+  </section>
+
+  {% include "partials/slot_in_log_table.html" %}
+
+  <section class="space-y-4">
+    <div>
+      <button type="button"
+              hx-get="/api/vibes/last-llm-call"
+              hx-target="#last-llm-call"
+              hx-swap="innerHTML"
+              class="bg-surface-elevated hover:bg-surface-card text-text-primary rounded-lg min-h-11 px-4 py-2 text-[14px]">
+        Re-show last cluster proposal
+      </button>
+      <div id="last-llm-call" class="mt-3"></div>
+    </div>
+    <div>
+      <button type="button"
+              hx-post="/api/vibes/reslot-all"
+              hx-target="#reslot-status"
+              hx-swap="innerHTML"
+              hx-confirm="Reslot every rated track? This may take a few minutes."
+              class="bg-accent hover:bg-accent-hover text-surface-primary font-semibold rounded-lg min-h-11 px-4 py-2 text-[14px]">
+        Reslot all rated tracks
+      </button>
+      <p class="text-[13px] text-text-secondary mt-2">
+        Re-runs auto-slot over every rated track. Use after a re-cluster or to recover from a Plex sync issue.
+      </p>
+      <div id="reslot-status" class="mt-2"></div>
+    </div>
+  </section>
+</div>
+{% endblock %}
