@@ -1250,3 +1250,114 @@ def test_carryover_fit_from_prior_with_no_priors_is_no_op():
     p = VibeProposal(name="x", description="d", action="new")
     assert _carryover_fit_from_prior(p, None).fit is None
     assert _carryover_fit_from_prior(p, []).fit is None
+
+
+@pytest.mark.asyncio
+async def test_map_user_vibes_passes_real_session_to_anthropic_factory(monkeypatch):
+    """Quick-260510-sht regression — production-only AttributeError guard.
+
+    The user-led clustering path crashed on the NAS because
+    map_user_vibes_to_clusters called get_anthropic_client_v2(None) at the
+    buggy site. The real factory at app/services/anthropic_client.py:164 then
+    invoked session.exec(...) on None and raised AttributeError.
+
+    Why none of the existing 35 tests caught it: every map_user_vibes_*
+    test monkeypatches the module-local re-export shim
+    ``app.services.vibe_clusterer.get_anthropic_client_v2`` with
+    ``lambda s: fake_client``, which silently swallows whatever ``s`` is —
+    including ``None``. The real upstream factory at
+    ``anthropic_client.py:164`` is never exercised, so the
+    ``session.exec(...)`` crash only surfaces in production.
+
+    The fix-side regression test below monkeypatches the UPSTREAM name
+    (``app.services.anthropic_client.get_anthropic_client_v2``), which the
+    shim imports lazily inside its function body. That way the shim still
+    runs, still receives whatever session the caller passed in, and the spy
+    records what reached the real factory boundary.
+    """
+    from sqlmodel import Session as _SessionCls
+    from app.services import anthropic_client as ac_module
+    from app.services import vibe_clusterer as vc
+
+    # Build a synthetic 90-track rated set with 3 clear clusters (mirrors
+    # test_map_user_vibes_server_populates_seed_track_indices_seed_tracks_members).
+    np_local = vc.np
+    cluster_a = np_local.random.RandomState(0).normal(
+        loc=[0.2, 80, 0.3, 0.2], scale=0.05, size=(30, 4)
+    )
+    cluster_b = np_local.random.RandomState(1).normal(
+        loc=[0.8, 140, 0.7, 0.7], scale=0.05, size=(30, 4)
+    )
+    cluster_c = np_local.random.RandomState(2).normal(
+        loc=[0.5, 100, 0.5, 0.5], scale=0.05, size=(30, 4)
+    )
+    feat = np_local.vstack([cluster_a, cluster_b, cluster_c])
+    index_map = [
+        {"index": i, "rating_key": f"rk_{i}",
+         "title": f"T{i}", "artist": f"A{i % 5}"}
+        for i in range(90)
+    ]
+    tracks_for_prompt = [
+        {"title": f"T{i}", "artist": f"A{i % 5}",
+         "energy": float(feat[i, 0]), "tempo": float(feat[i, 1]),
+         "danceability": float(feat[i, 2]),
+         "valence": float(feat[i, 3]), "rating": 8.0,
+         "genre": "synthwave" if i >= 60 else "rock"}
+        for i in range(90)
+    ]
+
+    # Build a valid LLMVibeMappingResponse to return from the fake client.
+    async def _fake_call(*, system_prompt, user_prompt, response_model, purpose):
+        return vc.LLMVibeMappingResponse(mappings=[
+            vc.LLMVibeFit(user_name="alpha", cluster_index=0,
+                          description="d", fit="strong"),
+            vc.LLMVibeFit(user_name="beta", cluster_index=1,
+                          description="d", fit="strong"),
+            vc.LLMVibeFit(user_name="gamma", cluster_index=2,
+                          description="d", fit="strong"),
+        ])
+
+    fake_client = AsyncMock()
+    fake_client.call_with_structured_output = AsyncMock(side_effect=_fake_call)
+
+    # Spy on the UPSTREAM factory — captures whatever session the shim
+    # passes through. This is the bug-detection surface. Patching
+    # vc.get_anthropic_client_v2 (the shim) instead would reproduce the same
+    # blind spot as the existing 11 tests, so we explicitly do NOT.
+    seen_sessions: list = []
+
+    def _spy(session):
+        seen_sessions.append(session)
+        return fake_client
+
+    monkeypatch.setattr(
+        "app.services.anthropic_client.get_anthropic_client_v2", _spy
+    )
+
+    # materialize_clusters re-queries the real DB → no-op for this unit test.
+    with patch.object(vc, "_aggregate_rated_set_sync") as mock_agg, \
+         patch.object(vc, "materialize_clusters", side_effect=lambda p: p):
+        mock_agg.return_value = {
+            "rated_track_count": 90,
+            "feature_matrix": feat,
+            "rated_track_index_map": index_map,
+            "tracks_for_prompt": tracks_for_prompt,
+            "top_artists": [], "top_genres": [],
+        }
+        await vc.map_user_vibes_to_clusters(["alpha", "beta", "gamma"])
+
+    # The shim must have delegated to the upstream factory exactly once.
+    assert len(seen_sessions) == 1, (
+        f"Expected exactly 1 call to anthropic_client.get_anthropic_client_v2; "
+        f"got {len(seen_sessions)}"
+    )
+    # THE BUG ASSERTION — current code passes None at line ~1145.
+    assert seen_sessions[0] is not None, (
+        "map_user_vibes_to_clusters passed None to the Anthropic factory; "
+        "this triggers AttributeError on session.exec(...) in production "
+        "(quick-260510-sht)."
+    )
+    # Stronger assertion: must be a real sqlmodel Session instance.
+    assert isinstance(seen_sessions[0], _SessionCls), (
+        f"Expected sqlmodel.Session; got {type(seen_sessions[0]).__name__}"
+    )
