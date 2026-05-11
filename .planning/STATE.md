@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-05-08)
 Phase: 06.1 (vibe-wizard-foundations-server-led-clustering-user-led-vibe-) — EXECUTING
 Plan: 1 of 2
 Status: Executing Phase 06.1
-Last activity: 2026-05-11 -- Completed quick task 260510-tng: user-led prompt schema-override fix
+Last activity: 2026-05-11 -- Completed quick task 260511-bpf: cross-album playlist dedupe
 
 ### v2.0 Phase Snapshot
 
@@ -180,6 +180,7 @@ Recent decisions affecting current work:
 | 260510-sht | Fix map_user_vibes_to_clusters None-session AttributeError (regression test + 2-line Session-wrapping fix) | 2026-05-11 | 03dfb87 | [260510-sht-fix-map-user-vibes-to-clusters-attribute](./quick/260510-sht-fix-map-user-vibes-to-clusters-attribute/) |
 | 260510-t5n | Fix AnthropicClient.call_with_structured_output to tolerate trailing/leading prose around JSON (raw_decode + 2 regression tests) | 2026-05-11 | ca691bd | [260510-t5n-fix-anthropicclient-call-with-structured](./quick/260510-t5n-fix-anthropicclient-call-with-structured/) |
 | 260510-tng | Fix LLMVibeMappingResponse mappings-field-required by prepending RESPONSE FORMAT OVERRIDE to user-led user prompt (preserves cached system prompt) | 2026-05-11 | f673c8b | [260510-tng-fix-llmvibemappingresponse-mappings-fiel](./quick/260510-tng-fix-llmvibemappingresponse-mappings-fiel/) |
+| 260511-bpf | Dedupe Plex playlist members by (artist, title) canonical key — fixes cross-album dupes (quality-aware dedupe deferred to Phase 6.2) | 2026-05-11 | 1371b53 | [260511-bpf-dedupe-plex-playlist-members-by-artist-t](./quick/260511-bpf-dedupe-plex-playlist-members-by-artist-t/) |
 
 ## Session Continuity
 
