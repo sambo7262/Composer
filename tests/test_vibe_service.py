@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Generator
+from typing import Generator, Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -103,12 +103,14 @@ def _add_track(
     tempo=120.0,
     danceability=0.5,
     valence=0.5,
+    artist: str = "Artist",
+    title: Optional[str] = None,
 ):
     from app.models.track import Track
     t = Track(
         plex_rating_key=rk,
-        title=f"Title {rk}",
-        artist="Artist",
+        title=f"Title {rk}" if title is None else title,
+        artist=artist,
         album="Album",
         user_rating=rating,
         energy=energy,
@@ -670,3 +672,90 @@ async def test_slotinlog_failure_does_not_break_slot_path(db_with_phase6, monkey
     assert len(rows) == 1
     assert rows[0].vibe_id == v.id
     assert rows[0].assigned_by == "auto-slot"
+
+
+# ---------------------------------------------------------------------------
+# Canonical-key dedupe regression tests (bugfix 260511-bpf)
+# Cross-album dupes: same song on Best Of + original album must collapse
+# to a single ratingKey in the playlist-push read path.
+# ---------------------------------------------------------------------------
+def test_canonical_keys_dedupes_same_artist_title_different_rating_key(
+    db_with_phase6,
+):
+    """Same song on two albums (Best Of + original) collapses to one ratingKey."""
+    from app.services.vibe_service import _canonical_rating_keys_sync
+
+    _add_track(
+        db_with_phase6,
+        rk="100",
+        artist="Air",
+        title="La Femme d'argent",
+    )
+    _add_track(
+        db_with_phase6,
+        rk="200",
+        artist="Air",
+        title="La Femme d'argent",
+    )
+
+    assert _canonical_rating_keys_sync(["100", "200"]) == ["100"]
+
+
+def test_canonical_keys_keeps_distinct_titles_same_artist(db_with_phase6):
+    """Different songs by same artist must NOT be collapsed (no false dedupe)."""
+    from app.services.vibe_service import _canonical_rating_keys_sync
+
+    _add_track(
+        db_with_phase6,
+        rk="100",
+        artist="Air",
+        title="La Femme d'argent",
+    )
+    _add_track(
+        db_with_phase6,
+        rk="200",
+        artist="Air",
+        title="Sexy Boy",
+    )
+
+    assert _canonical_rating_keys_sync(["100", "200"]) == sorted(["100", "200"])
+
+
+def test_canonical_keys_case_insensitive_matching(db_with_phase6):
+    """casefold() normalization treats 'Air' and 'air' as the same artist."""
+    from app.services.vibe_service import _canonical_rating_keys_sync
+
+    _add_track(
+        db_with_phase6,
+        rk="100",
+        artist="Air",
+        title="La Femme",
+    )
+    _add_track(
+        db_with_phase6,
+        rk="200",
+        artist="air",
+        title="LA FEMME",
+    )
+
+    assert _canonical_rating_keys_sync(["100", "200"]) == ["100"]
+
+
+def test_canonical_keys_whitespace_tolerance(db_with_phase6):
+    """.strip() normalization treats 'Air ' and 'Air' as the same artist."""
+    from app.services.vibe_service import _canonical_rating_keys_sync
+
+    _add_track(
+        db_with_phase6,
+        rk="100",
+        artist="Air",
+        title="La Femme",
+    )
+    _add_track(
+        db_with_phase6,
+        rk="200",
+        artist="Air ",
+        title=" La Femme",
+    )
+
+    assert _canonical_rating_keys_sync(["100", "200"]) == ["100"]
