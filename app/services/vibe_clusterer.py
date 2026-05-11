@@ -552,6 +552,16 @@ def _build_user_led_clustering_user_prompt(
         "user_typed_vibe_names": user_names,
         "clusters": cluster_summaries,
         "task": (
+            "RESPONSE FORMAT OVERRIDE (this call only): "
+            "Ignore the {\"proposals\": [...]} wrapper described in the system prompt. "
+            "For this call, return JSON matching LLMVibeMappingResponse: "
+            "{\"mappings\": [{\"user_name\": \"...\", \"cluster_index\": <int>, "
+            "\"description\": \"...\", \"fit\": \"strong|weak|no_match\", "
+            "\"reason\": \"...|null\"}, ...]}. "
+            "The top-level field is \"mappings\", NOT \"proposals\". "
+            "One entry per user-typed vibe name, in any order. "
+            "Do NOT include any other top-level fields.\n\n"
+            "TASK: "
             "For each user-typed vibe name above, pick the ONE cluster from "
             "the `clusters` list that best matches. Each cluster_index MUST "
             "be used exactly once across all mappings (it is a permutation "
