@@ -188,8 +188,8 @@ Plans:
 
 ### Phase 06.2: LLM-Direct Vibe Assignment (INSERTED)
 
-**Goal:** Replace k-means cluster *membership* with LLM-direct zero-shot assignment of each rated track to its best-fit user-typed vibe. Two-pass design: (1) batched per-track assign with confidence grade (strong/weak/uncertain), (2) boundary-review pass that sends weak/uncertain tracks the peer context of their candidate vibes. K-means stays as a centroid generator only — no membership decisions from k-means. Audio features (energy/tempo/danceability/valence) still passed to the LLM as a tiebreaker for tracks with low artist-recognition.
-**Requirements**: VIBE-02, VIBE-04, VIBE-13, VIBE-14
+**Goal:** Replace k-means cluster *membership* with LLM-direct zero-shot assignment of each rated track to its best-fit user-typed vibe. Two-pass design: (1) batched per-track assign with confidence grade (strong/weak/uncertain), (2) boundary-review pass that sends weak/uncertain tracks the peer context of their candidate vibes. K-means stays as a centroid generator only — no membership decisions from k-means. Audio features (energy/tempo/danceability/valence) still passed to the LLM as a tiebreaker for tracks with low artist-recognition. Also adds a user-triggered "Start Over" wizard reset that wipes vibe + wizard state (Vibe, TrackVibe, ManagedPlaylist, SlotInLog, SetupState) while preserving integration credentials (Plex/Anthropic/Lidarr in ServiceConfig).
+**Requirements**: VIBE-02, VIBE-04, VIBE-13, VIBE-14, WIZ-08
 **Depends on:** Phase 6.1 (user-led naming + fit-grade infra), Phase 6 (audio-feature plumbing)
 **Plans:** TBD
 
@@ -199,6 +199,7 @@ Plans:
 3. K-means stays in the codebase as a centroid-generator only — membership decisions traceable to LLM output, not to `k-means.labels_`
 4. Audio features still passed in the LLM input payload as a tiebreaker for low-recognition tracks
 5. The wizard's existing "Re-cluster vibes" button runs the new pipeline; proposal cards show a per-track confidence chip (strong / weak / uncertain) on the second-pass boundary tracks
+6. "Start Over" button in settings (or the wizard itself) wipes Vibe / TrackVibe / ManagedPlaylist / SlotInLog / SetupState — including the `draft_proposals_json` field — and re-archives any current `Composer · {name}` Plex playlists with `(archived)` suffix. ServiceConfig rows for Plex / Anthropic / Lidarr are NOT touched. After reset, a private-browser session shows a clean wizard at Step 1 with no leaked proposals from the prior session. Behavior is idempotent — running reset twice in a row is a no-op on the second call
 
 ### Phase 7: Suggestions Queue + v1 Chat Retirement
 **Goal**: User has a continuous `Composer · Suggestions` Plex playlist that drains as they listen and refills with taste-aware picks within 30 seconds; v1 mood-chat is retired; vibes home is the new landing page

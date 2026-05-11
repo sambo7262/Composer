@@ -114,6 +114,7 @@ First-run guided flow. The only place k-clustering and Plex webhook configuratio
 - [ ] **WIZ-05**: Step 3: Propose vibes — runs clustering, displays each proposed cluster with seed tracks + auto-generated name and description; user edits inline
 - [ ] **WIZ-06**: Step 4: Confirm vibes → Composer creates the corresponding `Composer · {name}` Plex playlists, populates them via initial slotting, and creates the `Composer · Suggestions` playlist
 - [ ] **WIZ-07**: Step 5: Done — wizard exits to vibes home; user sees their vibes populated
+- [ ] **WIZ-08**: "Start Over" / wizard reset — user can wipe all wizard + vibe state at any time (Vibe, TrackVibe, ManagedPlaylist, SlotInLog, SetupState including `draft_proposals_json`) and restart the wizard from Step 1 with a fresh session. Integration credentials (Plex URL/token, Anthropic API key, Lidarr URL/token in the `ServiceConfig` table) MUST be preserved across reset. The reset is user-triggered (button in settings or wizard), not migration-gated — distinct from the one-shot first-deploy migration which only fires once on container restart. Existing `Composer · {name}` Plex playlists are archived with `(archived)` suffix (mirrors `archive_playlist` used by the first-deploy migration) so the reset is non-destructive on the Plex side and the user can recover prior selections from Plex if needed. Private-browser test must show a clean wizard (no leaked draft proposals)
 
 ### Suggestions Queue
 
@@ -274,6 +275,7 @@ Maps requirements to phases. Filled during roadmap creation; updated as phases c
 | WIZ-01..07 (7 reqs) | Phase 6 | Pending |
 | DEBUG-02 (1 req) | Phase 6 | Pending (`/debug/vibes` page) |
 | VIBE-13, VIBE-14 (2 reqs) | Phase 6.2 | Pending (LLM-direct vibe assignment + two-pass boundary review) |
+| WIZ-08 (1 req) | Phase 6.2 | Pending (user-triggered wizard reset; preserves integration credentials) |
 | SUGG-01..11 (11 reqs) | Phase 7 | Pending |
 | UI-01..06 (6 reqs) | Phase 7 | Pending (vibes home + chat retirement + mobile shell) |
 | OPS-05 (1 req) | Phase 7 | Pending (LLM observability ships with first ranking call) |
@@ -285,9 +287,9 @@ Maps requirements to phases. Filled during roadmap creation; updated as phases c
 | ENG-01..03 (3 reqs) | Phase 9 (optional) | Pending |
 
 **Coverage (v2.0):**
-- Required (Phases 5–8): **68 requirements** mapped — 7 EVT + 5 RATE + 4 OPS-01..04 + 1 DEBUG-01 + 12 VIBE-01..12 + 7 WIZ + 1 DEBUG-02 + 2 VIBE-13/14 + 11 SUGG + 6 UI-01..06 + 1 OPS-05 + 2 DEBUG-03/05 + 5 DISC + 2 UI-07/08 + 1 OPS-06 + 1 DEBUG-04 = 68
+- Required (Phases 5–8): **69 requirements** mapped — 7 EVT + 5 RATE + 4 OPS-01..04 + 1 DEBUG-01 + 12 VIBE-01..12 + 7 WIZ-01..07 + 1 DEBUG-02 + 2 VIBE-13/14 + 1 WIZ-08 + 11 SUGG + 6 UI-01..06 + 1 OPS-05 + 2 DEBUG-03/05 + 5 DISC + 2 UI-07/08 + 1 OPS-06 + 1 DEBUG-04 = 69
 - Optional (Phase 9): **3 requirements** (ENG-01..03)
-- Total v2.0 surface: **71 requirements**, all mapped, **0 unmapped**
+- Total v2.0 surface: **72 requirements**, all mapped, **0 unmapped**
 - Phase 9 is explicitly cuttable; everything else is required for v2.0
 - Roadmap validated 2026-05-11 — all v2.0 REQ-IDs map to exactly one phase, no orphans, no duplicates
 
