@@ -184,6 +184,10 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-05-10T02:10:08.596Z
-Stopped at: Phase 6 UI-SPEC approved
-Resume file: .planning/phases/06-vibe-clustering-setup-wizard/06-UI-SPEC.md
+Last session: 2026-05-11T15:30:00Z
+Stopped at: Phase 06.1 executed + verified (codebase 18/18 must-haves, 121/121 tests). 4 hotfixes shipped during NAS UAT (260510-sht None-session, 260510-t5n JSON trailing prose, 260510-tng LLM wrapper field, 260511-bpf cross-album playlist dedupe). Phase 6.2 added to ROADMAP (LLM-Direct Vibe Assignment) with VIBE-13/14 — not yet planned. Phase 06.1 still status=In Progress pending real-NAS UAT.
+Resume file: .planning/phases/06.1-vibe-wizard-foundations-server-led-clustering-user-led-vibe-/06.1-HUMAN-UAT.md
+Next actions:
+  - After NAS UAT completes: `/gsd-verify-work 06.1` to mark HUMAN-UAT items pass/fail
+  - If UAT passes: `/gsd-discuss-phase 6.2` to flesh out LLM-direct vibe assignment design contract
+  - If UAT surfaces issues: `/gsd-plan-phase 06.1 --gaps` for gap-closure plans
