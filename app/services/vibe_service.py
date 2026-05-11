@@ -250,8 +250,46 @@ def _read_managed_playlist_for_vibe_sync(vibe_id: int) -> Optional[str]:
         return row.plex_rating_key if row else None
 
 
+def _canonical_rating_keys_sync(rating_keys: List[str]) -> List[str]:
+    """Dedupe ratingKeys by (artist.casefold().strip(), title.casefold().strip()).
+
+    When the user has rated the same song on multiple albums (Best Of +
+    original), return only the smallest plex_rating_key per (artist, title)
+    group. The smallest ratingKey is the deterministic pick because Plex
+    assigns ratingKeys in import order — the original album was usually
+    imported first.
+
+    Quality-aware dedupe (bitrate/format preference) is deferred to Phase 6.2
+    per ROADMAP — that phase adds bitrate + file_format columns to Track and
+    can upgrade this helper to pick by quality instead of import order.
+    """
+    if not rating_keys:
+        return []
+    with Session(get_engine()) as session:
+        rows = list(
+            session.exec(
+                select(Track.plex_rating_key, Track.artist, Track.title)
+                .where(Track.plex_rating_key.in_(rating_keys))
+            ).all()
+        )
+    canonical: dict[tuple[str, str], str] = {}
+    for rating_key, artist, title in rows:
+        key = (artist.casefold().strip(), title.casefold().strip())
+        existing = canonical.get(key)
+        if existing is None or rating_key < existing:
+            canonical[key] = rating_key
+    return sorted(canonical.values())
+
+
 def _read_vibe_member_rating_keys_sync(vibe_id: int) -> List[str]:
-    """Return all Plex ratingKeys currently in a vibe (for additive playlist push)."""
+    """Return all Plex ratingKeys currently in a vibe (for additive playlist push).
+
+    Dedupes by (artist, title) canonical key — cross-album dupes (same song on
+    Best Of + original album) collapse to a single ratingKey to prevent the
+    same song appearing twice in a vibe playlist. See
+    ``_canonical_rating_keys_sync`` for the heuristic and Phase 6.2 deferral
+    note re: quality-aware dedupe.
+    """
     with Session(get_engine()) as session:
         rows = list(
             session.exec(
@@ -260,8 +298,8 @@ def _read_vibe_member_rating_keys_sync(vibe_id: int) -> List[str]:
                 .where(TrackVibe.vibe_id == vibe_id)
             ).all()
         )
-        # rows is a list of ratingKey strings (column-only select).
-        return [str(r) for r in rows]
+    rating_keys = [str(r) for r in rows]
+    return _canonical_rating_keys_sync(rating_keys)
 
 
 def _read_all_rated_track_keys_sync() -> List[str]:
