@@ -33,6 +33,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 5: Plex Event Foundation + Rating Sync** — Composer reliably ingests Plex webhook + polling events, dedupes them, and propagates RatingChanged end-to-end (completed 2026-05-10)
 - [ ] **Phase 6: Vibe Clustering + Setup Wizard** — User completes first-run wizard and ends with 3–7 named vibe playlists in Plex, populated from rated set, auto-slotting newly-rated tracks
 - [ ] **Phase 6.1: Vibe Wizard Foundations: server-led clustering + user-led vibe input** (INSERTED) — Server-led membership from k-means labels + user-typed vibe names replace LLM-led seed-picking; ensures all rated tracks land in a vibe playlist
+- [ ] **Phase 6.2: LLM-Direct Vibe Assignment** (INSERTED) — Replace k-means membership decisions with LLM-direct zero-shot assignment per user-typed vibe; two-pass design (confidence-graded assign + boundary peer-review); audio features become a tiebreaker for obscure tracks
 - [ ] **Phase 7: Suggestions Queue + v1 Chat Retirement** — Continuous Composer · Suggestions playlist drains as the user listens and refills with taste-aware picks; v1 mood-chat retires; vibes home becomes the new landing page
 - [ ] **Phase 8: Lidarr Discovery + Polish** — Taste-aware artist discovery with one-click add to Lidarr; auto-ingest of new arrivals; legacy screens responsive on mobile
 - [ ] **Phase 9 (OPTIONAL): Feed the Engine** — Bulk rating, play-rated nudge, Surprise Me; cuttable without affecting any other phase
@@ -184,6 +185,20 @@ Plans:
 Plans:
 - [x] 06.1-01-PLAN.md — Server-led clustering: LLMVibeFit + LLMVibeMappingResponse schemas, map_user_vibes_to_clusters (k-means labels drive seed_track_indices), permutation validator + retry-once, fit fields on VibeProposal
 - [x] 06.1-02-PLAN.md — Wizard UI + finalize population + first-deploy migration: textbox-stack Step 3 input, fit-grade chip on proposal cards, propose/init endpoint rewire, finalize triggers reslot_all_rated_tracks, MigrationLog gate + run_phase_61_migration() in lifespan
+
+### Phase 06.2: LLM-Direct Vibe Assignment (INSERTED)
+
+**Goal:** Replace k-means cluster *membership* with LLM-direct zero-shot assignment of each rated track to its best-fit user-typed vibe. Two-pass design: (1) batched per-track assign with confidence grade (strong/weak/uncertain), (2) boundary-review pass that sends weak/uncertain tracks the peer context of their candidate vibes. K-means stays as a centroid generator only — no membership decisions from k-means. Audio features (energy/tempo/danceability/valence) still passed to the LLM as a tiebreaker for tracks with low artist-recognition.
+**Requirements**: VIBE-02, VIBE-04, VIBE-13, VIBE-14
+**Depends on:** Phase 6.1 (user-led naming + fit-grade infra), Phase 6 (audio-feature plumbing)
+**Plans:** TBD
+
+**Success Criteria** (what must be TRUE):
+1. On a 600-track library with 5 user vibes, ≥90% of tracks with recognizable artist+title land in the vibe a human would pick (sampled UAT against 50 random tracks)
+2. Total cost per full library re-cluster ≤ $1.50 (Sonnet 4.6 with prompt-cached system context); measured via LLMUsage table
+3. K-means stays in the codebase as a centroid-generator only — membership decisions traceable to LLM output, not to `k-means.labels_`
+4. Audio features still passed in the LLM input payload as a tiebreaker for low-recognition tracks
+5. The wizard's existing "Re-cluster vibes" button runs the new pipeline; proposal cards show a per-track confidence chip (strong / weak / uncertain) on the second-pass boundary tracks
 
 ### Phase 7: Suggestions Queue + v1 Chat Retirement
 **Goal**: User has a continuous `Composer · Suggestions` Plex playlist that drains as they listen and refills with taste-aware picks within 30 seconds; v1 mood-chat is retired; vibes home is the new landing page

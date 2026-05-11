@@ -100,6 +100,8 @@ Vibes are persistent user-named buckets derived from the rated set. Newly-rated 
 - [ ] **VIBE-10**: On rating removed (track drops to 0), track is removed from all vibe playlists and the `TrackVibe` cache
 - [ ] **VIBE-11**: User can manually trigger re-clustering via a "Re-cluster vibes" button (behind a confirm modal — re-clustering is rare, not nightly)
 - [ ] **VIBE-12**: Plex playlist push verifies post-write: re-fetch the playlist and reconcile against expected track set; silently-dropped tracks (Plex rejected for any reason) are logged and retried once
+- [ ] **VIBE-13**: LLM-direct vibe membership — each rated track is assigned to one user-typed vibe via a batched LLM call that receives `(title, artist, genre, energy, tempo, danceability, valence)` per track and returns the chosen vibe name + a confidence grade (`strong`/`weak`/`uncertain`). K-means is retained as a centroid generator only — no membership decisions from `k-means.labels_`. Cost per full library re-cluster ≤ $1.50 on Sonnet 4.6 with prompt caching (measured via the `LLMUsage` table)
+- [ ] **VIBE-14**: Two-pass boundary review — tracks assigned with `weak` or `uncertain` confidence in VIBE-13's first pass are re-sent to the LLM in a second call along with the *peer-context* of their candidate vibes (the list of tracks already strongly assigned to each candidate). The LLM picks the final vibe with the peer list visible. Confidence chip surfaces on the proposal card for any track that went through the second pass
 
 ### Setup Wizard
 
@@ -271,6 +273,7 @@ Maps requirements to phases. Filled during roadmap creation; updated as phases c
 | VIBE-01..12 (12 reqs) | Phase 6 | Pending |
 | WIZ-01..07 (7 reqs) | Phase 6 | Pending |
 | DEBUG-02 (1 req) | Phase 6 | Pending (`/debug/vibes` page) |
+| VIBE-13, VIBE-14 (2 reqs) | Phase 6.2 | Pending (LLM-direct vibe assignment + two-pass boundary review) |
 | SUGG-01..11 (11 reqs) | Phase 7 | Pending |
 | UI-01..06 (6 reqs) | Phase 7 | Pending (vibes home + chat retirement + mobile shell) |
 | OPS-05 (1 req) | Phase 7 | Pending (LLM observability ships with first ranking call) |
@@ -282,14 +285,14 @@ Maps requirements to phases. Filled during roadmap creation; updated as phases c
 | ENG-01..03 (3 reqs) | Phase 9 (optional) | Pending |
 
 **Coverage (v2.0):**
-- Required (Phases 5–8): **66 requirements** mapped — 7 EVT + 5 RATE + 4 OPS-01..04 + 1 DEBUG-01 + 12 VIBE + 7 WIZ + 1 DEBUG-02 + 11 SUGG + 6 UI-01..06 + 1 OPS-05 + 2 DEBUG-03/05 + 5 DISC + 2 UI-07/08 + 1 OPS-06 + 1 DEBUG-04 = 66
+- Required (Phases 5–8): **68 requirements** mapped — 7 EVT + 5 RATE + 4 OPS-01..04 + 1 DEBUG-01 + 12 VIBE-01..12 + 7 WIZ + 1 DEBUG-02 + 2 VIBE-13/14 + 11 SUGG + 6 UI-01..06 + 1 OPS-05 + 2 DEBUG-03/05 + 5 DISC + 2 UI-07/08 + 1 OPS-06 + 1 DEBUG-04 = 68
 - Optional (Phase 9): **3 requirements** (ENG-01..03)
-- Total v2.0 surface: **69 requirements**, all mapped, **0 unmapped**
+- Total v2.0 surface: **71 requirements**, all mapped, **0 unmapped**
 - Phase 9 is explicitly cuttable; everything else is required for v2.0
-- Roadmap validated 2026-05-08 — all v2.0 REQ-IDs map to exactly one phase, no orphans, no duplicates
+- Roadmap validated 2026-05-11 — all v2.0 REQ-IDs map to exactly one phase, no orphans, no duplicates
 
 ---
 
 *Requirements defined: 2026-04-09 (v1.0)*
 *v2.0 requirements added: 2026-05-08 — Music Companion milestone*
-*Traceability validated against ROADMAP.md: 2026-05-08*
+*Traceability validated against ROADMAP.md: 2026-05-11*
