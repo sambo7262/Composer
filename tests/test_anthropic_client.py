@@ -213,6 +213,63 @@ class TestAnthropicClient:
         )
         assert result == Foo(bar="hi")
 
+    @patch("app.services.anthropic_client.AsyncAnthropic")
+    async def test_tolerates_trailing_prose_after_json(self, mock_anthropic_cls, db_with_phase5):
+        """Production bug 2026-05-10: Sonnet emits valid JSON followed by commentary.
+
+        Pydantic.model_validate_json rejects with 'Invalid JSON: trailing characters'.
+        The parser must tolerate trailing prose via json.JSONDecoder.raw_decode.
+        """
+        from app.services.anthropic_client import AnthropicClient
+
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(
+            return_value=_make_mock_response(
+                text='{"proposals": [{"cluster_index": 0, "name": "Workout", "fit": "strong", "fit_reason": null}]}\n\nNote: cluster 0 is a stretch.'
+            )
+        )
+        mock_anthropic_cls.return_value = mock_client
+
+        class _Resp(BaseModel):
+            proposals: list
+
+        client = AnthropicClient(api_key="test-key", model="claude-sonnet-4-6")
+        result = await client.call_with_structured_output(
+            system_prompt="x" * 5000,
+            user_prompt="hi",
+            response_model=_Resp,
+            purpose="test",
+        )
+        assert isinstance(result, _Resp)
+        assert len(result.proposals) == 1
+        assert result.proposals[0]["name"] == "Workout"
+
+    @patch("app.services.anthropic_client.AsyncAnthropic")
+    async def test_tolerates_prose_before_and_after_json(self, mock_anthropic_cls, db_with_phase5):
+        """The parser must also handle the 'Here is the JSON: {...} Let me know...' case."""
+        from app.services.anthropic_client import AnthropicClient
+
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(
+            return_value=_make_mock_response(
+                text='Here is the JSON:\n{"proposals": []}\nLet me know if you need changes.'
+            )
+        )
+        mock_anthropic_cls.return_value = mock_client
+
+        class _Resp(BaseModel):
+            proposals: list
+
+        client = AnthropicClient(api_key="test-key", model="claude-sonnet-4-6")
+        result = await client.call_with_structured_output(
+            system_prompt="x" * 5000,
+            user_prompt="hi",
+            response_model=_Resp,
+            purpose="test",
+        )
+        assert isinstance(result, _Resp)
+        assert result.proposals == []
+
     async def test_factory_raises_when_not_configured(self, db_with_phase5):
         """get_anthropic_client_v2 raises ValueError if Anthropic isn't configured."""
         from app.services.anthropic_client import get_anthropic_client_v2

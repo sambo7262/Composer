@@ -23,6 +23,7 @@ Key invariants (do NOT silently change):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Type, TypeVar
@@ -125,7 +126,25 @@ class AnthropicClient:
             text = text.rstrip()
             if text.endswith("```"):
                 text = text[:-3]
-        return response_model.model_validate_json(text.strip())
+        text = text.strip()
+
+        # Tolerate trailing prose AND leading prose: find the first '{' and use
+        # json.JSONDecoder.raw_decode to read exactly one JSON object, ignoring
+        # anything after it. The Anthropic Sonnet model occasionally appends
+        # commentary after a valid JSON response (production traceback
+        # 2026-05-10: "trailing characters at line 47 column 1").
+        first_brace = text.find("{")
+        if first_brace == -1:
+            # No JSON object found — let Pydantic raise the canonical error
+            # so callers still see a ValidationError, not a custom exception.
+            return response_model.model_validate_json(text)
+        try:
+            obj, _end = json.JSONDecoder().raw_decode(text[first_brace:])
+        except json.JSONDecodeError:
+            # raw_decode failed — fall back to model_validate_json so the
+            # ValidationError surfaces the LLM's malformed output verbatim.
+            return response_model.model_validate_json(text[first_brace:])
+        return response_model.model_validate(obj)
 
     async def _log_usage(
         self,
