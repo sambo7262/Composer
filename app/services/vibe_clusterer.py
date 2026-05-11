@@ -1141,8 +1141,15 @@ async def map_user_vibes_to_clusters(
         normalized, cluster_summaries
     )
 
-    # Lazy session — module-local re-export shim so tests can monkeypatch.
-    client = get_anthropic_client_v2(None)
+    # Open a sync Session for the credential read (mirrors
+    # _call_llm_with_validation at line ~1259). The AnthropicClient returned
+    # does NOT hold a Session reference — it only captures the decrypted
+    # api_key + model_name during construction — so the closure-captured
+    # `client` reference remains valid after the `with` block exits and
+    # `_one_call` can safely use it. Test-side monkeypatching still works
+    # via the module-local shim defined below at line ~1327.
+    with Session(get_engine()) as session:
+        client = get_anthropic_client_v2(session)
 
     async def _one_call(prompt: str) -> LLMVibeMappingResponse:
         return await client.call_with_structured_output(
