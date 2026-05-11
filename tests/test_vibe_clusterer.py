@@ -987,6 +987,47 @@ def test_user_led_user_prompt_includes_positional_ids_top_genres_and_explicit_in
     assert "synthwave" in prompt
 
 
+def test_user_led_user_prompt_overrides_proposals_wrapper_with_mappings():
+    """Regression for D-NEW-01 (quick-260510-tng): the cached system prompt
+    instructs the LLM to return ``{"proposals": [...]}`` for the server-led
+    clustering call. The user-led mapping call shares that cached system
+    prompt (1h TTL — do NOT invalidate) but needs the LLM to return
+    ``{"mappings": [...]}`` matching ``LLMVibeMappingResponse``.
+
+    The user-prompt builder MUST contain an explicit RESPONSE FORMAT OVERRIDE
+    block naming the ``mappings`` wrapper, the target schema, the per-entry
+    fields, and explicit negation of the ``proposals`` wrapper.
+    """
+    from app.services.vibe_clusterer import (
+        _build_user_led_clustering_user_prompt,
+    )
+    names = ["workout", "focus"]
+    summaries = [
+        {"cluster_index": 0, "centroid": {"energy": 0.8, "tempo": 130,
+         "danceability": 0.7, "valence": 0.5}, "top_artists": ["A1"],
+         "top_genres": ["edm"], "closest_tracks": [], "member_count": 20},
+        {"cluster_index": 1, "centroid": {"energy": 0.3, "tempo": 90,
+         "danceability": 0.4, "valence": 0.3}, "top_artists": ["A2"],
+         "top_genres": ["ambient"], "closest_tracks": [], "member_count": 15},
+    ]
+    prompt = _build_user_led_clustering_user_prompt(names, summaries)
+    # 1. Target wrapper field name present.
+    assert "mappings" in prompt
+    # 2. Wrong wrapper field named (so it can be explicitly avoided).
+    assert "proposals" in prompt
+    # 3. Negation phrasing — both lowercase "do not use" intent and uppercase NOT.
+    assert "do not" in prompt.lower()
+    assert "NOT" in prompt
+    # 4. Every LLMVibeFit field name appears verbatim.
+    assert "user_name" in prompt
+    assert "cluster_index" in prompt
+    assert "description" in prompt
+    assert "fit" in prompt
+    assert "reason" in prompt
+    # 5. Target schema named so the LLM sees it.
+    assert "LLMVibeMappingResponse" in prompt
+
+
 @pytest.mark.asyncio
 async def test_map_user_vibes_server_populates_seed_track_indices_seed_tracks_members():
     """Combined invariant: LLM never picks members; server populates
