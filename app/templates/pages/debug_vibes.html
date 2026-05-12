@@ -24,12 +24,10 @@
   {% include "partials/drift_indicator.html" %}
 
   {# Phase 6.2 D-32 / VIBE-13 — LLM cost panel segmented by purpose.
-     Renders the three Phase 6.2 purposes (preamble / Pass 1 / Pass 2) plus
-     any legacy vibe_clustering_* rows still in the table, with a running
-     total and a warning state when the total exceeds $3.00 (acceptance
-     ceiling per D-32). #}
-  <section class="space-y-2 bg-surface-elevated rounded-lg p-4 border
-                  {% if vibe_cost_warning %}border-error{% else %}border-border{% endif %}">
+     Renders the three Phase 6.2 purposes (preamble / Pass 1 / Pass 2)
+     plus any legacy vibe_clustering_* rows still in the table, with a
+     running total. #}
+  <section class="space-y-2 bg-surface-elevated rounded-lg p-4 border border-border">
     <h2 class="text-[20px] font-semibold">LLM cost (by purpose)</h2>
     {% if vibe_cost_by_purpose %}
       <table class="w-full text-[13px]">
@@ -56,12 +54,6 @@
           </tr>
         </tbody>
       </table>
-      {% if vibe_cost_warning %}
-        <p class="text-[13px] text-error mt-1">
-          ⚠ Vibe LLM cost exceeds the $3.00 acceptance ceiling. Investigate
-          retry storms or unexpected Pass 2 traffic on /debug/vibes.
-        </p>
-      {% endif %}
     {% else %}
       <p class="text-[13px] text-text-secondary">
         No vibe LLM calls logged yet.

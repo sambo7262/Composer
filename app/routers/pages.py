@@ -497,8 +497,6 @@ async def debug_vibes(request: Request, session: Session = Depends(get_session))
             purpose, total = row[0], row[1]
         vibe_cost_by_purpose[purpose] = float(total or 0.0)
     vibe_cost_total = sum(vibe_cost_by_purpose.values())
-    # D-32: $3.00 acceptance ceiling (the user-approved cap; $1.50 target).
-    vibe_cost_warning = vibe_cost_total > 3.0
 
     return templates.TemplateResponse(
         request,
@@ -511,6 +509,5 @@ async def debug_vibes(request: Request, session: Session = Depends(get_session))
             "drift": drift,
             "vibe_cost_by_purpose": vibe_cost_by_purpose,
             "vibe_cost_total": vibe_cost_total,
-            "vibe_cost_warning": vibe_cost_warning,
         },
     )
