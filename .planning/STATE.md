@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-05-08)
 Phase: 06.2 (llm-direct-vibe-assignment) — EXECUTING
 Plan: 1 of 2
 Status: Executing Phase 06.2
-Last activity: 2026-05-12 -- Completed quick task 260512-k3n: Phase 6.2 hotfix (adaptive thinking + LLM progress card)
+Last activity: 2026-05-12 -- Completed quick task 260512-kvs: Phase 6.2 hotfix #2 (max_tokens bump + $3 cap removal)
 
 ### v2.0 Phase Snapshot
 
@@ -182,6 +182,7 @@ Recent decisions affecting current work:
 | 260510-tng | Fix LLMVibeMappingResponse mappings-field-required by prepending RESPONSE FORMAT OVERRIDE to user-led user prompt (preserves cached system prompt) | 2026-05-11 | f673c8b | [260510-tng-fix-llmvibemappingresponse-mappings-fiel](./quick/260510-tng-fix-llmvibemappingresponse-mappings-fiel/) |
 | 260511-bpf | Dedupe Plex playlist members by (artist, title) canonical key — fixes cross-album dupes (quality-aware dedupe deferred to Phase 6.2) | 2026-05-11 | 1371b53 | [260511-bpf-dedupe-plex-playlist-members-by-artist-t](./quick/260511-bpf-dedupe-plex-playlist-members-by-artist-t/) |
 | 260512-k3n | Phase 6.2 hotfix: translate `thinking="adaptive"` to `{"type":"enabled","budget_tokens":2000}` with 400-fallback retry, plus live "Calling Anthropic…" progress card on propose page | 2026-05-12 | d57befe | [260512-k3n-hotfix-phase-6-2-replace-adaptive-thinki](./quick/260512-k3n-hotfix-phase-6-2-replace-adaptive-thinki/) |
+| 260512-kvs | Phase 6.2 hotfix #2: bump `PASS1_MAX_TOKENS` 3000→6000 + `PASS2_MAX_TOKENS` 4000→8000 (Pass 2 with extended thinking was returning thinking-only blocks on `stop_reason=max_tokens`); remove $3 cost-cap warning from /debug/vibes per user request | 2026-05-12 | 9ff83e3 | [260512-kvs-hotfix-2-remove-3-cost-cap-warning-bump-](./quick/260512-kvs-hotfix-2-remove-3-cost-cap-warning-bump-/) |
 
 ## Session Continuity
 
