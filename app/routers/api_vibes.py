@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlmodel import Session, select
 
 from app.database import get_engine, get_session
@@ -937,6 +937,72 @@ async def last_llm_call(
         f'system+user+response text. Future enhancement may persist truncated '
         f'prompts/responses for full debug surface.</p>'
         f'</div>'
+    )
+
+
+@router.get("/last-llm-call/progress")
+async def last_llm_call_progress(
+    request: Request, session: Session = Depends(get_session)
+) -> JSONResponse:
+    """D-NEW (Phase 6.2 hotfix 260512-k3n) — JSON progress endpoint.
+
+    Returns the latest vibe_* LLMUsage row as JSON for the propose page's
+    live "Calling Anthropic..." progress card. Polled every 2s by the
+    Alpine.js component in partials/llm_progress_card.html while an
+    /api/setup/propose/init or /api/setup/propose/refine HTMX request is
+    in-flight.
+
+    Why LIKE 'vibe_%' instead of an IN(...) allowlist: the existing HTML
+    endpoint /last-llm-call filters on the legacy
+    vibe_clustering_initial/refine/recluster trio (Phase 6 / D-36); Phase
+    6.2 introduced new purpose labels (vibe_definitions_preamble,
+    vibe_assign_pass1, vibe_assign_pass2). Matching the 'vibe_' prefix
+    captures both generations without a code change next time labels evolve.
+
+    Response shape (always JSON, never 4xx):
+      - When at least one vibe_* row exists:
+        {"purpose": str, "called_at": ISO8601 str, "elapsed_seconds": int}
+      - When no rows yet (cold start):
+        {"purpose": null, "called_at": null, "elapsed_seconds": null}
+
+    NOTE: 'inflight' is intentionally client-local state (we don't store
+    request-in-flight server-side because there is no cheap signal — a row
+    appears AFTER the call returns, not during). The client polls only
+    while it has an in-flight HTMX request.
+
+    Phase 5 convention: tight except clauses only — the try/except below
+    is scoped to datetime.fromisoformat for malformed legacy rows.
+    """
+    row = session.exec(
+        select(LLMUsage)
+        .where(LLMUsage.purpose.like("vibe_%"))  # type: ignore[union-attr]
+        .order_by(LLMUsage.id.desc())  # type: ignore[union-attr]
+    ).first()
+
+    if row is None:
+        return JSONResponse(
+            {"purpose": None, "called_at": None, "elapsed_seconds": None}
+        )
+
+    called_at_dt = None
+    try:
+        called_at_dt = datetime.fromisoformat(row.called_at)
+    except ValueError:
+        called_at_dt = None
+
+    elapsed = None
+    if called_at_dt is not None:
+        now = datetime.now(timezone.utc)
+        if called_at_dt.tzinfo is None:
+            called_at_dt = called_at_dt.replace(tzinfo=timezone.utc)
+        elapsed = max(0, int((now - called_at_dt).total_seconds()))
+
+    return JSONResponse(
+        {
+            "purpose": row.purpose,
+            "called_at": row.called_at,
+            "elapsed_seconds": elapsed,
+        }
     )
 
 
