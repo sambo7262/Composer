@@ -266,11 +266,16 @@ def test_debug_vibes_cost_by_purpose_segmentation(client_with_phase6, test_engin
     assert "0.9900" in body or "0.99" in body, body
 
 
-def test_debug_vibes_cost_total_warning_threshold(client_with_phase6, test_engine):
-    """Warning state ONLY when sum > $3.00 (D-32 ceiling); below threshold no warning."""
+def test_debug_vibes_no_cost_warning_regardless_of_total(client_with_phase6, test_engine):
+    """Hotfix 260512-kvs — /debug/vibes never renders the $3.00 cost-ceiling
+    warning state, even when the total exceeds $3.00. The cost panel still
+    surfaces the breakdown and total; only the warning paragraph / red
+    border were removed (per user request: it was a display-only flag,
+    not a circuit breaker).
+    """
     from app.models.llm_usage import LLMUsage
 
-    # Case 1: below $3.00 — no warning.
+    # Case 1: below $3.00 — no warning text, no red border class.
     with Session(test_engine) as session:
         session.add(LLMUsage(
             called_at="2026-05-12T10:00:00Z",
@@ -282,9 +287,13 @@ def test_debug_vibes_cost_total_warning_threshold(client_with_phase6, test_engin
 
     resp = client_with_phase6.get("/debug/vibes")
     assert resp.status_code == 200
-    assert "exceeds the $3.00 acceptance ceiling" not in resp.text
+    body = resp.text
+    assert "exceeds the $3.00 acceptance ceiling" not in body
+    assert "border-error" not in body
+    # Total still renders.
+    assert "2.0000" in body or "$2.00" in body or "2.00" in body
 
-    # Case 2: add another row pushing total over $3.00 — warning appears.
+    # Case 2: push total over $3.00 — warning STILL absent (hotfix 260512-kvs).
     with Session(test_engine) as session:
         session.add(LLMUsage(
             called_at="2026-05-12T11:00:00Z",
@@ -296,4 +305,7 @@ def test_debug_vibes_cost_total_warning_threshold(client_with_phase6, test_engin
 
     resp = client_with_phase6.get("/debug/vibes")
     assert resp.status_code == 200
-    assert "exceeds the $3.00 acceptance ceiling" in resp.text
+    body = resp.text
+    assert "exceeds the $3.00 acceptance ceiling" not in body
+    assert "acceptance ceiling" not in body
+    assert "border-error" not in body
