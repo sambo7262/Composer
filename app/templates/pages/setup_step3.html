@@ -3,6 +3,11 @@
 {% set current_step_num = 3 %}
 {% set current_step_label = "Find your vibes" %}
 {% block wizard_content %}
+  {# Phase 6.2 hotfix 260512-k3n — live LLM-call progress card.
+     Hidden by default (x-show="inflight"). Shown while
+     /api/setup/propose/init or /api/setup/propose/refine is in-flight via
+     document.body htmx:beforeRequest / htmx:afterRequest events. #}
+  {% include "partials/llm_progress_card.html" %}
   <h1 class="text-[28px] font-semibold mb-2">Find your vibes</h1>
   <p class="text-[14px] text-text-secondary mb-4">
     {% if draft_proposals and draft_proposals.proposals %}

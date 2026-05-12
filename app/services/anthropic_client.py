@@ -28,7 +28,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Literal, Type, TypeVar
 
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, BadRequestError
 from pydantic import BaseModel
 from sqlmodel import Session
 
@@ -85,15 +85,21 @@ class AnthropicClient:
                 ``thinking='adaptive'`` (RESEARCH §1.3 — thinking tokens roll
                 into ``response.usage.output_tokens`` at the output rate).
             purpose: Logical label written to LLMUsage.purpose for cost attribution.
-            thinking: Phase 6.2 Plan 01 Task 1 — extended thinking mode.
-                ``"off"`` (default) sends NO ``thinking`` kwarg — byte-identical
-                request body to legacy callers, preserving prompt-cache stability.
-                ``"adaptive"`` sends ``thinking={"type": "adaptive"}`` so Claude
-                picks the thinking budget per request, bounded by ``max_tokens``.
-                Used by Pass 2 boundary review (D-12). The deprecated manual
-                ``{"type": "enabled", "budget_tokens": N}`` form is intentionally
-                NOT supported — Anthropic is migrating to adaptive on Sonnet 4.6
-                and it's already rejected on Opus 4.7 (RESEARCH §1.1).
+            thinking: Phase 6.2 Plan 01 Task 1 + hotfix 260512-k3n.
+                Extended thinking mode. Sends a ``thinking`` kwarg in BOTH
+                modes so the BadRequestError-retry fallback has a known-good
+                shape to fall back TO:
+                  - ``"off"``      → ``thinking={"type": "disabled"}``
+                  - ``"adaptive"`` → ``thinking={"type": "enabled",
+                                                 "budget_tokens": 2000}``
+                The previous string-literal ``{"type": "adaptive"}`` was
+                rejected by the Anthropic API with
+                ``BadRequestError: 400 — 'adaptive thinking is not supported
+                on this model'`` — see hotfix 260512-k3n. ``budget_tokens``
+                is pinned at 2000 per hotfix task scope. If the model still
+                rejects extended thinking (e.g. Opus 4.7), the wrapper
+                retries ONCE with ``{"type": "disabled"}`` and logs a
+                warning.
 
         Returns:
             An instance of response_model parsed from the FIRST content block
@@ -114,14 +120,41 @@ class AnthropicClient:
             ],
             "messages": [{"role": "user", "content": user_prompt}],
         }
+        # Hotfix 260512-k3n: translate ThinkingMode to the documented dict
+        # form the Anthropic API actually accepts. The previous
+        # ``{"type": "adaptive"}`` literal was rejected with
+        # ``BadRequestError: 400 — 'adaptive thinking is not supported on this
+        # model'``. Send the kwarg in BOTH modes so the retry fallback below
+        # has a known-good shape to fall back TO.
         if thinking == "adaptive":
-            # RESEARCH §2.2 — only add the key when adaptive is requested. For
-            # ``thinking='off'`` (the default and the explicit-off case), the
-            # request body stays byte-identical to legacy callers, which is the
-            # safer prompt-cache contract.
-            kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": 2000}
+        else:
+            kwargs["thinking"] = {"type": "disabled"}
 
-        response = await self._client.messages.create(**kwargs)
+        try:
+            response = await self._client.messages.create(**kwargs)
+        except BadRequestError as exc:
+            # Hotfix 260512-k3n: some models reject extended thinking outright
+            # (e.g. Opus 4.7, certain Sonnet revisions). Retry ONCE with
+            # disabled so the propose flow isn't blocked when the operator
+            # points Composer at such a model. Tight match: only retry when
+            # the error message specifically references "thinking" AND we
+            # were actually trying to enable it.
+            if (
+                "thinking" in str(exc).lower()
+                and kwargs.get("thinking", {}).get("type") == "enabled"
+            ):
+                logger.warning(
+                    "model %s does not support extended thinking; "
+                    "retrying with thinking disabled",
+                    self._model,
+                )
+                kwargs["thinking"] = {"type": "disabled"}
+                response = await self._client.messages.create(**kwargs)
+            else:
+                # Not a thinking-rejection — preserve Phase 5 convention of
+                # tight per-handler except clauses; re-raise for the caller.
+                raise
 
         cache_creation = response.usage.cache_creation_input_tokens or 0
         cache_read = response.usage.cache_read_input_tokens or 0

@@ -1,0 +1,86 @@
+{# Phase 6.2 hotfix 260512-k3n — live LLM-call progress card.
+   Shown while /api/setup/propose/init or /api/setup/propose/refine is in-flight.
+   Polls /api/vibes/last-llm-call/progress every 2s and surfaces:
+     - current pass label (preamble / Pass 1 / Pass 2)
+     - elapsed seconds since the latest vibe_* LLMUsage row's called_at
+   "batch X of Y" is intentionally omitted — LLMUsage has no batch columns
+   (would require schema migration; out of scope for a hotfix). #}
+<style>[x-cloak]{display:none!important}</style>
+<div id="llm-progress-card"
+     x-data="llmProgressCard()"
+     x-show="inflight"
+     x-cloak
+     class="mb-4 p-4 rounded-lg border border-accent/30 bg-accent/5">
+  <div class="flex items-center gap-3">
+    <svg class="animate-spin h-5 w-5 text-accent" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    </svg>
+    <div class="flex-1">
+      <div class="text-text-primary text-[14px] font-medium">
+        Calling Anthropic&hellip; <span x-text="passLabel"></span>
+      </div>
+      <div class="text-text-secondary text-[13px]" x-show="elapsedSeconds !== null">
+        <span x-text="elapsedSeconds"></span>s elapsed
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function llmProgressCard() {
+    return {
+      inflight: false,
+      purpose: null,
+      elapsedSeconds: null,
+      _pollHandle: null,
+      get passLabel() {
+        switch (this.purpose) {
+          case 'vibe_definitions_preamble': return '(defining your vibes)';
+          case 'vibe_assign_pass1':         return '(Pass 1 — assigning tracks)';
+          case 'vibe_assign_pass2':         return '(Pass 2 — boundary review)';
+          case 'vibe_clustering_initial':   return '(initial clustering)';
+          case 'vibe_clustering_refine':    return '(refining proposals)';
+          case 'vibe_clustering_recluster': return '(reclustering)';
+          default: return this.purpose ? '(' + this.purpose + ')' : '';
+        }
+      },
+      start() {
+        this.inflight = true;
+        this.poll();
+        this._pollHandle = setInterval(() => this.poll(), 2000);
+      },
+      stop() {
+        this.inflight = false;
+        if (this._pollHandle) { clearInterval(this._pollHandle); this._pollHandle = null; }
+      },
+      async poll() {
+        try {
+          const r = await fetch('/api/vibes/last-llm-call/progress', { headers: { 'Accept': 'application/json' } });
+          if (!r.ok) return;
+          const data = await r.json();
+          this.purpose = data.purpose;
+          this.elapsedSeconds = data.elapsed_seconds;
+        } catch (e) {
+          /* swallow — polling is best-effort */
+        }
+      },
+      init() {
+        const trigger = (ev) => {
+          const url = (ev.detail && ev.detail.requestConfig && ev.detail.requestConfig.path) || '';
+          if (url.startsWith('/api/setup/propose/init') || url.startsWith('/api/setup/propose/refine')) {
+            this.start();
+          }
+        };
+        const release = (ev) => {
+          const url = (ev.detail && ev.detail.requestConfig && ev.detail.requestConfig.path) || '';
+          if (url.startsWith('/api/setup/propose/init') || url.startsWith('/api/setup/propose/refine')) {
+            this.stop();
+          }
+        };
+        document.body.addEventListener('htmx:beforeRequest', trigger);
+        document.body.addEventListener('htmx:afterRequest', release);
+      },
+    };
+  }
+</script>

@@ -340,14 +340,16 @@ class TestAnthropicThinkingAndRobustExtraction:
     """Phase 6.2 Plan 01 Task 1 — thinking + iterate-for-text-block."""
 
     @patch("app.services.anthropic_client.AsyncAnthropic")
-    async def test_anthropic_client_thinking_default_is_off_no_param_in_request(
+    async def test_anthropic_client_thinking_default_sends_disabled(
         self, mock_anthropic_cls, db_with_phase5
     ):
-        """Default args MUST NOT send a ``thinking`` key.
+        """Hotfix 260512-k3n: Default thinking='off' sends thinking={'type':'disabled'}.
 
-        Backward-compat for taste_profile, refine_proposals, map_user_vibes_to_clusters.
-        Keeping the request body byte-identical maximizes prompt-cache stability
-        (RESEARCH §2.2).
+        Previously the kwarg was omitted entirely. The hotfix sends an
+        explicit disabled shape so the BadRequestError retry path has a
+        known-good fallback. RESEARCH §2.2's byte-identical-when-off
+        constraint was softened in the hotfix because the production
+        BadRequestError on Sonnet 4.6 forces the request body shape change.
         """
         from app.services.anthropic_client import AnthropicClient
 
@@ -366,16 +368,21 @@ class TestAnthropicThinkingAndRobustExtraction:
             purpose="taste_profile_summary",
         )
         kwargs = mock_client.messages.create.call_args.kwargs
-        assert "thinking" not in kwargs, (
-            "Default thinking='off' MUST keep the SDK kwargs free of a "
-            "'thinking' key (prompt-cache + backward-compat invariant)."
+        assert kwargs.get("thinking") == {"type": "disabled"}, (
+            f"Default thinking='off' must send thinking={{'type':'disabled'}}; "
+            f"got thinking={kwargs.get('thinking')}"
         )
 
     @patch("app.services.anthropic_client.AsyncAnthropic")
     async def test_anthropic_client_thinking_adaptive_param_shape(
         self, mock_anthropic_cls, db_with_phase5
     ):
-        """thinking='adaptive' → kwargs include thinking={'type': 'adaptive'}."""
+        """Hotfix 260512-k3n: thinking='adaptive' translates to the documented
+        Anthropic API shape {'type':'enabled','budget_tokens':2000}.
+
+        The previous literal {'type':'adaptive'} was rejected by the API
+        with 'adaptive thinking is not supported on this model'.
+        """
         from app.services.anthropic_client import AnthropicClient
 
         mock_client = MagicMock()
@@ -396,8 +403,11 @@ class TestAnthropicThinkingAndRobustExtraction:
             thinking="adaptive",
         )
         kwargs = mock_client.messages.create.call_args.kwargs
-        assert kwargs.get("thinking") == {"type": "adaptive"}, (
-            f"Expected thinking={{'type': 'adaptive'}}; "
+        assert kwargs.get("thinking") == {
+            "type": "enabled",
+            "budget_tokens": 2000,
+        }, (
+            f"Expected thinking={{'type':'enabled','budget_tokens':2000}}; "
             f"got thinking={kwargs.get('thinking')}"
         )
 
@@ -405,10 +415,10 @@ class TestAnthropicThinkingAndRobustExtraction:
     async def test_anthropic_client_thinking_off_param_shape(
         self, mock_anthropic_cls, db_with_phase5
     ):
-        """Explicit thinking='off' is byte-identical to no thinking kwarg.
+        """Hotfix 260512-k3n: Explicit thinking='off' sends {'type':'disabled'}.
 
-        Per RESEARCH §2.2 — absent-when-off preserves prompt-cache stability
-        better than passing ``{"type": "disabled"}``.
+        Same shape as the default-off case; confirms explicit and default
+        callers produce identical request bodies.
         """
         from app.services.anthropic_client import AnthropicClient
 
@@ -428,9 +438,9 @@ class TestAnthropicThinkingAndRobustExtraction:
             thinking="off",
         )
         kwargs = mock_client.messages.create.call_args.kwargs
-        assert "thinking" not in kwargs, (
-            "thinking='off' MUST NOT add a 'thinking' key (prompt-cache "
-            "stability — RESEARCH §2.2)."
+        assert kwargs.get("thinking") == {"type": "disabled"}, (
+            f"thinking='off' must send thinking={{'type':'disabled'}}; "
+            f"got thinking={kwargs.get('thinking')}"
         )
 
     @patch("app.services.anthropic_client.AsyncAnthropic")
@@ -563,6 +573,153 @@ class TestAnthropicThinkingAndRobustExtraction:
         )
         assert "max_tokens" in joined.lower(), joined
         assert "vibe_assign_pass2" in joined, joined
+
+    # ------------------------------------------------------------------
+    # Hotfix 260512-k3n — three regression tests for the adaptive-thinking
+    # translation + one-shot BadRequestError retry fallback.
+    # ------------------------------------------------------------------
+
+    @patch("app.services.anthropic_client.AsyncAnthropic")
+    async def test_adaptive_translates_to_enabled_dict(
+        self, mock_anthropic_cls, db_with_phase5
+    ):
+        """Hotfix 260512-k3n (a): thinking='adaptive' MUST translate to
+        ``{'type':'enabled','budget_tokens':2000}`` — the documented Anthropic
+        API shape. The previous ``{'type':'adaptive'}`` literal AND any
+        string-literal ``'adaptive'`` are both rejected by the API.
+        """
+        from app.services.anthropic_client import AnthropicClient
+
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(
+            return_value=_make_thinking_response()
+        )
+        mock_anthropic_cls.return_value = mock_client
+
+        class Foo(BaseModel):
+            bar: str
+
+        client = AnthropicClient(api_key="test-key", model="claude-sonnet-4-6")
+        await client.call_with_structured_output(
+            system_prompt="x" * 5000,
+            user_prompt="hi",
+            response_model=Foo,
+            purpose="vibe_assign_pass2",
+            thinking="adaptive",
+        )
+        thinking_kwarg = mock_client.messages.create.call_args.kwargs.get(
+            "thinking"
+        )
+        assert thinking_kwarg == {"type": "enabled", "budget_tokens": 2000}, (
+            f"Expected {{'type':'enabled','budget_tokens':2000}}; "
+            f"got {thinking_kwarg!r}"
+        )
+        # Explicitly confirm the bug shape — string literal — is gone.
+        assert thinking_kwarg != "adaptive"
+
+    @patch("app.services.anthropic_client.AsyncAnthropic")
+    async def test_retries_once_when_model_rejects_thinking(
+        self, mock_anthropic_cls, db_with_phase5, caplog
+    ):
+        """Hotfix 260512-k3n (b): On BadRequestError mentioning 'thinking',
+        retry ONCE with thinking={'type':'disabled'} and log a WARNING.
+
+        Mirrors the production traceback path where Anthropic returns
+        ``BadRequestError: 400 — 'adaptive thinking is not supported on this
+        model'`` for certain Sonnet/Opus revisions.
+        """
+        from anthropic import BadRequestError
+        from app.services.anthropic_client import AnthropicClient
+
+        # Construct a BadRequestError without going through the full
+        # APIStatusError protocol — set .message directly so str(exc) works.
+        bad_request_exc = BadRequestError.__new__(BadRequestError)
+        bad_request_exc.message = (
+            "adaptive thinking is not supported on this model"
+        )
+        # Also set the default Python Exception args so str(exc) returns the
+        # message (anthropic SDK overrides __str__ on its base exception, so
+        # both paths are covered).
+        Exception.__init__(
+            bad_request_exc,
+            "adaptive thinking is not supported on this model",
+        )
+
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(
+            side_effect=[bad_request_exc, _make_mock_response()]
+        )
+        mock_anthropic_cls.return_value = mock_client
+
+        class Foo(BaseModel):
+            bar: str
+
+        client = AnthropicClient(api_key="test-key", model="claude-sonnet-4-6")
+        with caplog.at_level(
+            logging.WARNING, logger="app.services.anthropic_client"
+        ):
+            result = await client.call_with_structured_output(
+                system_prompt="x" * 5000,
+                user_prompt="hi",
+                response_model=Foo,
+                purpose="vibe_assign_pass2",
+                thinking="adaptive",
+            )
+
+        # Two calls made — the original (with enabled) plus the retry.
+        assert mock_client.messages.create.await_count == 2, (
+            f"Expected exactly 2 create() calls (original + 1 retry); "
+            f"got {mock_client.messages.create.await_count}"
+        )
+        # The SECOND call must have flipped thinking to disabled.
+        second_call_kwargs = (
+            mock_client.messages.create.call_args_list[1].kwargs
+        )
+        assert second_call_kwargs.get("thinking") == {"type": "disabled"}, (
+            f"Retry call must use thinking={{'type':'disabled'}}; "
+            f"got {second_call_kwargs.get('thinking')!r}"
+        )
+        # The result must parse cleanly into the Pydantic model.
+        assert isinstance(result, Foo)
+        assert result.bar == "hello"
+        # A WARNING about extended thinking must have been logged.
+        joined = " ".join(
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        )
+        assert "extended thinking" in joined.lower(), joined
+
+    @patch("app.services.anthropic_client.AsyncAnthropic")
+    async def test_off_sends_disabled_dict(
+        self, mock_anthropic_cls, db_with_phase5
+    ):
+        """Hotfix 260512-k3n (c): thinking='off' explicitly sends
+        ``thinking={'type':'disabled'}`` in the request body."""
+        from app.services.anthropic_client import AnthropicClient
+
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(
+            return_value=_make_mock_response()
+        )
+        mock_anthropic_cls.return_value = mock_client
+
+        class Foo(BaseModel):
+            bar: str
+
+        client = AnthropicClient(api_key="test-key", model="claude-sonnet-4-6")
+        await client.call_with_structured_output(
+            system_prompt="x" * 5000,
+            user_prompt="hi",
+            response_model=Foo,
+            purpose="vibe_assign_pass1",
+            thinking="off",
+        )
+        call_kwargs = mock_client.messages.create.call_args.kwargs
+        assert call_kwargs.get("thinking") == {"type": "disabled"}, (
+            f"thinking='off' must send {{'type':'disabled'}}; "
+            f"got {call_kwargs.get('thinking')!r}"
+        )
 
 
 def test_response_content_indexed_text_access_eradicated():
