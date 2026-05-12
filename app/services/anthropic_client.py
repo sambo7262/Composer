@@ -26,7 +26,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Type, TypeVar
+from typing import Literal, Type, TypeVar
 
 from anthropic import AsyncAnthropic
 from pydantic import BaseModel
@@ -37,6 +37,12 @@ from app.models.llm_usage import LLMUsage
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
+
+# Phase 6.2 Plan 01 Task 1 — adaptive extended thinking on Sonnet 4.6.
+# RESEARCH §1.1: manual ``budget_tokens`` is deprecated on Sonnet 4.6 and
+# already returns 400 on Opus 4.7. ``adaptive`` is the recommended path and
+# is forward-compatible.
+ThinkingMode = Literal["off", "adaptive"]
 
 # Sonnet 4.6 cache breakpoint minimum (per platform.claude.com/docs).
 # System prompts shorter than this cannot be cached; the SDK silently does nothing.
@@ -66,6 +72,7 @@ class AnthropicClient:
         response_model: Type[T],
         max_tokens: int = 1024,
         purpose: str = "unspecified",
+        thinking: ThinkingMode = "off",
     ) -> T:
         """Call Anthropic with cacheable system prompt; parse JSON response into Pydantic.
 
@@ -74,16 +81,30 @@ class AnthropicClient:
                 4.6's prompt cache (Pitfall 4). Caller is responsible for padding.
             user_prompt: User message text (NOT cached — varies per call).
             response_model: Pydantic class. Output is parsed via .model_validate_json (D-03).
-            max_tokens: Output token budget.
+            max_tokens: Output token budget. Includes thinking tokens when
+                ``thinking='adaptive'`` (RESEARCH §1.3 — thinking tokens roll
+                into ``response.usage.output_tokens`` at the output rate).
             purpose: Logical label written to LLMUsage.purpose for cost attribution.
+            thinking: Phase 6.2 Plan 01 Task 1 — extended thinking mode.
+                ``"off"`` (default) sends NO ``thinking`` kwarg — byte-identical
+                request body to legacy callers, preserving prompt-cache stability.
+                ``"adaptive"`` sends ``thinking={"type": "adaptive"}`` so Claude
+                picks the thinking budget per request, bounded by ``max_tokens``.
+                Used by Pass 2 boundary review (D-12). The deprecated manual
+                ``{"type": "enabled", "budget_tokens": N}`` form is intentionally
+                NOT supported — Anthropic is migrating to adaptive on Sonnet 4.6
+                and it's already rejected on Opus 4.7 (RESEARCH §1.1).
 
         Returns:
-            An instance of response_model parsed from response.content[0].text.
+            An instance of response_model parsed from the FIRST content block
+            whose ``type == "text"``. The legacy positional-indexing access
+            would crash when thinking is enabled because the first block then
+            becomes a ThinkingBlock with no ``.text`` attribute (T-062-01).
         """
-        response = await self._client.messages.create(
-            model=self._model,
-            max_tokens=max_tokens,
-            system=[
+        kwargs = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "system": [
                 {
                     "type": "text",
                     "text": system_prompt,
@@ -91,8 +112,16 @@ class AnthropicClient:
                     "cache_control": {"type": "ephemeral", "ttl": "1h"},
                 }
             ],
-            messages=[{"role": "user", "content": user_prompt}],
-        )
+            "messages": [{"role": "user", "content": user_prompt}],
+        }
+        if thinking == "adaptive":
+            # RESEARCH §2.2 — only add the key when adaptive is requested. For
+            # ``thinking='off'`` (the default and the explicit-off case), the
+            # request body stays byte-identical to legacy callers, which is the
+            # safer prompt-cache contract.
+            kwargs["thinking"] = {"type": "adaptive"}
+
+        response = await self._client.messages.create(**kwargs)
 
         cache_creation = response.usage.cache_creation_input_tokens or 0
         cache_read = response.usage.cache_read_input_tokens or 0
@@ -108,6 +137,18 @@ class AnthropicClient:
                 input_tokens,
             )
 
+        # Phase 6.2 Plan 01 Task 1 — surface stop_reason='max_tokens' as a
+        # WARNING so /debug/vibes can flag Pass 2 truncations (Pitfall E /
+        # T-062-07). When real Pass 2 calls hit this we raise max_tokens to
+        # 6000-8000 per RESEARCH §1.6 follow-up.
+        stop_reason = getattr(response, "stop_reason", None)
+        if stop_reason == "max_tokens":
+            logger.warning(
+                "Anthropic response stop_reason=max_tokens for purpose=%s — "
+                "output truncated; consider raising max_tokens.",
+                purpose,
+            )
+
         await self._log_usage(
             purpose=purpose,
             model=self._model,
@@ -117,7 +158,25 @@ class AnthropicClient:
             output_tokens=output_tokens,
         )
 
-        text = response.content[0].text.strip()
+        # Phase 6.2 Plan 01 Task 1 — robust text-block extraction.
+        # The legacy positional-indexing access AttributeError'd the moment
+        # thinking was enabled (the first content block became a ThinkingBlock
+        # with no .text attribute). RESEARCH §1.2 / Pitfall A. Iterating to
+        # find the first ``type=="text"`` block is forward-compatible with
+        # future block types (e.g. ``redacted_thinking``, future metadata
+        # blocks).
+        text_block = next(
+            (b for b in response.content if getattr(b, "type", None) == "text"),
+            None,
+        )
+        if text_block is None:
+            block_types = [getattr(b, "type", "<unknown>") for b in response.content]
+            raise ValueError(
+                f"Anthropic response missing text block "
+                f"(purpose={purpose}, block types={block_types}, "
+                f"stop_reason={stop_reason})"
+            )
+        text = text_block.text.strip()
         # Strip possible markdown fences in case the model wrapped JSON in ```json ... ```.
         if text.startswith("```"):
             lines = text.split("\n")
