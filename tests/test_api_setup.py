@@ -207,16 +207,15 @@ def test_post_setup_step2_submit_advances_to_proposing(
 
 
 # ---------------------------------------------------------------------------
-# Test 7 (Phase 6.1 D-NEW-01): propose/init calls map_user_vibes_to_clusters
-# with the user-typed names from the textbox-stack form.
+# Test 7 (Phase 6.2 VIBE-13): propose/init calls assign_tracks_to_user_vibes
+# (Phase 6.1's map_user_vibes_to_clusters was replaced in Phase 6.2 Plan 01).
 # ---------------------------------------------------------------------------
-def test_post_setup_propose_init_calls_map_user_vibes_to_clusters(
+def test_post_setup_propose_init_calls_assign_tracks_to_user_vibes(
     client_with_phase6, test_engine, monkeypatch
 ):
-    """Phase 6.1 supersedes Phase 6 D-13. propose/init now accepts a
-    ``vibe_names`` Form field (JSON-array string per D-05) and dispatches to
-    ``map_user_vibes_to_clusters`` from Plan 01 — NOT
-    ``initial_cluster_proposal``.
+    """Phase 6.2 supersedes Phase 6.1 D-NEW-01. propose/init dispatches to
+    ``assign_tracks_to_user_vibes`` (LLM-direct two-pass pipeline) instead
+    of the deleted ``map_user_vibes_to_clusters``.
     """
     from app.routers import api_setup
     from app.services.vibe_clusterer import VibeProposal, VibeProposalSet
@@ -262,15 +261,16 @@ def test_post_setup_propose_init_calls_map_user_vibes_to_clusters(
         called_with.append(list(names))
         return canned
 
-    monkeypatch.setattr(api_setup, "map_user_vibes_to_clusters", fake_map)
+    monkeypatch.setattr(api_setup, "assign_tracks_to_user_vibes", fake_map)
 
-    # Seed an LLMUsage row so last_llm_call_id is non-None.
+    # Seed an LLMUsage row so last_llm_call_id is non-None. Phase 6.2 uses
+    # purpose=vibe_assign_pass1 / vibe_assign_pass2 / vibe_definitions_preamble.
     with Session(test_engine) as session:
         from app.models.llm_usage import LLMUsage
         session.add(
             LLMUsage(
                 called_at=datetime.now(timezone.utc).isoformat(),
-                purpose="vibe_clustering_user_led",
+                purpose="vibe_assign_pass1",
                 model="claude-sonnet",
             )
         )
@@ -655,12 +655,12 @@ def test_propose_init_trims_blanks_before_count_check(
     assert "3 to 7" in r.text
 
 
-def test_propose_init_happy_path_calls_map_user_vibes(
+def test_propose_init_happy_path_calls_assign_tracks_to_user_vibes(
     client_with_phase6, test_engine, monkeypatch,
 ):
-    """D-NEW-01: valid 3 names → map_user_vibes_to_clusters called exactly once
-    with the trimmed list; SetupState.draft_proposals_json populated;
-    last_llm_call_id set; response body contains proposal cards.
+    """Phase 6.2 VIBE-13: valid 3 names → assign_tracks_to_user_vibes called
+    exactly once with the trimmed list; SetupState.draft_proposals_json
+    populated; last_llm_call_id set; response body contains proposal cards.
     """
     from app.routers import api_setup
     from app.services.vibe_clusterer import VibeProposal, VibeProposalSet
@@ -699,16 +699,16 @@ def test_propose_init_happy_path_calls_map_user_vibes(
             ],
         )
 
-    monkeypatch.setattr(api_setup, "map_user_vibes_to_clusters", fake_map)
+    monkeypatch.setattr(api_setup, "assign_tracks_to_user_vibes", fake_map)
 
-    # Seed an LLMUsage row so last_llm_call_id is non-None.
+    # Seed an LLMUsage row so last_llm_call_id is non-None. Phase 6.2 purpose.
     with Session(test_engine) as session:
         from app.models.llm_usage import LLMUsage
         _seed_rated_tracks(session, 60)
         _seed_setup_state(session, step="proposing")
         session.add(LLMUsage(
             called_at=datetime.now(timezone.utc).isoformat(),
-            purpose="vibe_clustering_user_led",
+            purpose="vibe_assign_pass1",
             model="claude-sonnet",
         ))
         session.commit()
@@ -727,6 +727,174 @@ def test_propose_init_happy_path_calls_map_user_vibes(
         ).first()
         assert state.draft_proposals_json
         assert state.last_llm_call_id is not None
+
+
+# ===========================================================================
+# Phase 6.2 Plan 01 Task 3 — propose_init wiring tests
+# ===========================================================================
+
+
+def test_propose_init_handles_assign_tracks_value_error(
+    client_with_phase6, test_engine, monkeypatch,
+):
+    """ValueError from assign_tracks_to_user_vibes (e.g. cold-start) renders
+    refine_error.html with the exception message and HTTP 200.
+    """
+    from app.routers import api_setup
+
+    async def fake_raise(names):
+        raise ValueError("cold-start: <30 rated tracks (have 5)")
+
+    monkeypatch.setattr(api_setup, "assign_tracks_to_user_vibes", fake_raise)
+
+    with Session(test_engine) as session:
+        _seed_rated_tracks(session, 60)
+        _seed_setup_state(session, step="proposing")
+
+    r = client_with_phase6.post(
+        "/api/setup/propose/init",
+        data={"vibe_names": '["a", "b", "c"]'},
+    )
+    assert r.status_code == 200
+    assert "cold-start" in r.text
+
+
+def test_propose_init_writes_draft_proposals_json_with_pass2_tracks(
+    client_with_phase6, test_engine, monkeypatch,
+):
+    """Phase 6.2: SetupState.draft_proposals_json round-trips via
+    VibeProposalSet.model_validate_json AND preserves pass2_tracks.
+    """
+    from app.routers import api_setup
+    from app.services.vibe_clusterer import VibeProposal, VibeProposalSet
+
+    async def fake_assign(names):
+        return VibeProposalSet(
+            proposals=[
+                VibeProposal(
+                    name="alpha", description="d", action="new",
+                    seed_track_indices=[0, 1],
+                    member_count=2,
+                    pass2_tracks=[{
+                        "rating_key": "rk_42",
+                        "title": "Boundary Track",
+                        "artist": "Some Artist",
+                        "pass1_grade": "weak",
+                        "pass1_reason": "thin signal",
+                        "pass2_reason": "peer match confirmed",
+                    }],
+                ),
+                VibeProposal(
+                    name="beta", description="d", action="new",
+                    seed_track_indices=[2, 3], member_count=2,
+                ),
+                VibeProposal(
+                    name="gamma", description="d", action="new",
+                    seed_track_indices=[4, 5], member_count=2,
+                ),
+            ],
+            rated_track_count=6,
+            rated_track_index_map=[
+                {"index": i, "rating_key": str(1000 + i),
+                 "title": f"T{i}", "artist": "A"}
+                for i in range(6)
+            ],
+        )
+
+    monkeypatch.setattr(api_setup, "assign_tracks_to_user_vibes", fake_assign)
+
+    with Session(test_engine) as session:
+        _seed_rated_tracks(session, 60)
+        _seed_setup_state(session, step="proposing")
+
+    r = client_with_phase6.post(
+        "/api/setup/propose/init",
+        data={"vibe_names": '["alpha", "beta", "gamma"]'},
+    )
+    assert r.status_code == 200, r.text
+
+    from app.models.vibe import SetupState
+    with Session(test_engine) as session:
+        state = session.exec(
+            select(SetupState).where(SetupState.id == 1)
+        ).first()
+        # Round-trip: JSON survives the persistence path.
+        decoded = VibeProposalSet.model_validate_json(state.draft_proposals_json)
+        alpha = next(p for p in decoded.proposals if p.name == "alpha")
+        assert len(alpha.pass2_tracks) == 1
+        entry = alpha.pass2_tracks[0]
+        assert entry["pass1_grade"] == "weak"
+        assert entry["pass1_reason"] == "thin signal"
+        assert entry["pass2_reason"] == "peer match confirmed"
+        assert entry["rating_key"] == "rk_42"
+
+
+def test_propose_init_latest_llm_call_id_picks_up_pass2_purpose(
+    client_with_phase6, test_engine, monkeypatch,
+):
+    """LLMUsage rows with purpose=vibe_assign_pass1 then vibe_assign_pass2:
+    state.last_llm_call_id picks up the most recent (the Pass 2 row).
+    """
+    from app.routers import api_setup
+    from app.services.vibe_clusterer import VibeProposal, VibeProposalSet
+
+    async def fake_assign(names):
+        return VibeProposalSet(
+            proposals=[
+                VibeProposal(name="a", description="d", action="new",
+                             seed_track_indices=[0]),
+                VibeProposal(name="b", description="d", action="new",
+                             seed_track_indices=[1]),
+                VibeProposal(name="c", description="d", action="new",
+                             seed_track_indices=[2]),
+            ],
+            rated_track_count=3,
+            rated_track_index_map=[
+                {"index": i, "rating_key": str(i),
+                 "title": f"T{i}", "artist": "A"} for i in range(3)
+            ],
+        )
+
+    monkeypatch.setattr(api_setup, "assign_tracks_to_user_vibes", fake_assign)
+
+    pass2_row_id: list = []
+    with Session(test_engine) as session:
+        from app.models.llm_usage import LLMUsage
+        _seed_rated_tracks(session, 60)
+        _seed_setup_state(session, step="proposing")
+        pass1 = LLMUsage(
+            called_at="2026-05-12T10:00:00Z",
+            purpose="vibe_assign_pass1",
+            model="claude-sonnet",
+        )
+        session.add(pass1)
+        session.commit()
+        pass2 = LLMUsage(
+            called_at="2026-05-12T10:05:00Z",
+            purpose="vibe_assign_pass2",
+            model="claude-sonnet",
+        )
+        session.add(pass2)
+        session.commit()
+        pass2_row_id.append(pass2.id)
+
+    r = client_with_phase6.post(
+        "/api/setup/propose/init",
+        data={"vibe_names": '["a", "b", "c"]'},
+    )
+    assert r.status_code == 200, r.text
+
+    from app.models.vibe import SetupState
+    with Session(test_engine) as session:
+        state = session.exec(
+            select(SetupState).where(SetupState.id == 1)
+        ).first()
+        # The Pass 2 row should be most recent by id (inserted last) — the
+        # "vibe_" prefix in _latest_llm_call_id must pick it up.
+        assert state.last_llm_call_id == pass2_row_id[0], (
+            f"Expected last_llm_call_id={pass2_row_id[0]} "
+            f"(the Pass 2 row); got {state.last_llm_call_id}"
+        )
 
 
 # ===========================================================================

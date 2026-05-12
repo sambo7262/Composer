@@ -693,10 +693,10 @@ def test_post_setup_propose_init_records_recluster_purpose(
     client_with_phase6, test_engine, monkeypatch
 ):
     """When SetupState.recluster_mode=True, propose/init still records the
-    LAST llm call id reflecting any vibe_clustering_* purpose. Phase 6.1
-    rewires the endpoint to call map_user_vibes_to_clusters (Plan 01) with
-    the user-typed names from the textbox-stack form — but the recluster_mode
-    plumbing through last_llm_call_id is independent of the LLM dispatcher.
+    LAST llm call id reflecting any vibe_* purpose. Phase 6.2 Plan 01 rewires
+    the endpoint to call assign_tracks_to_user_vibes (LLM-direct two-pass
+    pipeline) with the user-typed names — but the recluster_mode plumbing
+    through last_llm_call_id is independent of the LLM dispatcher.
     """
     from app.models.vibe import SetupState
     from app.models.llm_usage import LLMUsage
@@ -730,7 +730,7 @@ def test_post_setup_propose_init_records_recluster_purpose(
         )
 
     monkeypatch.setattr(
-        "app.routers.api_setup.map_user_vibes_to_clusters", fake_map
+        "app.routers.api_setup.assign_tracks_to_user_vibes", fake_map
     )
 
     # Prime SetupState recluster_mode + a fake LLMUsage row that we can

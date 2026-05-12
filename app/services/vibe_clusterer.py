@@ -190,11 +190,11 @@ class VibeProposalSetLLMResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Phase 6.2 slim LLM schemas — D-04, D-09, D-17, D-33
 #
-# These REPLACE the Phase 6.1 LLMVibeFit / LLMVibeMappingResponse schemas
-# (deleted per D-18 with the function rewrite). Each new schema mirrors the
-# slim → canonical pattern: the LLM is asked for the narrowest plausible
-# response shape, server resolves identifiers and assembles the full
-# VibeProposalSet from aggregate / clustering parameters.
+# These REPLACE the Phase 6.1 user-led-mapping slim schemas (deleted with
+# the function rewrite per D-18). Each new schema mirrors the slim →
+# canonical pattern: the LLM is asked for the narrowest plausible response
+# shape, server resolves identifiers and assembles the full VibeProposalSet
+# from aggregate / clustering parameters.
 # ---------------------------------------------------------------------------
 
 
@@ -333,7 +333,7 @@ def _aggregate_rated_set_sync() -> dict:
                 "valence": t.valence,
                 "rating": t.user_rating,
                 # WARNING #2 (Phase 6.1): per-track genre, used by per-cluster
-                # top_genres aggregation in map_user_vibes_to_clusters. Track.genre
+                # top_genres aggregation in the assignment pipeline. Track.genre
                 # is a (possibly empty) comma-separated string.
                 "genre": t.genre or "",
             }
@@ -586,11 +586,11 @@ def _validate_seed_indices(
                 )
 
 
-# NOTE: Phase 6.1's _build_user_led_clustering_user_prompt and
-# _validate_mapping_permutation were deleted in Phase 6.2 Plan 01 (D-18 — "no
-# sibling, no _v2 suffix, no dead code"). The two-pass LLM-direct pipeline
-# in assign_tracks_to_user_vibes replaces them outright. The new private
-# helpers live below near the existing _build_clustering_system_prompt.
+# NOTE: Phase 6.1's user-led-mapping helpers were deleted in Phase 6.2
+# Plan 01 (D-18 — "no sibling, no _v2 suffix, no dead code"). The two-pass
+# LLM-direct pipeline in assign_tracks_to_user_vibes replaces them outright.
+# The new private helpers live below near the existing
+# _build_clustering_system_prompt.
 
 
 def _carryover_fit_from_prior(
@@ -1431,8 +1431,8 @@ async def assign_tracks_to_user_vibes(
 ) -> VibeProposalSet:
     """Phase 6.2 LLM-direct vibe assignment (VIBE-13 + VIBE-14).
 
-    REPLACES Phase 6.1's :func:`map_user_vibes_to_clusters` outright (D-18).
-    The producer of :class:`VibeProposalSet` changes; the consumer
+    REPLACES Phase 6.1's user-led mapping function outright (D-18). The
+    producer of :class:`VibeProposalSet` changes; the consumer
     (``/api/setup/finalize`` and ``/api/vibes/recluster/commit``) does not.
 
     Pipeline (D-04, D-09, D-10, D-13, D-14, D-15, D-17, D-19, D-20, D-31):
@@ -2069,8 +2069,8 @@ async def _call_llm_with_validation(
     # canonicalization step above drops fit/fit_reason because the LLM-side
     # LLMVibeProposal schema doesn't carry them. Refine callers pass
     # prior_proposals so the prior fit grade survives the round-trip; initial
-    # callers pass None (and map_user_vibes_to_clusters resolves fit directly
-    # from the LLM mapping, never via this helper).
+    # callers pass None (and the user-led entrypoint in Phase 6.2 sets fit
+    # via different machinery, never via this helper).
     prior_list = (
         prior_proposals.proposals if prior_proposals is not None else None
     )
