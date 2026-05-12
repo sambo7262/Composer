@@ -191,10 +191,10 @@ Plans:
 **Goal:** Replace k-means cluster *membership* with LLM-direct zero-shot assignment of each rated track to its best-fit user-typed vibe. Two-pass design: (1) batched per-track assign with confidence grade (strong/weak/uncertain), (2) boundary-review pass that sends weak/uncertain tracks the peer context of their candidate vibes. K-means stays as a centroid generator only — no membership decisions from k-means. Audio features (energy/tempo/danceability/valence) still passed to the LLM as a tiebreaker for tracks with low artist-recognition. Also adds a user-triggered "Start Over" wizard reset that wipes vibe + wizard state (Vibe, TrackVibe, ManagedPlaylist, SlotInLog, SetupState) while preserving integration credentials (Plex/Anthropic/Lidarr in ServiceConfig).
 **Requirements**: VIBE-02, VIBE-04, VIBE-13, VIBE-14, WIZ-08
 **Depends on:** Phase 6.1 (user-led naming + fit-grade infra), Phase 6 (audio-feature plumbing)
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 
 Plans:
-- [ ] 06.2-01-PLAN.md — LLM-direct two-pass vibe assignment: AnthropicClient adaptive-thinking + robust text-block extraction (paired patch), assign_tracks_to_user_vibes (preamble + Pass 1 strong/weak/uncertain + Pass 2 peer-review), Vibe.centroid recomputed from LLM members, /propose/init rewire, Pass-2 confidence chip on proposal card, /debug/vibes purpose-segmented cost panel
+- [x] 06.2-01-PLAN.md — LLM-direct two-pass vibe assignment: AnthropicClient adaptive-thinking + robust text-block extraction (paired patch), assign_tracks_to_user_vibes (preamble + Pass 1 strong/weak/uncertain + Pass 2 peer-review), Vibe.centroid recomputed from LLM members, /propose/init rewire, Pass-2 confidence chip on proposal card, /debug/vibes purpose-segmented cost panel
 - [ ] 06.2-02-PLAN.md — WIZ-08 Start Over reset: archive_playlist suffix kwarg (date-stamped `(archived YYYY-MM-DD)`), POST /api/setup/start-over endpoint (atomic Plex archive best-effort + DB wipe; ServiceConfig preserved), settings.html Start Over button + start_over_modal.html (visible only when Vibe.count() > 0)
 
 **Success Criteria** (what must be TRUE):
