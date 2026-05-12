@@ -1056,3 +1056,644 @@ def test_finalize_does_not_call_reslot_on_partial_failure(
     client_with_phase6.post("/api/setup/finalize")
     # Reslot NOT called — finalize bailed out before the success branch.
     assert reslot_mock.await_count == 0
+
+
+# ===========================================================================
+# Phase 6.2 Plan 02 — WIZ-08 "Start Over" reset (D-24..D-30).
+#
+# These tests cover the new POST /api/setup/start-over endpoint. The endpoint
+# mirrors run_phase_61_migration's architecture (app/main.py) minus the
+# MigrationLog gate (D-27 — WIZ-08 is repeatable, not one-shot).
+#
+# Mandatory tests (per the threat register):
+# - test_start_over_preserves_serviceconfig_rows           (T-062-11 / T3)
+# - test_start_over_idempotent_second_call_is_noop          (T-062-16 / D-29)
+# - test_start_over_plex_archive_failure_does_not_block_db_wipe (T-062-12 / T4)
+# - test_setup_state_draft_proposals_json_cleared_post_reset    (T-062-13)
+# - test_start_over_tight_except_pattern                    (T-062-15)
+# ===========================================================================
+
+
+def _seed_serviceconfig_rows(session: Session) -> None:
+    """Seed plex/anthropic/lidarr rows so the preserve-test has something
+    to assert."""
+    from app.services.settings_service import save_setting
+
+    save_setting(session, "plex", "http://localhost:32400", "plex-token-xyz")
+    save_setting(session, "anthropic", "https://api.anthropic.com", "anth-key-abc")
+    save_setting(session, "lidarr", "http://localhost:8686", "lidarr-key-123")
+
+
+def _seed_managed_playlists(session: Session, names: list[str]) -> list[int]:
+    """Seed ManagedPlaylist rows; return their ids."""
+    from app.models.vibe import ManagedPlaylist
+
+    ids = []
+    for i, name in enumerate(names):
+        mp = ManagedPlaylist(
+            kind="vibe",
+            plex_rating_key=f"rk_{i}",
+            composer_name=name,
+            track_count=10,
+        )
+        session.add(mp)
+    session.commit()
+    rows = session.exec(select(ManagedPlaylist)).all()
+    ids = [r.id for r in rows]
+    return ids
+
+
+def _seed_vibes_and_trackvibes(session: Session) -> None:
+    """Seed Vibe + TrackVibe rows so the wipe-test can verify cleanup."""
+    from app.models.track import Track
+    from app.models.vibe import TrackVibe, Vibe
+
+    now = datetime.now(timezone.utc).isoformat()
+    v1 = Vibe(name="Vibe-A", description="d", is_active=True, created_at=now)
+    v2 = Vibe(name="Vibe-B", description="d", is_active=True, created_at=now)
+    session.add(v1)
+    session.add(v2)
+    session.commit()
+    session.refresh(v1)
+    session.refresh(v2)
+
+    t1 = Track(plex_rating_key="rk-T1", title="T1", artist="A")
+    t2 = Track(plex_rating_key="rk-T2", title="T2", artist="A")
+    session.add(t1)
+    session.add(t2)
+    session.commit()
+    session.refresh(t1)
+    session.refresh(t2)
+
+    session.add(TrackVibe(
+        track_id=t1.id, vibe_id=v1.id, distance=0.1,
+        assigned_at=now, assigned_by="cluster",
+    ))
+    session.add(TrackVibe(
+        track_id=t2.id, vibe_id=v1.id, distance=0.1,
+        assigned_at=now, assigned_by="cluster",
+    ))
+    session.commit()
+
+
+# ---------------------------------------------------------------------------
+# MANDATORY (T3): ServiceConfig preserved across reset.
+# ---------------------------------------------------------------------------
+def test_start_over_preserves_serviceconfig_rows(
+    client_with_phase6, test_engine, monkeypatch
+):
+    """T-062-11: WIZ-08 reset MUST NOT touch ServiceConfig rows. If this
+    test starts failing, the user would have to re-enter Plex token +
+    Anthropic API key + Lidarr API key after every reset. HIGH severity.
+    """
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "app.services.plex_playlist_service.archive_playlist",
+        AsyncMock(),
+    )
+
+    with Session(test_engine) as session:
+        _seed_serviceconfig_rows(session)
+
+    response = client_with_phase6.post("/api/setup/start-over")
+    assert response.status_code == 204
+
+    # ServiceConfig rows MUST still exist post-reset.
+    from app.models.settings import ServiceConfig
+    with Session(test_engine) as session:
+        rows = session.exec(select(ServiceConfig)).all()
+        service_names = {r.service_name for r in rows}
+        assert "plex" in service_names
+        assert "anthropic" in service_names
+        assert "lidarr" in service_names
+
+        # url + is_configured preserved.
+        for name in ("plex", "anthropic", "lidarr"):
+            r = session.exec(
+                select(ServiceConfig).where(ServiceConfig.service_name == name)
+            ).first()
+            assert r is not None, f"ServiceConfig.{name} missing"
+            assert r.is_configured is True
+            assert r.url, f"ServiceConfig.{name}.url was wiped"
+            assert r.encrypted_credential, (
+                f"ServiceConfig.{name}.encrypted_credential was wiped"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Plex playlists archived with date-stamped suffix (D-26).
+# ---------------------------------------------------------------------------
+def test_start_over_archives_plex_playlists_with_date_suffix(
+    client_with_phase6, test_engine, monkeypatch
+):
+    """D-26: archive_playlist called with suffix='(archived YYYY-MM-DD)'."""
+    from unittest.mock import AsyncMock
+    from datetime import date
+
+    mock_archive = AsyncMock()
+    monkeypatch.setattr(
+        "app.services.plex_playlist_service.archive_playlist",
+        mock_archive,
+    )
+
+    with Session(test_engine) as session:
+        _seed_serviceconfig_rows(session)
+        _seed_managed_playlists(
+            session,
+            ["Composer · Workout", "Composer · Late Night"],
+        )
+
+    response = client_with_phase6.post("/api/setup/start-over")
+    assert response.status_code == 204
+
+    assert mock_archive.call_count == 2
+    today_iso = date.today().isoformat()
+    expected_suffix = f"(archived {today_iso})"
+    for call in mock_archive.call_args_list:
+        assert call.kwargs.get("suffix") == expected_suffix, (
+            f"archive_playlist called without correct suffix kwarg: "
+            f"call={call}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# All five tables wiped + SetupState reset.
+# ---------------------------------------------------------------------------
+def test_start_over_wipes_all_five_tables(
+    client_with_phase6, test_engine, monkeypatch
+):
+    """Vibe + TrackVibe + ManagedPlaylist + SlotInLog cleared; SetupState
+    id=1 reset to step=rating_source, draft_proposals_json='', etc."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "app.services.plex_playlist_service.archive_playlist",
+        AsyncMock(),
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+    with Session(test_engine) as session:
+        _seed_serviceconfig_rows(session)
+        _seed_vibes_and_trackvibes(session)
+        _seed_managed_playlists(session, ["Composer · X"])
+        from app.models.vibe import SlotInLog
+        session.add(SlotInLog(
+            timestamp=now, track_id=1,
+            vibe_ids="[1]", distances="[0.1]",
+            soft_membership_applied=False, action="slot",
+        ))
+        _seed_setup_state(
+            session, step="confirming",
+            draft_proposals_json=_make_proposal_set_json(3),
+            refinement_turn_count=5,
+        )
+        session.commit()
+
+    response = client_with_phase6.post("/api/setup/start-over")
+    assert response.status_code == 204
+
+    from app.models.vibe import (
+        ManagedPlaylist, SetupState, SlotInLog, TrackVibe, Vibe,
+    )
+    with Session(test_engine) as session:
+        assert session.exec(select(Vibe)).all() == []
+        assert session.exec(select(TrackVibe)).all() == []
+        assert session.exec(select(ManagedPlaylist)).all() == []
+        assert session.exec(select(SlotInLog)).all() == []
+
+        state = session.exec(
+            select(SetupState).where(SetupState.id == 1)
+        ).first()
+        assert state is not None
+        assert state.step == "rating_source"
+        assert state.draft_proposals_json == ""
+        assert state.refinement_turn_count == 0
+        assert state.last_llm_call_id is None
+        # recluster_mode can be False or 0 depending on SQLite storage.
+        assert state.recluster_mode is False or state.recluster_mode == 0
+        assert state.completed_at is None
+        assert state.started_at is None
+
+
+# ---------------------------------------------------------------------------
+# Track.pending_slot_in cleared.
+# ---------------------------------------------------------------------------
+def test_start_over_clears_pending_slot_in(
+    client_with_phase6, test_engine, monkeypatch
+):
+    from unittest.mock import AsyncMock
+    from app.models.track import Track
+
+    monkeypatch.setattr(
+        "app.services.plex_playlist_service.archive_playlist",
+        AsyncMock(),
+    )
+
+    with Session(test_engine) as session:
+        _seed_serviceconfig_rows(session)
+        for i in range(5):
+            session.add(
+                Track(
+                    plex_rating_key=f"slot-rk-{i}",
+                    title=f"T{i}", artist="A",
+                    pending_slot_in=1,
+                )
+            )
+        session.commit()
+
+    response = client_with_phase6.post("/api/setup/start-over")
+    assert response.status_code == 204
+
+    with Session(test_engine) as session:
+        for t in session.exec(select(Track)).all():
+            assert (
+                t.pending_slot_in == 0 or not t.pending_slot_in
+            ), f"Track {t.plex_rating_key} still has pending_slot_in={t.pending_slot_in}"
+
+
+# ---------------------------------------------------------------------------
+# MANDATORY (D-29): second call is a no-op.
+# ---------------------------------------------------------------------------
+def test_start_over_idempotent_second_call_is_noop(
+    client_with_phase6, test_engine, monkeypatch
+):
+    """ROADMAP success criterion 6: running /start-over twice in a row →
+    zero Plex archive calls on the second call; zero DB row changes that
+    affect observable state.
+    """
+    from unittest.mock import AsyncMock
+
+    mock_archive = AsyncMock()
+    monkeypatch.setattr(
+        "app.services.plex_playlist_service.archive_playlist",
+        mock_archive,
+    )
+
+    with Session(test_engine) as session:
+        _seed_serviceconfig_rows(session)
+        _seed_managed_playlists(session, ["Composer · One", "Composer · Two"])
+
+    # First call: archives 2 playlists.
+    r1 = client_with_phase6.post("/api/setup/start-over")
+    assert r1.status_code == 204
+    first_call_count = mock_archive.call_count
+    assert first_call_count == 2
+
+    # Second call: no managed playlists left → zero archive calls.
+    r2 = client_with_phase6.post("/api/setup/start-over")
+    assert r2.status_code == 204
+    second_call_count = mock_archive.call_count
+    assert second_call_count == first_call_count, (
+        f"Second call MUST be a no-op (no Plex calls). "
+        f"first={first_call_count}, second={second_call_count}"
+    )
+
+    # DB state still cleared (no rows recreated).
+    from app.models.vibe import ManagedPlaylist
+    with Session(test_engine) as session:
+        assert session.exec(select(ManagedPlaylist)).all() == []
+
+
+# ---------------------------------------------------------------------------
+# T4: Plex archive failure on a single playlist does NOT block DB wipe.
+# ---------------------------------------------------------------------------
+def test_start_over_plex_archive_failure_does_not_block_db_wipe(
+    client_with_phase6, test_engine, monkeypatch
+):
+    """T-062-12: first archive_playlist raises PlexApiException; second
+    succeeds; DB wipe still commits.
+    """
+    from unittest.mock import AsyncMock
+    import plexapi.exceptions
+
+    call_count = {"n": 0}
+
+    async def flaky_archive(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise plexapi.exceptions.PlexApiException(
+                "transient plex failure"
+            )
+
+    monkeypatch.setattr(
+        "app.services.plex_playlist_service.archive_playlist",
+        flaky_archive,
+    )
+
+    with Session(test_engine) as session:
+        _seed_serviceconfig_rows(session)
+        _seed_vibes_and_trackvibes(session)
+        _seed_managed_playlists(
+            session,
+            ["Composer · First", "Composer · Second"],
+        )
+        from app.models.vibe import SlotInLog
+        session.add(SlotInLog(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            track_id=1, vibe_ids="[1]", distances="[0.1]",
+            soft_membership_applied=False, action="slot",
+        ))
+        session.commit()
+
+    response = client_with_phase6.post("/api/setup/start-over")
+    # (a) Response is 204.
+    assert response.status_code == 204
+
+    # (b) Both archive calls were attempted.
+    assert call_count["n"] == 2, (
+        f"Both playlists must be attempted; got {call_count['n']}"
+    )
+
+    # (c) All DB tables are wiped despite the partial failure.
+    from app.models.vibe import (
+        ManagedPlaylist, SlotInLog, TrackVibe, Vibe,
+    )
+    with Session(test_engine) as session:
+        assert session.exec(select(Vibe)).all() == []
+        assert session.exec(select(TrackVibe)).all() == []
+        assert session.exec(select(ManagedPlaylist)).all() == []
+        assert session.exec(select(SlotInLog)).all() == []
+
+
+# ---------------------------------------------------------------------------
+# 204 + HX-Redirect=/setup.
+# ---------------------------------------------------------------------------
+def test_start_over_endpoint_returns_204_with_hx_redirect_setup(
+    client_with_phase6, test_engine, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "app.services.plex_playlist_service.archive_playlist",
+        AsyncMock(),
+    )
+
+    response = client_with_phase6.post("/api/setup/start-over")
+    assert response.status_code == 204
+    assert response.headers.get("hx-redirect") == "/setup"
+
+
+# ---------------------------------------------------------------------------
+# MANDATORY (T-062-15): tight except clause — never bare `except Exception`.
+# Static AST scan of the start_over handler body.
+# ---------------------------------------------------------------------------
+def test_start_over_tight_except_pattern():
+    """AST test: the start_over handler MUST catch EXACTLY the set
+    {PlexApiException, httpx.HTTPError, PermissionError, TypeError}.
+    Bare `except Exception` is FORBIDDEN inside the new handler body.
+
+    Mirrors WARNING #9 enforcement on the Phase 6.1 migration.
+    """
+    import ast
+    from pathlib import Path
+
+    src = Path(
+        "app/routers/api_setup.py"
+    ).read_text()
+    tree = ast.parse(src)
+
+    start_over_fn = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "start_over":
+            start_over_fn = node
+            break
+    assert start_over_fn is not None, "async def start_over not found"
+
+    handlers_found = []
+    for inner in ast.walk(start_over_fn):
+        if not isinstance(inner, ast.Try):
+            continue
+        for handler in inner.handlers:
+            handlers_found.append(handler)
+            # Forbid bare `except:` and `except Exception` (with or without name).
+            if handler.type is None:
+                pytest.fail(
+                    f"Bare `except:` clause found inside start_over at "
+                    f"line {handler.lineno} — forbidden per WARNING #9."
+                )
+            # Build the set of exception names in this handler.
+            if isinstance(handler.type, ast.Tuple):
+                exc_nodes = handler.type.elts
+            else:
+                exc_nodes = [handler.type]
+
+            for exc_node in exc_nodes:
+                # Extract a printable name for diagnostics.
+                if isinstance(exc_node, ast.Name):
+                    exc_name = exc_node.id
+                elif isinstance(exc_node, ast.Attribute):
+                    # plexapi.exceptions.PlexApiException, httpx.HTTPError
+                    parts = []
+                    cur = exc_node
+                    while isinstance(cur, ast.Attribute):
+                        parts.append(cur.attr)
+                        cur = cur.value
+                    if isinstance(cur, ast.Name):
+                        parts.append(cur.id)
+                    exc_name = ".".join(reversed(parts))
+                else:
+                    exc_name = ast.dump(exc_node)
+                assert exc_name != "Exception", (
+                    f"`except Exception` found inside start_over at line "
+                    f"{handler.lineno} — forbidden per WARNING #9. Use the "
+                    f"tight set {{PlexApiException, httpx.HTTPError, "
+                    f"PermissionError, TypeError}}."
+                )
+
+    assert len(handlers_found) >= 1, (
+        "start_over must have at least one try/except guarding the per-"
+        "playlist archive_playlist call (T-062-12)."
+    )
+
+    # Verify the per-playlist except clause catches the expected set.
+    # Find the handler whose tuple contains the expected names.
+    expected_exception_set = {
+        "PlexApiException",
+        "HTTPError",  # httpx.HTTPError
+        "PermissionError",
+        "TypeError",
+    }
+
+    def _exc_short_name(exc_node) -> str:
+        if isinstance(exc_node, ast.Name):
+            return exc_node.id
+        if isinstance(exc_node, ast.Attribute):
+            return exc_node.attr
+        return ""
+
+    matching_handler = None
+    for handler in handlers_found:
+        if isinstance(handler.type, ast.Tuple):
+            names = {_exc_short_name(e) for e in handler.type.elts}
+        elif handler.type is not None:
+            names = {_exc_short_name(handler.type)}
+        else:
+            names = set()
+        if names == expected_exception_set:
+            matching_handler = handler
+            break
+
+    assert matching_handler is not None, (
+        f"No except clause found in start_over with the exact tight set "
+        f"{expected_exception_set}. Handlers seen: "
+        f"{[ast.dump(h.type) for h in handlers_found if h.type is not None]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T-062-13: draft_proposals_json cleared post-reset (private-browser leak).
+# ---------------------------------------------------------------------------
+def test_setup_state_draft_proposals_json_cleared_post_reset(
+    client_with_phase6, test_engine, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "app.services.plex_playlist_service.archive_playlist",
+        AsyncMock(),
+    )
+
+    # Seed a non-empty draft_proposals_json (~1KB blob).
+    blob = "x" * 1024
+    with Session(test_engine) as session:
+        _seed_serviceconfig_rows(session)
+        _seed_setup_state(
+            session, step="confirming",
+            draft_proposals_json=blob,
+            refinement_turn_count=4,
+        )
+
+    response = client_with_phase6.post("/api/setup/start-over")
+    assert response.status_code == 204
+
+    from app.models.vibe import SetupState
+    with Session(test_engine) as session:
+        state = session.exec(
+            select(SetupState).where(SetupState.id == 1)
+        ).first()
+        assert state is not None
+        assert state.draft_proposals_json == ""
+
+
+# ---------------------------------------------------------------------------
+# Missing Plex credentials → DB wipe still runs; no archive call attempted.
+# ---------------------------------------------------------------------------
+def test_start_over_handles_missing_plex_credentials_gracefully(
+    client_with_phase6, test_engine, monkeypatch
+):
+    """No Plex ServiceConfig → no archive call; DB wipe still runs."""
+    from unittest.mock import AsyncMock
+
+    mock_archive = AsyncMock()
+    monkeypatch.setattr(
+        "app.services.plex_playlist_service.archive_playlist",
+        mock_archive,
+    )
+
+    with Session(test_engine) as session:
+        # Seed only managed playlists — NO ServiceConfig for plex.
+        _seed_managed_playlists(session, ["Composer · NoPlex"])
+        _seed_vibes_and_trackvibes(session)
+
+    response = client_with_phase6.post("/api/setup/start-over")
+    assert response.status_code == 204
+
+    # No archive call attempted (no creds → skip Plex side).
+    assert mock_archive.call_count == 0
+
+    # DB wipe still ran.
+    from app.models.vibe import ManagedPlaylist, TrackVibe, Vibe
+    with Session(test_engine) as session:
+        assert session.exec(select(Vibe)).all() == []
+        assert session.exec(select(TrackVibe)).all() == []
+        assert session.exec(select(ManagedPlaylist)).all() == []
+
+
+# ---------------------------------------------------------------------------
+# LLMUsage + EventLog NOT touched.
+# ---------------------------------------------------------------------------
+def test_start_over_does_not_touch_llm_usage_or_event_log(
+    client_with_phase6, test_engine, monkeypatch
+):
+    """Cost history + event diagnostics survive reset."""
+    from unittest.mock import AsyncMock
+    from app.models.event_log import EventLog
+    from app.models.llm_usage import LLMUsage
+
+    monkeypatch.setattr(
+        "app.services.plex_playlist_service.archive_playlist",
+        AsyncMock(),
+    )
+
+    with Session(test_engine) as session:
+        _seed_serviceconfig_rows(session)
+        session.add(LLMUsage(
+            called_at=datetime.now(timezone.utc).isoformat(),
+            purpose="vibe_assign_pass1",
+            model="claude-sonnet",
+            input_tokens=100,
+            output_tokens=200,
+            cost_estimate_usd=0.03,
+        ))
+        session.add(EventLog(
+            source="webhook", event_type="rating_changed",
+            plex_rating_key="rk1", dedupe_key="dedupe-1",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        ))
+        session.commit()
+
+    response = client_with_phase6.post("/api/setup/start-over")
+    assert response.status_code == 204
+
+    with Session(test_engine) as session:
+        llm_rows = session.exec(select(LLMUsage)).all()
+        evt_rows = session.exec(select(EventLog)).all()
+        assert len(llm_rows) == 1, "LLMUsage rows lost (cost history wiped!)"
+        assert len(evt_rows) == 1, "EventLog rows lost (diagnostics wiped!)"
+
+
+# ---------------------------------------------------------------------------
+# MigrationLog NOT touched (WIZ-08 doesn't undo first-deploy migration).
+# ---------------------------------------------------------------------------
+def test_start_over_does_not_run_phase_61_migration_gate(
+    client_with_phase6, test_engine, monkeypatch
+):
+    """T-062-18: reset must NOT undo the Phase 6.1 first-deploy migration
+    gate row in MigrationLog.
+    """
+    from unittest.mock import AsyncMock
+    from app.models.vibe import MigrationLog
+
+    monkeypatch.setattr(
+        "app.services.plex_playlist_service.archive_playlist",
+        AsyncMock(),
+    )
+
+    # The TestClient lifespan already ran run_phase_61_migration, which
+    # inserted a MigrationLog(phase_id='6.1') row. Update its completed_at
+    # to a known sentinel so we can assert it's preserved.
+    sentinel = "2026-05-01T12:00:00+00:00"
+    with Session(test_engine) as session:
+        _seed_serviceconfig_rows(session)
+        row = session.exec(
+            select(MigrationLog).where(MigrationLog.phase_id == "6.1")
+        ).first()
+        if row is None:
+            session.add(MigrationLog(phase_id="6.1", completed_at=sentinel))
+        else:
+            row.completed_at = sentinel
+            session.add(row)
+        session.commit()
+
+    response = client_with_phase6.post("/api/setup/start-over")
+    assert response.status_code == 204
+
+    with Session(test_engine) as session:
+        row = session.exec(
+            select(MigrationLog).where(MigrationLog.phase_id == "6.1")
+        ).first()
+        assert row is not None, "MigrationLog row was wiped"
+        assert row.completed_at == sentinel, (
+            "MigrationLog.completed_at was modified"
+        )

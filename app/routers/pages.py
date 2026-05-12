@@ -74,7 +74,13 @@ async def home(request: Request, session: Session = Depends(get_session)):
 
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, session: Session = Depends(get_session)):
-    """Settings page with three service configuration cards."""
+    """Settings page with three service configuration cards.
+
+    Phase 6.2 Plan 02 (WIZ-08 / D-24): also passes ``vibe_count`` so the
+    template can render the destructive "Start Over" button only when
+    ``Vibe.count() > 0`` — never offer destruction when there's nothing
+    to destroy.
+    """
     templates = get_templates()
     plex_configured = is_service_configured(session, "plex")
     anthropic_configured = is_service_configured(session, "anthropic")
@@ -89,6 +95,12 @@ async def settings_page(request: Request, session: Session = Depends(get_session
     if plex_setting and plex_setting.extra_config:
         sync_interval = plex_setting.extra_config.get("sync_interval_hours", 24)
 
+    # WIZ-08 — vibe_count gates the destructive Start Over button (D-24).
+    vibe_count = session.exec(select(func.count()).select_from(Vibe)).one()
+    if isinstance(vibe_count, tuple):
+        vibe_count = vibe_count[0]
+    vibe_count = int(vibe_count)
+
     return templates.TemplateResponse(
         request,
         "pages/settings.html",
@@ -101,6 +113,7 @@ async def settings_page(request: Request, session: Session = Depends(get_session
             "anthropic_setting": anthropic_setting,
             "lidarr_setting": lidarr_setting,
             "sync_interval": sync_interval,
+            "vibe_count": vibe_count,
         },
     )
 
