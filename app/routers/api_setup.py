@@ -717,3 +717,140 @@ async def reset(session: Session = Depends(get_session)):
     session.add(state)
     session.commit()
     return Response(status_code=204, headers={"HX-Redirect": "/setup"})
+
+
+@router.post("/start-over")
+async def start_over(session: Session = Depends(get_session)):
+    """WIZ-08 — user-triggered wizard reset (Phase 6.2 D-24..D-30).
+
+    Mirrors :func:`run_phase_61_migration` in ``app/main.py`` minus the
+    ``MigrationLog`` gate (D-27 — WIZ-08 is repeatable, not one-shot).
+
+    Step-by-step:
+
+    1. Read all ManagedPlaylist rows + Plex credentials (sync DB via to_thread).
+    2. For each ManagedPlaylist with a non-null plex_rating_key: archive
+       on Plex with a date-stamped suffix ``(archived YYYY-MM-DD)`` (D-26).
+       **Best-effort** with TIGHT except clause — only PlexApiException /
+       httpx.HTTPError / PermissionError / TypeError. Never bare
+       ``except Exception`` (WARNING #9 / T-062-15).
+    3. DB wipe in FK-safe order (SlotInLog → TrackVibe → ManagedPlaylist →
+       Vibe) + SetupState reset + Track.pending_slot_in clear. ONE
+       ``Session.commit()`` inside ONE ``asyncio.to_thread`` call (D-27 atomic).
+    4. Return 204 + ``HX-Redirect: /setup`` so HTMX bounces the browser
+       into a fresh wizard.
+
+    Preserves (T3 / T-062-11): ServiceConfig (plex/anthropic/lidarr),
+    MigrationLog (T-062-18), LLMUsage (cost history / T-062-19), EventLog
+    (diagnostics).
+
+    Idempotency (D-29) is naturally emergent — the second call finds zero
+    ManagedPlaylist rows → zero archive calls; empty-table DELETEs are
+    0-row affects; SetupState already at the reset values.
+    """
+    from datetime import date
+
+    import httpx
+    import plexapi.exceptions
+    from sqlalchemy import delete, update
+
+    from app.models.vibe import (
+        ManagedPlaylist as MP,
+        SetupState as SS,
+        SlotInLog as SL,
+        TrackVibe as TV,
+        Vibe as VB,
+    )
+    from app.services.settings_service import (
+        get_decrypted_credential,
+        get_setting,
+    )
+
+    suffix = f"(archived {date.today().isoformat()})"
+
+    # --- Step 1: read managed playlists + Plex credentials ---
+    def _read_managed_sync() -> list:
+        with Session(get_engine()) as s:
+            return list(s.exec(select(MP)).all())
+
+    def _get_plex_creds_sync() -> tuple[str, str]:
+        with Session(get_engine()) as s:
+            ps = get_setting(s, "plex")
+            if ps is None or not ps.is_configured:
+                return ("", "")
+            tok = get_decrypted_credential(s, "plex") or ""
+            return (ps.url or "", tok)
+
+    managed = await asyncio.to_thread(_read_managed_sync)
+    plex_url, plex_token = await asyncio.to_thread(_get_plex_creds_sync)
+
+    # --- Step 2: archive Plex playlists (best-effort, tight except) ---
+    # Lazy import so tests can monkeypatch
+    # ``app.services.plex_playlist_service.archive_playlist`` on the module
+    # before this line resolves it (mirrors Phase 6.1 migration pattern).
+    from app.services import plex_playlist_service as _pps
+
+    if managed and plex_url and plex_token:
+        sema = asyncio.Semaphore(1)  # D-25 — single concurrent Plex mutation
+        for mp in managed:
+            if not mp.plex_rating_key:
+                continue
+            try:
+                async with sema:
+                    await _pps.archive_playlist(
+                        plex_url,
+                        plex_token,
+                        mp.plex_rating_key,
+                        mp.composer_name,
+                        suffix=suffix,
+                    )
+            except (
+                plexapi.exceptions.PlexApiException,
+                httpx.HTTPError,
+                PermissionError,
+                TypeError,
+            ):
+                # WARNING #9 (Phase 6.1) — tight except; never bare Exception.
+                # TypeError specifically catches future arity drift on
+                # archive_playlist.
+                logger.exception(
+                    "WIZ-08 start-over: archive_playlist failed for "
+                    "ManagedPlaylist id=%s rk=%s name=%r",
+                    mp.id, mp.plex_rating_key, mp.composer_name,
+                )
+
+    # --- Step 3: DB wipe + SetupState reset + pending_slot_in clear ---
+    # ONE Session.commit() inside ONE asyncio.to_thread for atomicity (D-27).
+    def _wipe_sync() -> None:
+        with Session(get_engine()) as s:
+            # FK-safe DELETE order: SlotInLog → TrackVibe → ManagedPlaylist → Vibe.
+            s.exec(delete(SL))
+            s.exec(delete(TV))
+            s.exec(delete(MP))
+            s.exec(delete(VB))
+
+            # Reset SetupState id=1 (defensive: create if missing).
+            state = s.exec(select(SS).where(SS.id == 1)).first()
+            if state is None:
+                state = SS(id=1)
+            state.step = "rating_source"
+            state.draft_proposals_json = ""
+            state.refinement_turn_count = 0
+            state.last_llm_call_id = None
+            state.recluster_mode = False
+            state.completed_at = None
+            state.started_at = None
+            s.add(state)
+
+            # Clear Track.pending_slot_in.
+            s.exec(
+                update(Track).where(Track.pending_slot_in == 1).values(
+                    pending_slot_in=0
+                )
+            )
+
+            s.commit()
+
+    await asyncio.to_thread(_wipe_sync)
+
+    return Response(status_code=204, headers={"HX-Redirect": "/setup"})
