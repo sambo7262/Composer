@@ -457,3 +457,101 @@ def test_vibe_members_disclosure_renders_all_members_when_expanded():
             f"Member {i} missing from disclosure HTML — "
             f"proposal.members not rendered"
         )
+
+
+# ===========================================================================
+# Phase 6.2 Plan 01 Task 3 — Pass-2 confidence chip on vibe_proposal_card.html
+# ===========================================================================
+
+
+def test_proposal_card_renders_pass2_chip_when_pass2_tracks_present():
+    """D-17 confidence chip: per-track Pass-2 entries render with the
+    original Pass 1 grade (weak/uncertain) + reasons.
+    """
+    from app.services.vibe_clusterer import VibeProposal
+
+    p = VibeProposal(
+        name="Late Night",
+        description="d",
+        action="new",
+        seed_track_indices=[0, 1],
+        member_count=2,
+        seed_tracks=[],
+        members=[],
+        pass2_tracks=[
+            {
+                "rating_key": "rk_0",
+                "title": "Late Drive",
+                "artist": "Kavinsky",
+                "pass1_grade": "weak",
+                "pass1_reason": "synth sounds but moderate energy",
+                "pass2_reason": "peer audio fingerprint matched late-night cluster",
+            },
+            {
+                "rating_key": "rk_1",
+                "title": "Unknown Track",
+                "artist": "Various",
+                "pass1_grade": "uncertain",
+                "pass1_reason": "no clear genre signal",
+                "pass2_reason": "tempo and valence align with peers in this vibe",
+            },
+        ],
+    )
+    html = _render_card(p)
+    # Chip semantics — pass1 grade markers.
+    assert "⚠ weak" in html, html
+    assert "✗ uncertain" in html, html
+    # Title — artist appears.
+    assert "Late Drive" in html
+    assert "Kavinsky" in html
+    assert "Unknown Track" in html
+    # Both pass1 reasons + both pass2 reasons appear.
+    assert "synth sounds but moderate energy" in html
+    assert "peer audio fingerprint matched late-night cluster" in html
+    assert "no clear genre signal" in html
+    assert "tempo and valence align with peers in this vibe" in html
+    # Section labels.
+    assert "boundary-reviewed tracks (2)" in html
+    assert "Pass 1:" in html
+    assert "Pass 2:" in html
+
+
+def test_proposal_card_omits_pass2_chip_when_no_pass2_tracks():
+    """Pass-2 section MUST NOT render when pass2_tracks is empty (default)."""
+    from app.services.vibe_clusterer import VibeProposal
+
+    p = VibeProposal(
+        name="X", description="d", action="new",
+        seed_track_indices=[0],
+        member_count=1,
+        seed_tracks=[],
+        members=[],
+        # pass2_tracks=[] by default.
+    )
+    html = _render_card(p)
+    # The chip block uses these substrings; none must be present.
+    assert "boundary-reviewed tracks" not in html
+    assert "Pass 1:" not in html
+    assert "Pass 2:" not in html
+
+
+def test_proposal_card_pass2_chip_uses_tap_not_hover():
+    """Pitfall 18 — chip uses @click (tap) NOT :hover-only state.
+
+    Static grep on vibe_proposal_card.html: the boundary-reviewed section
+    must declare an @click handler. The file must NOT contain a CSS :hover
+    declaration that gates the chip's visible state.
+    """
+    src = _read("vibe_proposal_card", "partials")
+    assert src, "vibe_proposal_card.html missing"
+    # @click is required for the toggle.
+    assert "@click" in src, "Pass-2 disclosure must use @click (tap-to-toggle)"
+    # The chip block must not rely on a :hover-only state. (Looser check:
+    # the file is allowed to use Tailwind hover: utilities elsewhere; we
+    # just want no `:hover` pseudoclass inside the Pass-2 block.)
+    pass2_block_start = src.find("proposal.pass2_tracks")
+    assert pass2_block_start != -1, "Pass-2 block not found in template"
+    pass2_block = src[pass2_block_start:pass2_block_start + 2000]
+    # Inside the Pass-2 block, no :hover-only state gates visibility.
+    # Tailwind hover:bg-* utilities are fine; raw CSS `:hover {` would not be.
+    assert ":hover {" not in pass2_block

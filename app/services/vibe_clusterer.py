@@ -89,6 +89,14 @@ class VibeProposal(BaseModel):
       carried over by case-insensitive name match in
       :func:`_call_llm_with_validation` via :func:`_carryover_fit_from_prior`
       (Blocker #5 Option A).
+
+    Phase 6.2 extension:
+    - ``pass2_tracks`` — per-track confidence chip data for tracks that went
+      through Pass 2 boundary review (D-17). Each entry is
+      ``{"rating_key": str, "title": str, "artist": str,
+      "pass1_grade": "weak"|"uncertain", "pass1_reason": str,
+      "pass2_reason": str}``. Rendered by ``vibe_proposal_card.html``'s
+      Pass-2 disclosure section (Task 3).
     """
 
     name: str
@@ -117,6 +125,9 @@ class VibeProposal(BaseModel):
     fit: Optional[Literal["strong", "weak", "no_match"]] = None
     # Phase 6.1 D-NEW-11 — LLM's rationale when fit == "no_match".
     fit_reason: Optional[str] = None
+    # Phase 6.2 D-17 — per-track Pass-2 confidence chip data. Empty list
+    # when no track in this proposal went through boundary review.
+    pass2_tracks: List[dict] = Field(default_factory=list)
 
 
 class LLMVibeProposal(BaseModel):
@@ -176,34 +187,81 @@ class VibeProposalSetLLMResponse(BaseModel):
     proposals: List[LLMVibeProposal]
 
 
-class LLMVibeFit(BaseModel):
-    """LLM-side response: one user-typed name mapped to one k-means cluster.
+# ---------------------------------------------------------------------------
+# Phase 6.2 slim LLM schemas — D-04, D-09, D-17, D-33
+#
+# These REPLACE the Phase 6.1 user-led-mapping slim schemas (deleted with
+# the function rewrite per D-18). Each new schema mirrors the slim →
+# canonical pattern: the LLM is asked for the narrowest plausible response
+# shape, server resolves identifiers and assembles the full VibeProposalSet
+# from aggregate / clustering parameters.
+# ---------------------------------------------------------------------------
 
-    Phase 6.1 D-NEW-11. The LLM returns N of these (one per user-typed vibe name)
-    in a permutation against [0..N-1]. ``fit`` grades how well the user's name
-    matches the cluster's audio/artist/genre profile. ``reason`` is required when
-    ``fit == 'no_match'`` (server-validates).
+
+class LLMVibeDefinition(BaseModel):
+    """D-04 preamble entry — one definition per user-typed vibe name.
+
+    The LLM is asked to write one sentence per vibe name describing the kind
+    of track that belongs there. The result is baked into the cached Pass 1
+    system prompt so the LLM has a stable anchor across all batches.
     """
-    user_name: str
-    cluster_index: int
-    description: str
-    fit: Literal["strong", "weak", "no_match"]
-    reason: Optional[str] = None
+
+    vibe_name: str
+    definition: str
 
 
-class LLMVibeMappingResponse(BaseModel):
-    """Slim LLM contract for the user-led mapping call (D-NEW-01).
+class LLMVibeDefinitionsResponse(BaseModel):
+    """Slim LLM contract for the D-04 preamble call.
 
-    Sibling to :class:`VibeProposalSetLLMResponse`. The LLM is ONLY asked for
-    the mappings list — server assembles the full :class:`VibeProposalSet` from
-    the mappings plus the server-computed cluster labels + rated_track_index_map
-    + seed_tracks + members.
-
-    DO NOT add server-controlled fields here. The defensive test
-    ``test_slim_user_led_response_schema_only_has_mappings_field`` will fail
-    loudly if anything other than ``mappings`` lands on this model.
+    Defensive test ``test_slim_definitions_response_has_no_server_controlled_fields``
+    enforces narrowness.
     """
-    mappings: List[LLMVibeFit]
+
+    definitions: List[LLMVibeDefinition]
+
+
+class LLMPass1Assignment(BaseModel):
+    """D-01..D-03 — one row per assigned track in a Pass 1 batch.
+
+    ``track_index`` echoes the per-batch LOCAL integer index 0..batch_size-1
+    that the server included in the user prompt (NOT the global rated-track
+    index; the server resolves batch-local → global on receipt). ``vibe_name``
+    is casefold-resolved server-side against the user-typed name set.
+    ``reason`` is REQUIRED per D-03 (never Optional — Pydantic will raise on
+    missing fields under output pressure).
+    """
+
+    track_index: int
+    vibe_name: str
+    grade: Literal["strong", "weak", "uncertain"]
+    reason: str
+
+
+class LLMVibeAssignmentResponse(BaseModel):
+    """Slim Pass 1 contract. Defensive test forbids any other field."""
+
+    assignments: List[LLMPass1Assignment]
+
+
+class LLMPass2Decision(BaseModel):
+    """D-17 — final commitment per Pass 2 boundary track.
+
+    No grade re-issued. ``track_index`` is the per-batch LOCAL integer index
+    0..batch_size-1 (NOT global). ``final_vibe_name`` is casefold-resolved
+    server-side against the user-typed name set. The original Pass 1 grade
+    survives in ``VibeProposal.pass2_tracks[].pass1_grade`` for the
+    confidence-chip UI.
+    """
+
+    track_index: int
+    final_vibe_name: str
+    reason: str
+
+
+class LLMVibeBoundaryResponse(BaseModel):
+    """Slim Pass 2 contract. Defensive test forbids any other field."""
+
+    decisions: List[LLMPass2Decision]
 
 
 class VibeProposalSet(BaseModel):
@@ -275,7 +333,7 @@ def _aggregate_rated_set_sync() -> dict:
                 "valence": t.valence,
                 "rating": t.user_rating,
                 # WARNING #2 (Phase 6.1): per-track genre, used by per-cluster
-                # top_genres aggregation in map_user_vibes_to_clusters. Track.genre
+                # top_genres aggregation in the assignment pipeline. Track.genre
                 # is a (possibly empty) comma-separated string.
                 "genre": t.genre or "",
             }
@@ -528,99 +586,11 @@ def _validate_seed_indices(
                 )
 
 
-def _build_user_led_clustering_user_prompt(
-    user_names: List[str],
-    cluster_summaries: List[dict],
-) -> str:
-    """User-prompt for the D-NEW-01 user-led mapping call (Phase 6.1).
-
-    Conventions (quick-260510-i1q positional-ID pattern carried forward):
-    - Each cluster gets a stable positional integer ``cluster_index`` (0..N-1).
-    - Explicit instruction: use the integer ``cluster_index`` field, NOT the
-      centroid description or top-artist name, in the response.
-    - User names are passed verbatim (no rewriting).
-
-    ``cluster_summaries`` is a list of dicts shaped:
-        {"cluster_index": int, "centroid": {energy, tempo, danceability,
-         valence}, "top_artists": [..3-5..], "top_genres": [..top 3..],
-         "closest_tracks": [..10 "Title — Artist"..], "member_count": int}
-
-    WARNING #2: top_genres is REQUIRED — the LLM uses it to map
-    genre-driven names like "synth heavy" to the correct cluster.
-    """
-    payload = {
-        "user_typed_vibe_names": user_names,
-        "clusters": cluster_summaries,
-        "task": (
-            "RESPONSE FORMAT OVERRIDE (this call only): "
-            "Ignore the {\"proposals\": [...]} wrapper described in the system prompt. "
-            "For this call, return JSON matching LLMVibeMappingResponse: "
-            "{\"mappings\": [{\"user_name\": \"...\", \"cluster_index\": <int>, "
-            "\"description\": \"...\", \"fit\": \"strong|weak|no_match\", "
-            "\"reason\": \"...|null\"}, ...]}. "
-            "The top-level field is \"mappings\", NOT \"proposals\". "
-            "One entry per user-typed vibe name, in any order. "
-            "Do NOT include any other top-level fields.\n\n"
-            "TASK: "
-            "For each user-typed vibe name above, pick the ONE cluster from "
-            "the `clusters` list that best matches. Each cluster_index MUST "
-            "be used exactly once across all mappings (it is a permutation "
-            "of [0.." + str(len(user_names) - 1) + "]). Use the integer "
-            "`cluster_index` field, NOT the centroid description or any "
-            "top-artist name. Echo back the user's name verbatim in the "
-            "`user_name` field (server resolves casing via case-insensitive "
-            "lookup; you may use any casing). Grade fit as:\n"
-            "- 'strong': clear audio/genre match between name and cluster\n"
-            "- 'weak': partial match (e.g., one defining genre present but "
-            "broader cluster identity is different)\n"
-            "- 'no_match': cluster does not match the user's name at all; "
-            "include a 1-line 'reason' explaining why. Empty playlist is "
-            "still valid — the user can decide whether to keep it.\n"
-            "Write a 1-line `description` per cluster that summarizes its "
-            "audio/genre identity AS IT MAPS TO THE USER NAME. The "
-            "`top_genres` list per cluster is your primary signal for "
-            "genre-driven names (e.g. 'synth heavy', 'metal core')."
-        ),
-    }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
-
-
-def _validate_mapping_permutation(
-    mappings: "List[LLMVibeFit]", n: int
-) -> Optional[str]:
-    """Validate the LLM mapping response (Phase 6.1 D-NEW-11).
-
-    Returns None if valid. Returns a corrective-prompt-friendly error string
-    if invalid (caller uses this in the retry user-prompt).
-
-    Checks:
-    1. len(mappings) == n (one mapping per user name).
-    2. cluster_index set is a permutation of [0..n-1] (no duplicates, all
-       in range).
-    3. Every fit="no_match" has a non-empty `reason` string.
-    """
-    if len(mappings) != n:
-        return f"Expected {n} mappings (one per user name); got {len(mappings)}."
-    seen = set()
-    for m in mappings:
-        if m.cluster_index < 0 or m.cluster_index >= n:
-            return (
-                f"cluster_index={m.cluster_index} for user_name="
-                f"'{m.user_name}' is out of range [0, {n - 1}]."
-            )
-        if m.cluster_index in seen:
-            return (
-                f"cluster_index={m.cluster_index} is used more than once. "
-                f"Each cluster_index MUST appear exactly once (permutation "
-                f"of [0..{n - 1}])."
-            )
-        seen.add(m.cluster_index)
-        if m.fit == "no_match" and (m.reason is None or not m.reason.strip()):
-            return (
-                f"fit='no_match' for user_name='{m.user_name}' MUST include "
-                f"a non-empty 'reason' explaining why no cluster matches."
-            )
-    return None
+# NOTE: Phase 6.1's user-led-mapping helpers were deleted in Phase 6.2
+# Plan 01 (D-18 — "no sibling, no _v2 suffix, no dead code"). The two-pass
+# LLM-direct pipeline in assign_tracks_to_user_vibes replaces them outright.
+# The new private helpers live below near the existing
+# _build_clustering_system_prompt.
 
 
 def _carryover_fit_from_prior(
@@ -981,38 +951,519 @@ async def refine_proposals(
     return proposals
 
 
-async def map_user_vibes_to_clusters(
+# ===========================================================================
+# Phase 6.2 Plan 01 — LLM-direct vibe assignment (VIBE-13 + VIBE-14)
+#
+# Pipeline: preamble → Pass 1 (assign + self-grade) → Pass 2 (peer-context
+# boundary review). K-means runs ONCE for centroid summaries that feed the
+# Pass 1 system prompt; its `labels_` are DISCARDED after the Pass 1 prompt
+# is built (D-19). Final ``Vibe.centroid_*`` is the mean of LLM-assigned
+# members (D-20). The two-pass design fulfills VIBE-13 success criteria 1, 2,
+# 3, 4, 5 from ROADMAP.
+# ===========================================================================
+
+
+# Phase 6.2 D-01 / D-16 — batch sizes locked per CONTEXT.md.
+PASS1_BATCH_SIZE = 25
+PASS2_BATCH_SIZE = 15
+# Phase 6.2 D-07 — Pass 1 output token cap (25 tracks × ~80 = ~2000; 3000 gives margin).
+PASS1_MAX_TOKENS = 3000
+# Phase 6.2 RESEARCH §4.3 — Pass 2 output cap; thinking tokens roll into output.
+PASS2_MAX_TOKENS = 4000
+# Phase 6.2 D-04 — preamble output cap (one definition per vibe; short).
+PREAMBLE_MAX_TOKENS = 600
+# Phase 6.2 D-14 — peer count per candidate vibe in Pass 2 system prompt.
+PASS2_PEER_COUNT = 10
+
+
+def _build_definitions_preamble_system_prompt(user_names: List[str]) -> str:
+    """D-04 preamble system prompt. Padded above 2048 tokens for cache engagement.
+
+    The preamble is one short call per re-cluster (cost ~$0.02 per D-32). The
+    long Composer-context tail mirrors ``_build_clustering_system_prompt`` so
+    the same prompt cache 1h TTL is engaged for prefix tokens that don't
+    change between calls.
+    """
+    parts = [
+        "You are Composer's vibe definition writer. The user typed N short "
+        "vibe names. Your job: write ONE concise sentence per name describing "
+        "the kind of track that belongs in that vibe.",
+        "",
+        "Definitions should be specific (mention defining audio qualities or "
+        "genre cues), short (12-25 words), and useful as anchors for a "
+        "downstream classifier that will assign individual tracks to these "
+        "vibes by audio features, artist, and genre.",
+        "",
+        "## Output format",
+        'Return JSON matching LLMVibeDefinitionsResponse: '
+        '{"definitions": [{"vibe_name": "...", "definition": "..."}, ...]}. '
+        "Echo each user-typed vibe_name verbatim (server resolves casing).",
+        "",
+        _composer_context_padding(),
+    ]
+    return "\n".join(parts)
+
+
+def _build_definitions_preamble_user_prompt(user_names: List[str]) -> str:
+    """D-04 preamble user prompt. Lists user-typed names; LLM emits one definition each."""
+    return (
+        "Write one definition per vibe name below. Return JSON matching "
+        "LLMVibeDefinitionsResponse.\n\n"
+        + "\n".join(f"- {n}" for n in user_names)
+    )
+
+
+def _build_pass1_system_prompt(
+    user_names: List[str],
+    definitions: List[LLMVibeDefinition],
+    cluster_summaries: List[dict],
+    n_rated: int,
+    top_artists: list,
+    top_genres: list,
+) -> str:
+    """D-04 + D-09 + D-10 + D-19 — cached Pass 1 system prompt.
+
+    Contents:
+      - User-typed vibe names + LLM-generated definitions (preamble output).
+      - Confidence rubric (strict-both for ``strong`` per D-09).
+      - "Uncertainty is encouraged" framing (D-10).
+      - K-means cluster summaries (D-19 — context only, NOT membership).
+      - Library structured stats (top artists, top genres).
+      - Long Composer-context tail for cache-engagement padding.
+
+    The same prompt builds the cached system message for every Pass 1 batch
+    within one /propose/init call. Cache hits engage on batches 2..N.
+    """
+    # Definitions in vibe_name → definition order (echo user_names).
+    def_lookup = {d.vibe_name.strip().casefold(): d.definition for d in definitions}
+    parts = [
+        "You are Composer's vibe assigner. Your job: for each track in the "
+        "user prompt's batch, pick the ONE user-typed vibe name that best "
+        "fits, grade the assignment as strong | weak | uncertain, and write "
+        "a short reason.",
+        "",
+        "## User-typed vibes (with definitions)",
+    ]
+    for name in user_names:
+        d = def_lookup.get(name.strip().casefold(), "")
+        parts.append(f"- **{name}**: {d}")
+    parts.append("")
+    parts.append("## Confidence rubric (D-09 strict-both for 'strong')")
+    parts.append(
+        "- **strong**: Artist is a known fit for this vibe AND audio features "
+        "clearly align with the vibe's definition. Or genre is a textbook "
+        "match AND features align. STRICT-BOTH required — one signal alone "
+        "is NOT enough to claim 'strong'."
+    )
+    parts.append(
+        "- **weak**: Exactly one signal aligns. Features look right but "
+        "artist is unknown to you, or artist is recognized but features are "
+        "average. Track probably belongs here; peer comparison would settle it."
+    )
+    parts.append(
+        "- **uncertain**: No clear signal. Features are middle-of-the-road, "
+        "artist not recognized, genre absent or ambiguous, or the track "
+        "could fit two vibes equally."
+    )
+    parts.append("")
+    parts.append(
+        "## Permission slip (D-10)\n"
+        "Uncertainty is encouraged when the signal is mixed — uncertain "
+        "tracks get reviewed in a second pass with more context. Over-"
+        "confident wrong answers cost more than honest uncertainty."
+    )
+    parts.append("")
+    parts.append(
+        "## K-means cluster summaries (context only; D-19)\n"
+        "The system pre-computed k-means clusters over the user's 4-D "
+        "feature space. These are NOT vibes — they're feature-space scaffolds "
+        "to help you triangulate where audio features sit. The user-typed "
+        "vibe names above are the real targets. Do NOT echo cluster_index in "
+        "your output."
+    )
+    parts.append(json.dumps(cluster_summaries, indent=2, ensure_ascii=False))
+    parts.append("")
+    parts.append("## User library structured stats")
+    parts.append(f"Rated track count: {n_rated}")
+    if top_artists:
+        parts.append("Top 10 artists by rated count:")
+        for a in top_artists:
+            parts.append(f"  - {a['artist']} ({a['count']} rated tracks)")
+    if top_genres:
+        parts.append("Top 10 genres by rated count:")
+        for g in top_genres:
+            parts.append(f"  - {g['genre']} ({g['count']})")
+    parts.append("")
+    parts.append("## Output format")
+    parts.append(
+        'Return JSON matching LLMVibeAssignmentResponse: '
+        '{"assignments": [{"track_index": <int>, "vibe_name": "...", '
+        '"grade": "strong|weak|uncertain", "reason": "..."}, ...]}. '
+        "track_index ECHOES the per-batch local integer 0..batch_size-1 "
+        "from the user prompt — NOT a global library index. "
+        "vibe_name is one of the user-typed names listed above (any casing). "
+        "grade MUST be exactly strong, weak, or uncertain. "
+        "reason MUST be 5-15 words; never empty, never null. "
+        "Return EXACTLY one assignment per batch entry, in any order."
+    )
+    parts.append("")
+    parts.append(_composer_context_padding())
+    return "\n".join(parts)
+
+
+def _build_pass1_batch_user_prompt(
+    batch_tracks: List[dict],
+) -> str:
+    """Per-batch Pass 1 user prompt. Each track gets a LOCAL integer index.
+
+    ``batch_tracks`` is a list of dicts (one per track in this batch) with
+    title / artist / energy / tempo / danceability / valence / genre keys.
+    The server maps local indices back to global rated indices on response.
+    """
+    parts = ["Assign each of the following tracks to one user-typed vibe. "
+             "Use the local integer index in your track_index field."]
+    for i, t in enumerate(batch_tracks):
+        parts.append(
+            f"{i}: {t.get('title', '?')} — {t.get('artist', '?')} "
+            f"(genre={t.get('genre', '') or '<unknown>'}, "
+            f"energy={t.get('energy', 0):.2f}, tempo={t.get('tempo', 0):.0f}, "
+            f"dance={t.get('danceability', 0):.2f}, "
+            f"valence={t.get('valence', 0):.2f})"
+        )
+    parts.append("")
+    parts.append(
+        'Return {"assignments": [...]} with EXACTLY '
+        f"{len(batch_tracks)} entries, one per track index 0..{len(batch_tracks) - 1}."
+    )
+    return "\n".join(parts)
+
+
+def _validate_pass1_batch_response(
+    response: LLMVibeAssignmentResponse,
+    batch_size: int,
+    name_lookup: dict,
+) -> Optional[str]:
+    """Validate a single Pass 1 batch response. Returns None if valid; else
+    a corrective-prompt-friendly error string.
+
+    Pitfall 10 / T-062-02..04 checks:
+    1. Exactly batch_size assignments.
+    2. Each track_index is in [0, batch_size) and appears exactly once.
+    3. Each vibe_name resolves via casefold lookup against name_lookup.
+    4. Each reason is non-empty (Pydantic already enforces required; extra
+       belt-and-suspenders for whitespace-only strings).
+    """
+    if len(response.assignments) != batch_size:
+        return (
+            f"Expected {batch_size} assignments (one per track in this batch); "
+            f"got {len(response.assignments)}."
+        )
+    seen: set = set()
+    valid_names = ", ".join(sorted(name_lookup.values()))
+    for a in response.assignments:
+        if not (0 <= a.track_index < batch_size):
+            return (
+                f"track_index={a.track_index} is out of range [0, {batch_size}). "
+                f"Each batch entry has track_index 0..{batch_size - 1}."
+            )
+        if a.track_index in seen:
+            return (
+                f"track_index={a.track_index} appears more than once. "
+                f"Each batch index must appear exactly once."
+            )
+        seen.add(a.track_index)
+        key = a.vibe_name.strip().casefold()
+        if key not in name_lookup:
+            return (
+                f"vibe_name='{a.vibe_name}' is not in the user-typed list. "
+                f"Valid names: [{valid_names}]."
+            )
+        if not a.reason or not a.reason.strip():
+            return (
+                f"track_index={a.track_index} has empty reason. "
+                f"Reason is REQUIRED (5-15 words)."
+            )
+    return None
+
+
+def _compute_pass2_candidates(
+    pass1_vibe_name: str,
+    feature_vector_norm: np.ndarray,
+    centroids_norm_by_name: dict,
+    user_names: List[str],
+) -> List[str]:
+    """D-13 — pick 2 candidate vibes for a boundary track.
+
+    Rule:
+    - Candidate #1 is always Pass 1's pick.
+    - Candidate #2 is the next-closest vibe by centroid distance, UNLESS
+      Pass 1's pick is already the closest in which case #2 is the runner-up
+      by distance.
+
+    ``centroids_norm_by_name`` maps user_name → z-score-normalized centroid
+    (4-D numpy array). When the user-typed vibe has no LLM-assigned members
+    yet (extreme edge case — pre-recompute we may not have centroids), fall
+    back to using all-zeros as the centroid which makes distances symmetric
+    and the function returns a deterministic pair.
+    """
+    # Sort all vibes by distance ascending.
+    dists: List[tuple] = []
+    for name in user_names:
+        c = centroids_norm_by_name.get(name)
+        if c is None:
+            d = float("inf")
+        else:
+            d = float(np.linalg.norm(feature_vector_norm - c))
+        dists.append((name, d))
+    dists.sort(key=lambda x: x[1])
+    sorted_names = [name for name, _ in dists]
+    # Pass 1's pick is candidate #1 always.
+    candidate1 = pass1_vibe_name
+    # Candidate #2: the first vibe in sorted_names that isn't candidate1.
+    candidate2 = next(
+        (n for n in sorted_names if n != candidate1),
+        # Defensive: only happens with a single-vibe library (unreachable
+        # under the 3-7 vibe validation gate).
+        sorted_names[0] if sorted_names else candidate1,
+    )
+    return [candidate1, candidate2]
+
+
+def _build_pass2_system_prompt(
+    user_names: List[str],
+    definitions: List[LLMVibeDefinition],
+    peer_tracks_by_vibe: dict,
+) -> str:
+    """D-14, D-15, RESEARCH §4.1 — cached Pass 2 system prompt with peer context.
+
+    XML format for the peer-tracks section per RESEARCH §4.1 (Anthropic
+    models train on XML; closing tags are strong section-boundary signals).
+    Cached for the entire Pass 2 phase via 1h TTL.
+
+    ``peer_tracks_by_vibe`` maps user_name → list of peer dicts in ascending
+    centroid-distance order (10 strong-graded members per D-14).
+    """
+    def_lookup = {d.vibe_name.strip().casefold(): d.definition for d in definitions}
+    parts = [
+        "You are Composer's vibe boundary reviewer. The system has already "
+        "made a first-pass assignment for every rated track. Some tracks were "
+        "graded weak or uncertain in Pass 1 — those are the boundary cases. "
+        "Your job in this Pass 2: for each boundary track, pick the FINAL "
+        "vibe it belongs to, given two candidate vibes and peer context "
+        "(10 strong-graded representatives per candidate).",
+        "",
+        "<vibe_definitions>",
+    ]
+    for name in user_names:
+        d = def_lookup.get(name.strip().casefold(), "")
+        parts.append(f'  <vibe name="{name}">{d}</vibe>')
+    parts.append("</vibe_definitions>")
+    parts.append("")
+    parts.append("<peer_tracks>")
+    for name in user_names:
+        peers = peer_tracks_by_vibe.get(name, [])
+        parts.append(f'  <vibe name="{name}">')
+        for peer in peers:
+            parts.append(
+                f"    <peer>{peer.get('title', '?')} — {peer.get('artist', '?')} "
+                f"(energy={peer.get('energy', 0):.2f}, "
+                f"tempo={peer.get('tempo', 0):.0f}, "
+                f"dance={peer.get('danceability', 0):.2f}, "
+                f"valence={peer.get('valence', 0):.2f})</peer>"
+            )
+        parts.append("  </vibe>")
+    parts.append("</peer_tracks>")
+    parts.append("")
+    parts.append(
+        "## Output format\n"
+        'Return JSON matching LLMVibeBoundaryResponse: '
+        '{"decisions": [{"track_index": <int>, "final_vibe_name": "...", '
+        '"reason": "..."}, ...]}. '
+        "track_index ECHOES the per-batch local integer 0..batch_size-1 "
+        "from the user prompt. final_vibe_name must be one of the two "
+        "candidates listed for that track. reason is 5-20 words explaining "
+        "the final commitment. Return EXACTLY one decision per batch entry."
+    )
+    parts.append("")
+    parts.append(_composer_context_padding())
+    return "\n".join(parts)
+
+
+def _build_pass2_batch_user_prompt(boundary_batch: List[dict]) -> str:
+    """Per-batch Pass 2 user prompt. Each entry: features + Pass 1 verdict + candidates."""
+    parts = [
+        "Boundary review — pick the final vibe for each track below. Each "
+        "entry lists two candidate vibes; pick ONE and explain in 5-20 words."
+    ]
+    for i, t in enumerate(boundary_batch):
+        cands = " | ".join(t["candidates"])
+        parts.append(
+            f"{i}: {t.get('title', '?')} — {t.get('artist', '?')} "
+            f"(genre={t.get('genre', '') or '<unknown>'}, "
+            f"energy={t.get('energy', 0):.2f}, "
+            f"tempo={t.get('tempo', 0):.0f}, "
+            f"dance={t.get('danceability', 0):.2f}, "
+            f"valence={t.get('valence', 0):.2f}) — "
+            f"Pass 1 picked '{t['pass1_vibe_name']}' [{t['pass1_grade']}] "
+            f'because: "{t["pass1_reason"]}". '
+            f"Candidates: [{cands}]."
+        )
+    parts.append("")
+    parts.append(
+        'Return {"decisions": [...]} with EXACTLY '
+        f"{len(boundary_batch)} entries (one per track index 0..{len(boundary_batch) - 1})."
+    )
+    return "\n".join(parts)
+
+
+def _validate_pass2_batch_response(
+    response: LLMVibeBoundaryResponse,
+    batch_size: int,
+    candidates_per_index: List[List[str]],
+    name_lookup: dict,
+) -> Optional[str]:
+    """Validate a single Pass 2 batch response. Returns None if valid; else
+    a corrective-prompt-friendly error string.
+
+    Checks:
+    1. Exactly batch_size decisions.
+    2. Each track_index 0..batch_size-1 present exactly once.
+    3. Each final_vibe_name resolves to a user-typed name AND is in the
+       per-track candidate set (D-13 — Pass 2 must pick from the 2 candidates).
+    4. Each reason is non-empty.
+    """
+    if len(response.decisions) != batch_size:
+        return (
+            f"Expected {batch_size} decisions; got {len(response.decisions)}."
+        )
+    seen: set = set()
+    for d in response.decisions:
+        if not (0 <= d.track_index < batch_size):
+            return (
+                f"track_index={d.track_index} is out of range [0, {batch_size})."
+            )
+        if d.track_index in seen:
+            return (
+                f"track_index={d.track_index} appears more than once."
+            )
+        seen.add(d.track_index)
+        key = d.final_vibe_name.strip().casefold()
+        if key not in name_lookup:
+            valid = ", ".join(sorted(name_lookup.values()))
+            return (
+                f"final_vibe_name='{d.final_vibe_name}' is not in the "
+                f"user-typed list. Valid names: [{valid}]."
+            )
+        resolved = name_lookup[key]
+        # Check it's actually a candidate for this track.
+        allowed = candidates_per_index[d.track_index]
+        if resolved not in allowed:
+            return (
+                f"track_index={d.track_index}: final_vibe_name='{d.final_vibe_name}' "
+                f"is not one of the two candidates {allowed}. Pick from the "
+                f"candidates list shown in the user prompt."
+            )
+        if not d.reason or not d.reason.strip():
+            return (
+                f"track_index={d.track_index} has empty reason. "
+                f"Reason is REQUIRED (5-20 words)."
+            )
+    return None
+
+
+def _composer_context_padding() -> str:
+    """Long Composer-context paragraph reused across Phase 6.2 cached prompts.
+
+    Mirrors the tail in ``_build_clustering_system_prompt``. Padding pushes
+    system prompts above Sonnet 4.6's 2048-token cache breakpoint so the 1h
+    TTL cache engages on batches 2..N (Pitfall 9). Content is identical
+    across calls within one re-cluster session.
+    """
+    return (
+        "## Composer context (cacheable; identical across calls within 1h TTL)\n"
+        "Composer is a self-hosted music companion that turns Plex star ratings "
+        "into living vibe playlists and a continuous suggestions queue. The user "
+        "has rated tracks in Plex (0-10 raw scale; binary in practice — 5★ or "
+        "unrated). Composer reads userRating values from Plex via webhook + poll, "
+        "computes audio features via Essentia (energy from spectral RMS, tempo "
+        "via beat tracking, danceability via spectral complexity, valence from "
+        "mode/danceability/brightness/pitch_salience). The 4-D feature space is "
+        "(energy, tempo, danceability, valence) — z-score normalized before any "
+        "distance math because tempo's 60-180 BPM range cannot co-exist with the "
+        "0-1 scales of the others. Vibes are persistent named clusters that map "
+        "1-to-1 to Plex playlists named 'Composer · {name}'. Phase 6.2 ships the "
+        "LLM-direct membership pipeline: the LLM picks per-track membership "
+        "directly from audio features + artist + genre, with a two-pass "
+        "design — Pass 1 self-grades confidence, Pass 2 reviews boundary cases "
+        "with peer-context anchors. K-means survives only as a centroid "
+        "generator that scaffolds the LLM's mental model of the feature space; "
+        "k-means labels are NOT used for membership. After commit, every "
+        "RatingChanged event auto-slots the track into matching vibes (closest "
+        "centroid + soft 2nd vibe within 1 std-dev margin, capped at 2 per "
+        "track). The user listens via Plexamp on iOS or Plex Web. The full "
+        "library lives on a Synology NAS, synced from Plex via APScheduler. "
+        "Vibes are persistent — never recomputed automatically; user-triggered "
+        "only via the Re-cluster vibes button. Manual track moves between vibes "
+        "are sticky and survive re-cluster. Composer is a single FastAPI "
+        "process with a single SQLite file; no separate worker, no Redis, no "
+        "Celery. Anthropic prompt caching uses ttl=1h explicitly because the "
+        "default silently regressed to 5min in March 2026. The Sonnet 4.6 cache "
+        "breakpoint is 2048 tokens minimum. Plex webhooks at /api/webhooks/plex "
+        "deliver media.rate, media.scrobble, and library.new events; an "
+        "APScheduler polling job catches whatever the webhook missed. The event "
+        "bus is a single asyncio.Queue with a single dispatcher task for SQLite "
+        "write serialization. Dedupe is sha256(event_type|ratingKey|user_rating"
+        "|5s_bucket) with INSERT OR IGNORE on a UNIQUE constraint. The taste "
+        "profile (single-row TasteProfile id=1) is recomputed when the rated "
+        "set grows or shrinks by >=10% since last computed_at. The refinement "
+        "loop is the defining UX of v2.0: LLM proposes -> user gives "
+        "natural-language feedback -> LLM refines -> commit. Soft cap of 10 "
+        "refinement turns per session (counter shown in UI). After 10, surface "
+        "a 'save what you have or start over' choice. Naming guidance: short "
+        "evocative names (Late Night, Workout, Sunday Morning), one-line "
+        "descriptions in the user's vernacular, no clinical labels like "
+        "'Cluster 3'."
+    )
+
+
+async def assign_tracks_to_user_vibes(
     user_names: List[str],
 ) -> VibeProposalSet:
-    """User-led Step 3 mapping (Phase 6.1 D-NEW-01, D-NEW-04, D-NEW-10).
+    """Phase 6.2 LLM-direct vibe assignment (VIBE-13 + VIBE-14).
 
-    Pipeline:
-    1. Validate user_names (3-7, dedupe case-insensitive, non-empty trims).
-       WARNING #1: build a casefold lookup table so the LLM echo can be
-       resolved back to the user's ORIGINAL casing.
-    2. Aggregate the rated set; cold-start gate at n_rated < 30 raises ValueError.
-    3. z-score normalize and run k-means with k=N (len(user_names)).
-    4. Build per-cluster summaries (centroid + top artists + top_genres
-       (WARNING #2) + 10 closest-to-centroid tracks + member_count).
-    5. ONE LLM call: purpose='vibe_clustering_user_led', response_model=
-       LLMVibeMappingResponse. Retry-once on permutation/reason validation
-       failure with a corrective user prompt.
-    6. Server assembles VibeProposalSet: each proposal's seed_track_indices
-       comes from the k-means labels for the mapped cluster (server-side,
-       never the LLM). Each proposal additionally carries:
-       - seed_tracks: 5 closest-to-centroid as
-         [{title, artist, rating_key}, ...] for the card template.
-       - members: ALL cluster members as the same shape, for the
-         "Show all N tracks" disclosure.
-       - member_count: = len(members), for the fit-chip display.
-       - fit, fit_reason: from the LLM mapping.
-       - name: resolved via casefold lookup → user's ORIGINAL casing.
-       - description: from the LLM mapping.
-    7. materialize_clusters() fills centroid + spread + silhouette per proposal
-       (does NOT clobber seed_tracks/members/member_count/fit/fit_reason —
-       mutates centroid/spread/silhouette only).
+    REPLACES Phase 6.1's user-led mapping function outright (D-18). The
+    producer of :class:`VibeProposalSet` changes; the consumer
+    (``/api/setup/finalize`` and ``/api/vibes/recluster/commit``) does not.
+
+    Pipeline (D-04, D-09, D-10, D-13, D-14, D-15, D-17, D-19, D-20, D-31):
+      1. Validate user_names (3-7, casefold dedupe, non-empty trims).
+      2. Aggregate the rated set (asyncio.to_thread); cold-start gate
+         raises ValueError at n_rated < COLD_START_FLOOR.
+      3. Run k-means ONCE with forced_k=N for centroid summaries (D-19).
+         ``labels_`` is DISCARDED after Pass 1 prompt construction —
+         enforced by the AST test in tests/test_vibe_clusterer.py.
+      4. Preamble (D-04, purpose=vibe_definitions_preamble): one definition
+         per user-typed vibe. Retry-once; second failure raises.
+      5. Pass 1 (D-01..D-07, purpose=vibe_assign_pass1): serial batches of 25.
+         thinking="off". Retry-once per batch with corrective addendum.
+      6. Pass 2 (D-12..D-17, purpose=vibe_assign_pass2): collect weak +
+         uncertain Pass 1 assignments; for each, compute top 2 candidate
+         vibes (including Pass 1's pick per D-13); build cached system prompt
+         with all N vibes × 10 strong-graded peers (D-14, D-15); serial
+         batches of 15 with thinking="adaptive" (RESEARCH §1.1 — adaptive
+         replaces deprecated manual budget_tokens).
+      7. Centroid recompute (D-20): per vibe, ``centroid = mean(LLM members)``.
+      8. Build VibeProposalSet with one VibeProposal per user-typed vibe,
+         seed_track_indices = all final-member indices, seed_tracks = 5
+         closest to recomputed centroid, members = all in distance order,
+         pass2_tracks = per-track Pass-2 entries for the confidence chip.
+      9. ``materialize_clusters`` finishes centroid + spread + silhouette.
+
+    Cost ceiling (D-32): SELECT SUM(cost_estimate_usd) FROM llmusage WHERE
+    purpose LIKE 'vibe_%' and called_at >= <run_start> must be ≤ $3.00
+    (target ≤ $1.50). /debug/vibes surfaces the breakdown by purpose.
     """
-    # --- Input validation ---
+    # --- 1. Input validation (mirrors Phase 6.1 verbatim) ---
     if len(user_names) < 3 or len(user_names) > 7:
         raise ValueError(
             f"vibe count must be 3-7; got {len(user_names)}"
@@ -1020,18 +1471,15 @@ async def map_user_vibes_to_clusters(
     normalized = [n.strip() for n in user_names]
     if any(not n for n in normalized):
         raise ValueError("vibe names must not be blank")
-    # WARNING #1: casefold lookup table — preserves the user's exact casing.
-    # Key = lowercased+stripped; value = the ORIGINAL user-typed string.
-    name_lookup: dict[str, str] = {}
+    name_lookup: dict = {}
     for n in normalized:
         key = n.casefold()
         if key in name_lookup:
             raise ValueError(f"duplicate vibe names: '{n}'")
         name_lookup[key] = n
-
     n_targets = len(normalized)
 
-    # --- Aggregate + cold-start gate ---
+    # --- 2. Aggregate + cold-start gate ---
     agg = await asyncio.to_thread(_aggregate_rated_set_sync)
     n_rated = agg["rated_track_count"]
     if n_rated < COLD_START_FLOOR:
@@ -1040,40 +1488,458 @@ async def map_user_vibes_to_clusters(
             f"(have {n_rated}); rate more tracks in Plexamp first"
         )
 
-    # --- k-means with forced k=N ---
     feature_matrix: np.ndarray = agg["feature_matrix"]
+    rated_index_map = agg["rated_track_index_map"]
+    tracks_for_prompt = agg["tracks_for_prompt"]
     mean = feature_matrix.mean(axis=0)
     std = feature_matrix.std(axis=0)
     X_normalized = _z_score_normalize(feature_matrix, mean, std)
-    chosen_k, labels, centroids_norm, sil, degraded = _pick_best_k(
+
+    # --- 3. K-means ONCE for centroid summaries (D-19) ---
+    chosen_k, kmeans_labels, kmeans_centroids_norm, sil, degraded = _pick_best_k(
         X_normalized, n_rated, forced_k=n_targets
     )
     logger.info(
-        "vibe_clusterer user-led: n_rated=%d k=%d silhouette=%.3f degraded=%s "
-        "user_names=%s",
+        "vibe_clusterer Phase 6.2 assign: n_rated=%d k=%d silhouette=%.3f "
+        "degraded=%s user_names=%s",
         n_rated, chosen_k, sil, degraded, normalized,
     )
 
-    # --- Build per-cluster summaries for the LLM prompt ---
-    index_map = agg["rated_track_index_map"]
-    tracks_for_prompt = agg["tracks_for_prompt"]
-    cluster_summaries: List[dict] = []
-    # Per-cluster member index lists (used twice: prompt + later
-    # seed_tracks/members construction).
-    cluster_members: dict[int, List[int]] = {ci: [] for ci in range(chosen_k)}
-    for i, lab in enumerate(labels.tolist()):
+    # Build per-cluster summaries for the Pass 1 system prompt. Uses
+    # k-means labels HERE and HERE ONLY — labels are then discarded.
+    cluster_summaries = _build_cluster_summaries_for_prompt(
+        chosen_k, kmeans_labels, kmeans_centroids_norm,
+        feature_matrix, X_normalized, tracks_for_prompt,
+    )
+
+    # The Pass 1 system prompt is now built. From this point, kmeans_labels
+    # MUST NOT be read in any code path that produces final membership.
+    # The AST test `test_no_kmeans_labels_used_for_membership` enforces this.
+    del kmeans_labels  # belt-and-suspenders — make accidental reads NameError.
+
+    # --- 4. Preamble call (D-04) ---
+    with Session(get_engine()) as session:
+        client = get_anthropic_client_v2(session)
+
+    definitions_response = await _call_preamble(client, normalized)
+    definitions = definitions_response.definitions
+
+    # --- 5. Pass 1 system prompt (cached) ---
+    pass1_system_prompt = _build_pass1_system_prompt(
+        user_names=normalized,
+        definitions=definitions,
+        cluster_summaries=cluster_summaries,
+        n_rated=n_rated,
+        top_artists=agg["top_artists"],
+        top_genres=agg["top_genres"],
+    )
+
+    # Batch the rated set into PASS1_BATCH_SIZE chunks. Each batch's user
+    # prompt uses LOCAL track indices 0..batch_size-1; server maps back to
+    # global rated index via ``batch_offset``.
+    pass1_assignments: List[dict] = [None] * n_rated  # type: ignore[list-item]
+    # ``pass1_assignments[global_idx]`` = {"vibe_name": str, "grade": str,
+    # "reason": str} for the strict-canonical Pass 1 verdict.
+    for batch_offset in range(0, n_rated, PASS1_BATCH_SIZE):
+        end = min(n_rated, batch_offset + PASS1_BATCH_SIZE)
+        batch_tracks = tracks_for_prompt[batch_offset:end]
+        batch_size = len(batch_tracks)
+        batch_response = await _call_pass1_batch(
+            client=client,
+            pass1_system_prompt=pass1_system_prompt,
+            batch_tracks=batch_tracks,
+            batch_size=batch_size,
+            name_lookup=name_lookup,
+        )
+        # Map local → global indices.
+        for a in batch_response.assignments:
+            global_idx = batch_offset + a.track_index
+            resolved_name = name_lookup[a.vibe_name.strip().casefold()]
+            pass1_assignments[global_idx] = {
+                "vibe_name": resolved_name,
+                "grade": a.grade,
+                "reason": a.reason,
+            }
+
+    # --- 6. Pass 2: identify weak + uncertain ---
+    boundary_global_idxs = [
+        i for i, a in enumerate(pass1_assignments)
+        if a is not None and a["grade"] in ("weak", "uncertain")
+    ]
+
+    pass2_final_by_idx: dict = {}  # global_idx -> {"final_vibe_name", "reason", "pass1_grade", "pass1_reason"}
+
+    if boundary_global_idxs:
+        # Compute pre-Pass-2 centroids (in normalized space) FROM Pass 1
+        # strong-graded LLM members. D-13's "centroid distance" is measured
+        # against these — they're the best available approximation of where
+        # the LLM thinks each vibe lives BEFORE Pass 2 finalization.
+        strong_members_by_name: dict = {n: [] for n in normalized}
+        for global_idx, a in enumerate(pass1_assignments):
+            if a is None:
+                continue
+            if a["grade"] == "strong":
+                strong_members_by_name[a["vibe_name"]].append(global_idx)
+
+        pre_pass2_centroids_norm: dict = {}
+        for name in normalized:
+            members = strong_members_by_name[name]
+            if members:
+                pre_pass2_centroids_norm[name] = X_normalized[members].mean(axis=0)
+            else:
+                pre_pass2_centroids_norm[name] = None  # type: ignore[assignment]
+
+        # Build peer_tracks_by_vibe per D-14: 10 strong-graded members per
+        # vibe, sorted ascending by centroid distance.
+        peer_tracks_by_vibe: dict = {}
+        for name in normalized:
+            members = strong_members_by_name[name]
+            c = pre_pass2_centroids_norm.get(name)
+            if c is None or not members:
+                peer_tracks_by_vibe[name] = []
+                continue
+            sorted_members = sorted(
+                members,
+                key=lambda mi: float(np.linalg.norm(X_normalized[mi] - c)),
+            )
+            peers = []
+            for mi in sorted_members[:PASS2_PEER_COUNT]:
+                t = tracks_for_prompt[mi]
+                peers.append({
+                    "title": t.get("title", ""),
+                    "artist": t.get("artist", ""),
+                    "energy": t.get("energy", 0.0),
+                    "tempo": t.get("tempo", 0.0),
+                    "danceability": t.get("danceability", 0.0),
+                    "valence": t.get("valence", 0.0),
+                })
+            peer_tracks_by_vibe[name] = peers
+
+        pass2_system_prompt = _build_pass2_system_prompt(
+            user_names=normalized,
+            definitions=definitions,
+            peer_tracks_by_vibe=peer_tracks_by_vibe,
+        )
+
+        # Batch boundary tracks.
+        for batch_start in range(0, len(boundary_global_idxs), PASS2_BATCH_SIZE):
+            batch_global_idxs = boundary_global_idxs[
+                batch_start : batch_start + PASS2_BATCH_SIZE
+            ]
+            boundary_batch: List[dict] = []
+            candidates_per_index: List[List[str]] = []
+            for local_i, gi in enumerate(batch_global_idxs):
+                a = pass1_assignments[gi]
+                candidates = _compute_pass2_candidates(
+                    pass1_vibe_name=a["vibe_name"],
+                    feature_vector_norm=X_normalized[gi],
+                    centroids_norm_by_name=pre_pass2_centroids_norm,
+                    user_names=normalized,
+                )
+                candidates_per_index.append(candidates)
+                t = tracks_for_prompt[gi]
+                boundary_batch.append({
+                    "title": t.get("title", ""),
+                    "artist": t.get("artist", ""),
+                    "genre": t.get("genre", ""),
+                    "energy": t.get("energy", 0.0),
+                    "tempo": t.get("tempo", 0.0),
+                    "danceability": t.get("danceability", 0.0),
+                    "valence": t.get("valence", 0.0),
+                    "pass1_vibe_name": a["vibe_name"],
+                    "pass1_grade": a["grade"],
+                    "pass1_reason": a["reason"],
+                    "candidates": candidates,
+                })
+
+            batch_response = await _call_pass2_batch(
+                client=client,
+                pass2_system_prompt=pass2_system_prompt,
+                boundary_batch=boundary_batch,
+                candidates_per_index=candidates_per_index,
+                name_lookup=name_lookup,
+            )
+            for d in batch_response.decisions:
+                gi = batch_global_idxs[d.track_index]
+                a = pass1_assignments[gi]
+                resolved_name = name_lookup[d.final_vibe_name.strip().casefold()]
+                pass2_final_by_idx[gi] = {
+                    "final_vibe_name": resolved_name,
+                    "pass2_reason": d.reason,
+                    "pass1_grade": a["grade"],
+                    "pass1_reason": a["reason"],
+                }
+
+    # --- 7. Final membership: Pass 1 strong (kept) + Pass 1 weak/uncertain
+    # not touched by Pass 2 (kept) + Pass 2 finals (override Pass 1).
+    final_members_by_name: dict = {n: [] for n in normalized}
+    for gi, a in enumerate(pass1_assignments):
+        if a is None:
+            continue
+        if gi in pass2_final_by_idx:
+            final_name = pass2_final_by_idx[gi]["final_vibe_name"]
+        else:
+            final_name = a["vibe_name"]
+        final_members_by_name[final_name].append(gi)
+
+    # --- D-20: recompute centroids as mean of LLM-assigned members (raw
+    # feature space — for VibeProposal.centroid which downstream slot_track
+    # measures against).
+    proposals: List[VibeProposal] = []
+    for name in normalized:
+        member_idxs = final_members_by_name[name]
+        # Build raw + normalized centroids; sort members by normalized
+        # centroid distance for the seed_tracks/members order.
+        if member_idxs:
+            member_features = feature_matrix[member_idxs]
+            centroid_raw = member_features.mean(axis=0)
+            centroid_norm = X_normalized[member_idxs].mean(axis=0)
+            dists = [
+                (mi, float(np.linalg.norm(X_normalized[mi] - centroid_norm)))
+                for mi in member_idxs
+            ]
+            dists.sort(key=lambda x: x[1])
+            sorted_member_idxs = [mi for mi, _ in dists]
+        else:
+            centroid_raw = np.zeros(4)
+            sorted_member_idxs = []
+
+        def _mk_track_dict(mi: int) -> dict:
+            t = tracks_for_prompt[mi]
+            im = rated_index_map[mi]
+            return {
+                "title": t.get("title", "") or im.get("title", ""),
+                "artist": t.get("artist", "") or im.get("artist", ""),
+                "rating_key": im.get("rating_key", ""),
+            }
+
+        seed_tracks = [_mk_track_dict(mi) for mi in sorted_member_idxs[:5]]
+        members = [_mk_track_dict(mi) for mi in sorted_member_idxs]
+
+        # Pass 2 confidence-chip entries: only tracks that went through Pass
+        # 2 AND landed in THIS vibe (Pass 2 may have moved them across vibes).
+        pass2_tracks: List[dict] = []
+        for mi in sorted_member_idxs:
+            if mi in pass2_final_by_idx:
+                p2 = pass2_final_by_idx[mi]
+                # Pass 2 final committed this track to ``name`` (the current
+                # vibe) — ALWAYS true for entries we list here because we
+                # iterated sorted_member_idxs of name's final members.
+                im = rated_index_map[mi]
+                t = tracks_for_prompt[mi]
+                pass2_tracks.append({
+                    "rating_key": im.get("rating_key", ""),
+                    "title": t.get("title", "") or im.get("title", ""),
+                    "artist": t.get("artist", "") or im.get("artist", ""),
+                    "pass1_grade": p2["pass1_grade"],
+                    "pass1_reason": p2["pass1_reason"],
+                    "pass2_reason": p2["pass2_reason"],
+                })
+
+        # Build description: use the LLM definition for this vibe (preamble
+        # output). Fallback to empty string if missing (defensive).
+        description = next(
+            (d.definition for d in definitions
+             if d.vibe_name.strip().casefold() == name.casefold()),
+            "",
+        )
+
+        proposals.append(VibeProposal(
+            name=name,
+            description=description,
+            action="new",
+            source_vibe_ids=[],
+            seed_track_indices=list(sorted_member_idxs),
+            seed_tracks=seed_tracks,
+            members=members,
+            member_count=len(members),
+            centroid={
+                "energy": float(centroid_raw[0]),
+                "tempo": float(centroid_raw[1]),
+                "danceability": float(centroid_raw[2]),
+                "valence": float(centroid_raw[3]),
+            },
+            pass2_tracks=pass2_tracks,
+        ))
+
+    proposal_set = VibeProposalSet(
+        proposals=proposals,
+        rated_track_count=n_rated,
+        silhouette_avg=sil,
+        forced_k=n_targets,
+        degraded_mode=degraded,
+        rated_track_index_map=rated_index_map,
+    )
+
+    proposal_set = materialize_clusters(proposal_set)
+    return proposal_set
+
+
+# ---------------------------------------------------------------------------
+# Pass 1 / Pass 2 / preamble LLM call helpers — each retries ONCE on
+# validation failure with a corrective addendum. Second failure raises
+# ValueError (D-06 batch-scoped retry semantics).
+# ---------------------------------------------------------------------------
+
+
+async def _call_preamble(
+    client, user_names: List[str]
+) -> LLMVibeDefinitionsResponse:
+    """D-04 preamble call. Returns one definition per user-typed vibe."""
+    system_prompt = _build_definitions_preamble_system_prompt(user_names)
+    user_prompt = _build_definitions_preamble_user_prompt(user_names)
+
+    async def _one(prompt: str) -> LLMVibeDefinitionsResponse:
+        return await client.call_with_structured_output(
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            response_model=LLMVibeDefinitionsResponse,
+            max_tokens=PREAMBLE_MAX_TOKENS,
+            purpose="vibe_definitions_preamble",
+            thinking="off",
+        )
+
+    try:
+        response = await _one(user_prompt)
+        if not response.definitions or len(response.definitions) != len(user_names):
+            raise ValueError(
+                f"preamble returned {len(response.definitions)} definitions; "
+                f"expected {len(user_names)}"
+            )
+        return response
+    except Exception as first_err:  # noqa: BLE001 — retry-once policy
+        logger.warning(
+            "preamble failed; retrying once: %s", first_err
+        )
+        corrective = (
+            user_prompt
+            + f"\n\nPREVIOUS RESPONSE WAS INVALID: {first_err}\n"
+            "Please return EXACTLY one definition per user-typed vibe name."
+        )
+        try:
+            response = await _one(corrective)
+            if not response.definitions or len(response.definitions) != len(user_names):
+                raise ValueError(
+                    f"preamble retry returned {len(response.definitions)} "
+                    f"definitions; expected {len(user_names)}"
+                )
+            return response
+        except Exception as second_err:  # noqa: BLE001
+            raise ValueError(
+                f"vibe_definitions_preamble failed after retry: {second_err}"
+            ) from second_err
+
+
+async def _call_pass1_batch(
+    client,
+    pass1_system_prompt: str,
+    batch_tracks: List[dict],
+    batch_size: int,
+    name_lookup: dict,
+) -> LLMVibeAssignmentResponse:
+    """One Pass 1 batch (D-01..D-07). Retry-once on validation failure."""
+    user_prompt = _build_pass1_batch_user_prompt(batch_tracks)
+
+    async def _one(prompt: str) -> LLMVibeAssignmentResponse:
+        return await client.call_with_structured_output(
+            system_prompt=pass1_system_prompt,
+            user_prompt=prompt,
+            response_model=LLMVibeAssignmentResponse,
+            max_tokens=PASS1_MAX_TOKENS,
+            purpose="vibe_assign_pass1",
+            thinking="off",
+        )
+
+    response = await _one(user_prompt)
+    err = _validate_pass1_batch_response(response, batch_size, name_lookup)
+    if err is not None:
+        logger.warning(
+            "Pass 1 batch validation failed; retrying once: %s", err
+        )
+        corrective = (
+            user_prompt
+            + "\n\nPREVIOUS RESPONSE WAS INVALID: "
+            + err
+            + "\nPlease re-issue the FULL response satisfying the constraints."
+        )
+        response = await _one(corrective)
+        err2 = _validate_pass1_batch_response(response, batch_size, name_lookup)
+        if err2 is not None:
+            raise ValueError(
+                f"vibe_assign_pass1 failed after retry: {err2}"
+            )
+    return response
+
+
+async def _call_pass2_batch(
+    client,
+    pass2_system_prompt: str,
+    boundary_batch: List[dict],
+    candidates_per_index: List[List[str]],
+    name_lookup: dict,
+) -> LLMVibeBoundaryResponse:
+    """One Pass 2 batch (D-12..D-17). thinking='adaptive'; retry-once on failure."""
+    user_prompt = _build_pass2_batch_user_prompt(boundary_batch)
+    batch_size = len(boundary_batch)
+
+    async def _one(prompt: str) -> LLMVibeBoundaryResponse:
+        return await client.call_with_structured_output(
+            system_prompt=pass2_system_prompt,
+            user_prompt=prompt,
+            response_model=LLMVibeBoundaryResponse,
+            max_tokens=PASS2_MAX_TOKENS,
+            purpose="vibe_assign_pass2",
+            thinking="adaptive",
+        )
+
+    response = await _one(user_prompt)
+    err = _validate_pass2_batch_response(
+        response, batch_size, candidates_per_index, name_lookup
+    )
+    if err is not None:
+        logger.warning(
+            "Pass 2 batch validation failed; retrying once: %s", err
+        )
+        corrective = (
+            user_prompt
+            + "\n\nPREVIOUS RESPONSE WAS INVALID: "
+            + err
+            + "\nPlease re-issue the FULL response satisfying the constraints."
+        )
+        response = await _one(corrective)
+        err2 = _validate_pass2_batch_response(
+            response, batch_size, candidates_per_index, name_lookup
+        )
+        if err2 is not None:
+            raise ValueError(
+                f"vibe_assign_pass2 failed after retry: {err2}"
+            )
+    return response
+
+
+def _build_cluster_summaries_for_prompt(
+    chosen_k: int,
+    kmeans_labels,
+    kmeans_centroids_norm: np.ndarray,
+    feature_matrix: np.ndarray,
+    X_normalized: np.ndarray,
+    tracks_for_prompt: List[dict],
+) -> List[dict]:
+    """D-19 — build per-cluster summaries (centroid + top artists + top
+    genres + closest 10 tracks + member_count) for the Pass 1 system prompt.
+
+    These are CONTEXT ONLY. After this function returns the caller MUST NOT
+    read ``kmeans_labels`` again for membership (AST test enforces).
+    """
+    cluster_members: dict = {ci: [] for ci in range(chosen_k)}
+    for i, lab in enumerate(kmeans_labels.tolist()):
         cluster_members[int(lab)].append(i)
 
-    # Cache per-cluster sorted-by-distance member indices (closest first).
-    # Reused for both the prompt's closest_tracks AND the proposal's
-    # seed_tracks (top 5) + members (all, in distance order).
-    cluster_sorted_members: dict[int, List[int]] = {}
-
+    summaries: List[dict] = []
     for ci in range(chosen_k):
-        member_idxs = cluster_members[ci]
-        if not member_idxs:
-            cluster_sorted_members[ci] = []
-            cluster_summaries.append({
+        members = cluster_members[ci]
+        if not members:
+            summaries.append({
                 "cluster_index": ci,
                 "centroid": {"energy": 0.0, "tempo": 0.0,
                              "danceability": 0.0, "valence": 0.0},
@@ -1083,49 +1949,38 @@ async def map_user_vibes_to_clusters(
                 "member_count": 0,
             })
             continue
-        member_features = feature_matrix[member_idxs]
+        member_features = feature_matrix[members]
         c_raw = member_features.mean(axis=0)
 
-        # Top artists in this cluster.
         artist_counter: Counter = Counter()
-        for mi in member_idxs:
+        for mi in members:
             t = tracks_for_prompt[mi]
             if t.get("artist"):
                 artist_counter[t["artist"]] += 1
         top_artists = [a for a, _ in artist_counter.most_common(5)]
 
-        # WARNING #2 — Per-cluster top 3 genres (frequency across members).
-        # Track.genre is comma-separated; split + strip + count.
         genre_counter: Counter = Counter()
-        for mi in member_idxs:
-            t = tracks_for_prompt[mi]
-            raw_genre = t.get("genre") or ""
-            for g in raw_genre.split(","):
+        for mi in members:
+            raw = (tracks_for_prompt[mi].get("genre") or "")
+            for g in raw.split(","):
                 g = g.strip()
                 if g:
                     genre_counter[g] += 1
         top_genres = [g for g, _ in genre_counter.most_common(3)]
 
-        # Distance-sorted members for prompt (closest 10) + proposal
-        # construction (seed_tracks=5 closest, members=all in distance
-        # order).
-        centroid_norm = centroids_norm[ci]
-        dists = []
-        for mi in member_idxs:
-            d = float(np.linalg.norm(X_normalized[mi] - centroid_norm))
-            dists.append((mi, d))
+        centroid_norm = kmeans_centroids_norm[ci]
+        dists = [
+            (mi, float(np.linalg.norm(X_normalized[mi] - centroid_norm)))
+            for mi in members
+        ]
         dists.sort(key=lambda x: x[1])
-        sorted_member_idxs = [mi for mi, _d in dists]
-        cluster_sorted_members[ci] = sorted_member_idxs
-
         closest_tracks = []
-        for mi in sorted_member_idxs[:10]:
+        for mi, _d in dists[:10]:
             t = tracks_for_prompt[mi]
             closest_tracks.append(
                 f"{t.get('title', '?')} — {t.get('artist', '?')}"
             )
-
-        cluster_summaries.append({
+        summaries.append({
             "cluster_index": ci,
             "centroid": {
                 "energy": float(c_raw[0]),
@@ -1136,112 +1991,9 @@ async def map_user_vibes_to_clusters(
             "top_artists": top_artists,
             "top_genres": top_genres,
             "closest_tracks": closest_tracks,
-            "member_count": len(member_idxs),
+            "member_count": len(members),
         })
-
-    # --- LLM call: structured output, retry-once on validation failure ---
-    system_prompt = _build_clustering_system_prompt(
-        n_rated,
-        agg["top_artists"],
-        agg["top_genres"],
-        agg["tracks_for_prompt"],
-        agg["rated_track_index_map"],
-    )
-    user_prompt = _build_user_led_clustering_user_prompt(
-        normalized, cluster_summaries
-    )
-
-    # Open a sync Session for the credential read (mirrors
-    # _call_llm_with_validation at line ~1259). The AnthropicClient returned
-    # does NOT hold a Session reference — it only captures the decrypted
-    # api_key + model_name during construction — so the closure-captured
-    # `client` reference remains valid after the `with` block exits and
-    # `_one_call` can safely use it. Test-side monkeypatching still works
-    # via the module-local shim defined below at line ~1327.
-    with Session(get_engine()) as session:
-        client = get_anthropic_client_v2(session)
-
-    async def _one_call(prompt: str) -> LLMVibeMappingResponse:
-        return await client.call_with_structured_output(
-            system_prompt=system_prompt,
-            user_prompt=prompt,
-            response_model=LLMVibeMappingResponse,
-            purpose="vibe_clustering_user_led",
-        )
-
-    response = await _one_call(user_prompt)
-    err = _validate_mapping_permutation(response.mappings, n_targets)
-    if err is not None:
-        # Retry once with corrective prompt (mirrors _validate_seed_indices).
-        logger.warning(
-            "user-led mapping validation failed; retrying once: %s", err
-        )
-        corrective = (
-            user_prompt
-            + "\n\nPREVIOUS RESPONSE WAS INVALID: "
-            + err
-            + " Please return a new mapping that satisfies the constraints."
-        )
-        response = await _one_call(corrective)
-        err2 = _validate_mapping_permutation(response.mappings, n_targets)
-        if err2 is not None:
-            raise ValueError(
-                f"LLMVibeMappingResponse failed permutation validation after "
-                f"retry: {err2}"
-            )
-
-    # --- Server-assembled VibeProposalSet ---
-    # For each LLM mapping, build a canonical VibeProposal with:
-    #  - seed_track_indices = ALL track indices assigned to its mapped cluster
-    #    (server-led membership — the LLM never picks members).
-    #  - seed_tracks = top 5 by distance-to-centroid as {title, artist, rating_key}.
-    #  - members = ALL members, same shape, in distance order.
-    #  - member_count = len(members).
-    #  - name = user's ORIGINAL casing (via WARNING #1 casefold lookup).
-    proposals: List[VibeProposal] = []
-    for m in response.mappings:
-        sorted_idxs = cluster_sorted_members.get(m.cluster_index, [])
-        # WARNING #1 — preserve user's exact casing.
-        resolved_name = name_lookup.get(
-            m.user_name.strip().casefold(), m.user_name
-        )
-
-        def _mk_track_dict(mi: int) -> dict:
-            t = tracks_for_prompt[mi]
-            im = index_map[mi]
-            return {
-                "title": t.get("title", "") or im.get("title", ""),
-                "artist": t.get("artist", "") or im.get("artist", ""),
-                "rating_key": im.get("rating_key", ""),
-            }
-
-        seed_tracks = [_mk_track_dict(mi) for mi in sorted_idxs[:5]]
-        members = [_mk_track_dict(mi) for mi in sorted_idxs]
-
-        proposals.append(VibeProposal(
-            name=resolved_name,
-            description=m.description,
-            action="new",
-            source_vibe_ids=[],
-            seed_track_indices=list(sorted_idxs),
-            seed_tracks=seed_tracks,
-            members=members,
-            member_count=len(members),
-            fit=m.fit,
-            fit_reason=m.reason,
-        ))
-
-    proposal_set = VibeProposalSet(
-        proposals=proposals,
-        rated_track_count=n_rated,
-        silhouette_avg=sil,
-        forced_k=n_targets,
-        degraded_mode=degraded,
-        rated_track_index_map=index_map,
-    )
-
-    proposal_set = materialize_clusters(proposal_set)
-    return proposal_set
+    return summaries
 
 
 async def _call_llm_with_validation(
@@ -1317,8 +2069,8 @@ async def _call_llm_with_validation(
     # canonicalization step above drops fit/fit_reason because the LLM-side
     # LLMVibeProposal schema doesn't carry them. Refine callers pass
     # prior_proposals so the prior fit grade survives the round-trip; initial
-    # callers pass None (and map_user_vibes_to_clusters resolves fit directly
-    # from the LLM mapping, never via this helper).
+    # callers pass None (and the user-led entrypoint in Phase 6.2 sets fit
+    # via different machinery, never via this helper).
     prior_list = (
         prior_proposals.proposals if prior_proposals is not None else None
     )

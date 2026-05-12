@@ -221,3 +221,79 @@ def test_debug_vibes_uses_main_page_template_not_stub():
     """The route renders pages/debug_vibes.html (not the Plan 03 stub)."""
     src = PAGES_PY.read_text()
     assert "pages/debug_vibes.html" in src
+
+
+# ===========================================================================
+# Phase 6.2 Plan 01 Task 3 — /debug/vibes LLM cost panel (D-32 / VIBE-13)
+# ===========================================================================
+
+
+def test_debug_vibes_cost_by_purpose_segmentation(client_with_phase6, test_engine):
+    """Seed LLMUsage rows with the three Phase 6.2 purposes at known costs;
+    /debug/vibes contains all three purposes AND the summed total.
+    """
+    from app.models.llm_usage import LLMUsage
+
+    with Session(test_engine) as session:
+        session.add(LLMUsage(
+            called_at="2026-05-12T10:00:00Z",
+            purpose="vibe_definitions_preamble",
+            model="claude-sonnet",
+            cost_estimate_usd=0.02,
+        ))
+        session.add(LLMUsage(
+            called_at="2026-05-12T10:05:00Z",
+            purpose="vibe_assign_pass1",
+            model="claude-sonnet",
+            cost_estimate_usd=0.45,
+        ))
+        session.add(LLMUsage(
+            called_at="2026-05-12T10:10:00Z",
+            purpose="vibe_assign_pass2",
+            model="claude-sonnet",
+            cost_estimate_usd=0.52,
+        ))
+        session.commit()
+
+    resp = client_with_phase6.get("/debug/vibes")
+    assert resp.status_code == 200
+    body = resp.text
+    # All three Phase 6.2 purposes named in the panel.
+    assert "vibe_definitions_preamble" in body
+    assert "vibe_assign_pass1" in body
+    assert "vibe_assign_pass2" in body
+    # Total = 0.02 + 0.45 + 0.52 = 0.99. Formatted to 4 decimals.
+    assert "0.9900" in body or "0.99" in body, body
+
+
+def test_debug_vibes_cost_total_warning_threshold(client_with_phase6, test_engine):
+    """Warning state ONLY when sum > $3.00 (D-32 ceiling); below threshold no warning."""
+    from app.models.llm_usage import LLMUsage
+
+    # Case 1: below $3.00 — no warning.
+    with Session(test_engine) as session:
+        session.add(LLMUsage(
+            called_at="2026-05-12T10:00:00Z",
+            purpose="vibe_assign_pass1",
+            model="claude-sonnet",
+            cost_estimate_usd=2.0,
+        ))
+        session.commit()
+
+    resp = client_with_phase6.get("/debug/vibes")
+    assert resp.status_code == 200
+    assert "exceeds the $3.00 acceptance ceiling" not in resp.text
+
+    # Case 2: add another row pushing total over $3.00 — warning appears.
+    with Session(test_engine) as session:
+        session.add(LLMUsage(
+            called_at="2026-05-12T11:00:00Z",
+            purpose="vibe_assign_pass2",
+            model="claude-sonnet",
+            cost_estimate_usd=1.5,
+        ))
+        session.commit()
+
+    resp = client_with_phase6.get("/debug/vibes")
+    assert resp.status_code == 200
+    assert "exceeds the $3.00 acceptance ceiling" in resp.text

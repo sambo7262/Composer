@@ -63,12 +63,15 @@ async def create_playlist(*args, **kwargs):
     return await _fn(*args, **kwargs)
 
 
-async def map_user_vibes_to_clusters(*args, **kwargs):
-    """Phase 6.1 D-NEW-01 — lazy import shim so tests can monkeypatch this
-    attribute on the module without touching the underlying service.
+async def assign_tracks_to_user_vibes(*args, **kwargs):
+    """Phase 6.2 Plan 01 D-18 — lazy import shim so tests can monkeypatch
+    this attribute on the module without touching the underlying service.
+
+    REPLACES the Phase 6.1 user-led-mapping shim with the LLM-direct
+    two-pass pipeline (VIBE-13 + VIBE-14).
     """
     from app.services.vibe_clusterer import (
-        map_user_vibes_to_clusters as _fn,
+        assign_tracks_to_user_vibes as _fn,
     )
     return await _fn(*args, **kwargs)
 
@@ -222,14 +225,16 @@ async def propose_init(
     vibe_names: Annotated[str, Form()],
     session: Session = Depends(get_session),
 ):
-    """User-led Step 3 cluster proposal (Phase 6.1 D-NEW-01, D-NEW-06, D-NEW-07).
+    """User-led Step 3 cluster proposal (Phase 6.2 VIBE-13 + VIBE-14).
 
     ``vibe_names`` is a JSON-array string sent by the textbox-stack form. Server
     parses, trims, case-insensitive dedupes, validates count (3-7), then calls
-    :func:`app.services.vibe_clusterer.map_user_vibes_to_clusters` (Plan 01)
-    for the LLM mapping. Server-led k-means populates every cluster's
-    seed_track_indices, seed_tracks, members, and member_count — the LLM is
-    demoted to namer/describer/grader.
+    :func:`app.services.vibe_clusterer.assign_tracks_to_user_vibes` (Phase 6.2
+    Plan 01) for the LLM-direct two-pass pipeline (Pass 1 self-graded
+    assignment + Pass 2 peer-context boundary review). The LLM picks
+    per-track membership directly; k-means survives only as a centroid-
+    summary generator (D-19). Final centroid is mean of LLM-assigned
+    members (D-20).
 
     Form-parsing convention (Phase 6 D-05 / Pitfall 1): Annotated[str, Form()]
     + json.loads — NEVER pydantic.Json[Model] inside Form() (FastAPI #10997).
@@ -302,12 +307,12 @@ async def propose_init(
             },
         )
 
-    # --- LLM mapping call ---
+    # --- LLM-direct two-pass assignment (Phase 6.2 VIBE-13 + VIBE-14) ---
     try:
-        proposals = await map_user_vibes_to_clusters(trimmed)
+        proposals = await assign_tracks_to_user_vibes(trimmed)
     except ValueError as exc:
         logger.warning(
-            "map_user_vibes_to_clusters rejected input: %s", exc
+            "assign_tracks_to_user_vibes rejected input: %s", exc
         )
         return templates.TemplateResponse(
             request,
@@ -318,7 +323,7 @@ async def propose_init(
             },
         )
     except Exception as exc:  # noqa: BLE001
-        logger.exception("map_user_vibes_to_clusters failed")
+        logger.exception("assign_tracks_to_user_vibes failed")
         return templates.TemplateResponse(
             request,
             "partials/refine_error.html",
@@ -330,12 +335,12 @@ async def propose_init(
 
     state.draft_proposals_json = proposals.model_dump_json()
     state.refinement_turn_count = 0
-    # Phase 6 Plan 04 (D-20 / D-34) plumbing: the "Re-show last cluster proposal"
-    # diagnostic reads any vibe_clustering_* purpose, so the user-led call
-    # (vibe_clustering_user_led) surfaces too.
-    state.last_llm_call_id = _latest_llm_call_id(
-        session, "vibe_clustering_"
-    )
+    # Phase 6.2: extend the "Re-show last cluster proposal" diagnostic
+    # prefix to cover the new purposes (vibe_definitions_preamble,
+    # vibe_assign_pass1, vibe_assign_pass2) AND keep matching the legacy
+    # vibe_clustering_refine / vibe_clustering_recluster purposes. The
+    # "vibe_" prefix is the smallest common ancestor.
+    state.last_llm_call_id = _latest_llm_call_id(session, "vibe_")
     session.add(state)
     session.commit()
 
@@ -424,7 +429,7 @@ async def refine(
 
     state.draft_proposals_json = proposals.model_dump_json()
     state.refinement_turn_count = state.refinement_turn_count + 1
-    state.last_llm_call_id = _latest_llm_call_id(session, "vibe_clustering_")
+    state.last_llm_call_id = _latest_llm_call_id(session, "vibe_")
     session.add(state)
     session.commit()
 

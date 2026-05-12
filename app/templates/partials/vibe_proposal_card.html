@@ -49,6 +49,41 @@ silhouette score line.
       {% endif %}
     </div>
   {% endif %}
+  {# Phase 6.2 D-17 — Pass-2 confidence chip. Renders only when this proposal
+     contains tracks that went through Pass 2 boundary review (each entry
+     carries the ORIGINAL Pass 1 grade + reason + the Pass 2 final reason).
+     Tap-not-hover disclosure (Pitfall 18); min-h-11 touch target (Pitfall 17). #}
+  {% if proposal.pass2_tracks %}
+    <div class="mt-3 border-t border-border pt-3"
+         x-data="{ open: false }">
+      <button type="button"
+              @click="open = !open"
+              aria-label="Toggle boundary-reviewed tracks"
+              :aria-expanded="open ? 'true' : 'false'"
+              class="text-[13px] text-text-secondary min-h-11 underline">
+        <span x-text="open ? 'Hide' : 'Show'"></span>
+        boundary-reviewed tracks ({{ proposal.pass2_tracks | length }})
+      </button>
+      <div x-show="open" x-cloak class="mt-2 space-y-2">
+        {% for t in proposal.pass2_tracks %}
+          <div class="text-[13px]">
+            {% if t.pass1_grade == 'weak' %}
+              <span class="text-accent font-semibold">⚠ weak</span>
+            {% elif t.pass1_grade == 'uncertain' %}
+              <span class="text-error font-semibold">✗ uncertain</span>
+            {% endif %}
+            <span class="text-text-primary ml-1">{{ t.title | e }} — {{ t.artist | e }}</span>
+            <p class="text-text-muted text-[12px] mt-0.5">
+              Pass 1: {{ t.pass1_reason | e }}
+            </p>
+            <p class="text-text-secondary text-[12px]">
+              Pass 2: {{ t.pass2_reason | e }}
+            </p>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
   <h4 class="text-[13px] text-text-secondary mt-4 mb-1">Closest tracks</h4>
   <div class="space-y-1">
     {% for track in (proposal.seed_tracks | default([])) %}

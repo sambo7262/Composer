@@ -353,6 +353,7 @@ async def debug_vibes(request: Request, session: Session = Depends(get_session))
     """
     import json as _json
 
+    from app.models.llm_usage import LLMUsage
     from app.models.vibe import (
         ManagedPlaylist,
         SlotInLog,
@@ -462,6 +463,30 @@ async def debug_vibes(request: Request, session: Session = Depends(get_session))
         "stale_count": 0,
     }
 
+    # Phase 6.2 D-32 / VIBE-13 — LLM cost segmentation by purpose.
+    # Aggregates over LLMUsage rows whose purpose starts with "vibe_".
+    # Covers the three Phase 6.2 purposes (vibe_definitions_preamble,
+    # vibe_assign_pass1, vibe_assign_pass2) AND the legacy
+    # vibe_clustering_refine / vibe_clustering_recluster purposes.
+    cost_by_purpose_rows = list(
+        session.exec(
+            select(LLMUsage.purpose, func.sum(LLMUsage.cost_estimate_usd))
+            .where(col(LLMUsage.purpose).like("vibe_%"))
+            .group_by(LLMUsage.purpose)
+        ).all()
+    )
+    vibe_cost_by_purpose: dict = {}
+    for row in cost_by_purpose_rows:
+        # SQLModel returns tuples for grouped SELECTs in this style.
+        if isinstance(row, tuple):
+            purpose, total = row
+        else:
+            purpose, total = row[0], row[1]
+        vibe_cost_by_purpose[purpose] = float(total or 0.0)
+    vibe_cost_total = sum(vibe_cost_by_purpose.values())
+    # D-32: $3.00 acceptance ceiling (the user-approved cap; $1.50 target).
+    vibe_cost_warning = vibe_cost_total > 3.0
+
     return templates.TemplateResponse(
         request,
         "pages/debug_vibes.html",
@@ -471,5 +496,8 @@ async def debug_vibes(request: Request, session: Session = Depends(get_session))
             "vibe_member_counts": vibe_member_counts,
             "slot_in_log": slot_in_log,
             "drift": drift,
+            "vibe_cost_by_purpose": vibe_cost_by_purpose,
+            "vibe_cost_total": vibe_cost_total,
+            "vibe_cost_warning": vibe_cost_warning,
         },
     )
