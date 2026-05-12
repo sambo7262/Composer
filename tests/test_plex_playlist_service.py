@@ -395,6 +395,205 @@ async def test_archive_playlist_renames_with_archived_suffix(db_with_phase6, fak
 
 
 # ---------------------------------------------------------------------------
+# Phase 6.2 Plan 02 Task 1 — archive_playlist suffix kwarg (WIZ-08 / D-26).
+#
+# T5 regression guard: default suffix is "(archived)" so the Phase 6.1
+# first-deploy migration's 4-arg call site in app/main.py continues working
+# byte-identically (the migration renames to "<name> (archived)").
+#
+# WIZ-08 caller (Plan 02 Task 2) passes a date-stamped suffix
+# "(archived YYYY-MM-DD)" to avoid Plex playlist name collisions on
+# repeated wizard resets.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_archive_playlist_default_suffix_unchanged(db_with_phase6, fake_plex_module):
+    """T5 / Phase 6.1 migration regression: 4-arg call (no suffix kwarg)
+    MUST still rename to "<current_name> (archived)" byte-identically.
+    """
+    pl = FakePlaylist("710", "Composer · MigrationTarget", [])
+    fake_plex_module._playlists = {"710": pl}
+
+    from app.models.vibe import ManagedPlaylist
+    db_with_phase6.add(
+        ManagedPlaylist(
+            kind="vibe",
+            plex_rating_key="710",
+            composer_name="Composer · MigrationTarget",
+        )
+    )
+    db_with_phase6.commit()
+
+    from app.services.plex_playlist_service import archive_playlist
+
+    # 4-arg signature (the Phase 6.1 migration shape) — no suffix kwarg.
+    await archive_playlist(
+        "http://plex.local",
+        "token-X",
+        "710",
+        "Composer · MigrationTarget",
+    )
+    assert pl.edit_title_calls == ["Composer · MigrationTarget (archived)"]
+
+
+@pytest.mark.asyncio
+async def test_archive_playlist_custom_suffix(db_with_phase6, fake_plex_module):
+    """WIZ-08 / D-26: caller-supplied suffix is used verbatim."""
+    pl = FakePlaylist("720", "Composer · Workout", [])
+    fake_plex_module._playlists = {"720": pl}
+
+    from app.models.vibe import ManagedPlaylist
+    db_with_phase6.add(
+        ManagedPlaylist(
+            kind="vibe",
+            plex_rating_key="720",
+            composer_name="Composer · Workout",
+        )
+    )
+    db_with_phase6.commit()
+
+    from app.services.plex_playlist_service import archive_playlist
+
+    await archive_playlist(
+        plex_url="http://plex.local",
+        plex_token="token-X",
+        playlist_rating_key="720",
+        current_name="Composer · Workout",
+        suffix="(archived 2026-05-12)",
+    )
+    assert pl.edit_title_calls == ["Composer · Workout (archived 2026-05-12)"]
+
+
+@pytest.mark.asyncio
+async def test_archive_playlist_with_suffix_still_deletes_managed_playlist_row(
+    db_with_phase6, fake_plex_module
+):
+    """The ManagedPlaylist row MUST be deleted regardless of suffix kwarg —
+    archive semantics are unchanged.
+    """
+    pl = FakePlaylist("730", "Composer · ToArchive", [])
+    fake_plex_module._playlists = {"730": pl}
+
+    from app.models.vibe import ManagedPlaylist
+    db_with_phase6.add(
+        ManagedPlaylist(
+            kind="vibe",
+            plex_rating_key="730",
+            composer_name="Composer · ToArchive",
+        )
+    )
+    db_with_phase6.commit()
+
+    from app.services.plex_playlist_service import archive_playlist
+
+    await archive_playlist(
+        plex_url="http://plex.local",
+        plex_token="token-X",
+        playlist_rating_key="730",
+        current_name="Composer · ToArchive",
+        suffix="(archived 2026-05-12)",
+    )
+
+    from app.database import get_engine
+    with Session(get_engine()) as fresh:
+        row = fresh.exec(
+            select(ManagedPlaylist).where(ManagedPlaylist.plex_rating_key == "730")
+        ).first()
+        assert row is None
+
+
+@pytest.mark.asyncio
+async def test_archive_playlist_token_sanitization_preserved(db_with_phase6, fake_plex_module):
+    """T-06-02-03: error messages must redact the Plex token. Regression guard
+    so the suffix-kwarg extension does not regress the existing _sanitize path.
+    """
+    pl = FakePlaylist("740", "Composer · SanitizeMe", [])
+    fake_plex_module._playlists = {"740": pl}
+
+    # Make editTitle raise an exception whose str() contains the token.
+    token = "super-secret-token-XYZ"
+
+    def _boom(_new_title):
+        raise RuntimeError(f"plex error involving token={token}")
+
+    pl.editTitle = _boom
+
+    from app.models.vibe import ManagedPlaylist
+    db_with_phase6.add(
+        ManagedPlaylist(
+            kind="vibe",
+            plex_rating_key="740",
+            composer_name="Composer · SanitizeMe",
+        )
+    )
+    db_with_phase6.commit()
+
+    from app.services.plex_playlist_service import archive_playlist
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await archive_playlist(
+            plex_url="http://plex.local",
+            plex_token=token,
+            playlist_rating_key="740",
+            current_name="Composer · SanitizeMe",
+            suffix="(archived 2026-05-12)",
+        )
+    msg = str(exc_info.value)
+    assert token not in msg, f"Token leaked in exception: {msg}"
+    assert "[REDACTED]" in msg
+
+
+@pytest.mark.asyncio
+async def test_archive_playlist_signature_accepts_kwarg_at_position_5(
+    db_with_phase6, fake_plex_module
+):
+    """The function signature MUST accept `suffix` as positional-or-keyword
+    so the Phase 6.1 migration's 4-arg call AND Plan 02's keyword-arg call
+    both compile.
+    """
+    import inspect
+
+    from app.services.plex_playlist_service import archive_playlist
+
+    sig = inspect.signature(archive_playlist)
+    params = list(sig.parameters.values())
+    # 5 params: plex_url, plex_token, playlist_rating_key, current_name, suffix
+    assert len(params) == 5, (
+        f"archive_playlist must have exactly 5 parameters (4 existing + suffix); "
+        f"got {len(params)}: {[p.name for p in params]}"
+    )
+    suffix_param = params[4]
+    assert suffix_param.name == "suffix"
+    # Must be POSITIONAL_OR_KEYWORD (not KEYWORD_ONLY) so existing 4-arg callers
+    # remain valid (they don't pass suffix at all, defaulting to "(archived)").
+    assert suffix_param.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD, (
+        f"suffix must be POSITIONAL_OR_KEYWORD; got {suffix_param.kind}"
+    )
+    assert suffix_param.default == "(archived)", (
+        f"suffix default must be '(archived)' for Phase 6.1 migration "
+        f"back-compat; got {suffix_param.default!r}"
+    )
+
+    # Sanity check: the function works when called with no suffix (4-arg form).
+    pl = FakePlaylist("750", "Composer · SignatureCheck", [])
+    fake_plex_module._playlists = {"750": pl}
+    from app.models.vibe import ManagedPlaylist
+    db_with_phase6.add(
+        ManagedPlaylist(
+            kind="vibe",
+            plex_rating_key="750",
+            composer_name="Composer · SignatureCheck",
+        )
+    )
+    db_with_phase6.commit()
+    await archive_playlist(
+        "http://plex.local", "token-X", "750", "Composer · SignatureCheck",
+    )
+    assert pl.edit_title_calls == ["Composer · SignatureCheck (archived)"]
+
+
+# ---------------------------------------------------------------------------
 # Test 9: rename_playlist validates Composer · prefix
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio

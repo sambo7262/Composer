@@ -320,12 +320,25 @@ async def archive_playlist(
     plex_token: str,
     playlist_rating_key: str,
     current_name: str,
+    suffix: str = "(archived)",
 ) -> None:
-    """Rename to ``Composer · {name} (archived)`` + delete ManagedPlaylist row.
+    """Rename to ``{current_name} {suffix}`` + delete ManagedPlaylist row.
 
-    Used by re-cluster drop path (D-21 — Plan 04 calls this). After this
-    runs, the dual-marker check (D-27) stops Composer from managing the
-    playlist; the user can manually delete the archived playlist in Plexamp.
+    Used by:
+
+    - Re-cluster drop path (D-21 — Plan 04). 4-arg signature; default suffix
+      ``"(archived)"`` is preserved for back-compat.
+    - Phase 6.1 first-deploy migration (``app/main.py::run_phase_61_migration``)
+      — same 4-arg shape; default suffix preserves byte-identical rename
+      behavior. T5 regression guard test
+      ``test_archive_playlist_default_suffix_unchanged`` covers this.
+    - Phase 6.2 Plan 02 WIZ-08 "Start Over" reset (D-26). Caller passes a
+      date-stamped suffix ``"(archived YYYY-MM-DD)"`` so repeated wizard
+      resets do not collide on Plex with ``"(archived) (archived)"``.
+
+    After this runs, the dual-marker check (D-27) stops Composer from
+    managing the playlist; the user can manually delete the archived
+    playlist in Plexamp.
     """
     if not is_managed_playlist(playlist_rating_key):
         raise PermissionError(
@@ -333,7 +346,7 @@ async def archive_playlist(
             f"Composer-managed (no ManagedPlaylist row); refusing to rename."
         )
 
-    new_title = f"{current_name} (archived)"
+    new_title = f"{current_name} {suffix}"
 
     def _rename():
         plex = PlexServer(plex_url, plex_token, timeout=30)
