@@ -1,0 +1,73 @@
+{# Phase 6.2 Plan 02 — WIZ-08 "Start Over" confirm modal (D-24..D-30).
+
+   This modal is a DESTRUCTIVE action (red Start Over button per D-25). The
+   recluster modal uses accent styling because it's reversible during
+   refinement; WIZ-08 wipes all wizard state and DB rows, so the confirm
+   button is error-styled.
+
+   D-25 locked content (tone polished but content unchanged):
+   - Archive your current Composer playlists in Plex (renamed with an
+     "(archived YYYY-MM-DD)" suffix — they remain in Plex for cleanup)
+   - Clear all vibe assignments and wizard state in Composer
+   - Restart the setup wizard from Step 1
+   - Plex, Anthropic, and Lidarr credentials are preserved
+   - This cannot be undone
+
+   HTMX behavior: the confirm button hx-posts to /api/setup/start-over with
+   hx-swap="none" because the endpoint returns 204 + HX-Redirect=/setup. HTMX
+   honors the redirect; there is no body to swap.
+
+   Alpine: listens for "open-start-over" on the window (settings.html
+   dispatches via the Start Over button). Cancel + outside-click close via
+   $dispatch('close-start-over') so the open state is local to this widget.
+#}
+<div x-data="{ open: false }"
+     x-show="open"
+     @open-start-over.window="open = true"
+     @close-start-over.window="open = false"
+     @keydown.escape.window="open = false"
+     class="fixed inset-0 bg-black/60 z-40"
+     role="dialog"
+     aria-modal="true"
+     aria-labelledby="start-over-modal-title"
+     style="display: none;">
+  <div @click.self="$dispatch('close-start-over')"
+       class="fixed inset-0 flex items-start justify-center pt-32 px-4">
+    <div class="bg-surface-card rounded-lg p-6 max-w-md w-full border border-border"
+         x-init="$nextTick(() => $refs.cancel && $refs.cancel.focus())">
+      <h2 id="start-over-modal-title"
+          class="text-[20px] font-semibold text-text-primary mb-3">
+        Start Over?
+      </h2>
+      <p class="text-[14px] text-text-secondary mb-2">This will:</p>
+      <ul class="list-disc pl-5 text-[14px] text-text-secondary space-y-1 mb-4">
+        <li>Archive your current Composer playlists in Plex (renamed with an
+            "(archived YYYY-MM-DD)" suffix — they remain in Plex for you to
+            clean up in Plexamp)</li>
+        <li>Clear all vibe assignments and wizard state in Composer</li>
+        <li>Restart the setup wizard from Step 1</li>
+      </ul>
+      <p class="text-[13px] text-text-secondary mb-2">
+        Your Plex, Anthropic, and Lidarr credentials are preserved.
+      </p>
+      <p class="text-[13px] text-error font-semibold mb-6">
+        This cannot be undone.
+      </p>
+      <div class="flex gap-4">
+        <button type="button"
+                x-ref="cancel"
+                @click="$dispatch('close-start-over')"
+                class="flex-1 min-h-11 bg-surface-elevated text-text-primary rounded-lg font-medium text-[14px] focus:outline focus:outline-2 active:opacity-90">
+          Cancel
+        </button>
+        <button type="button"
+                hx-post="/api/setup/start-over"
+                hx-swap="none"
+                @click="open = false"
+                class="flex-1 min-h-11 bg-error text-surface-primary rounded-lg font-semibold text-[14px] focus:outline focus:outline-2 active:opacity-90">
+          Start Over
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

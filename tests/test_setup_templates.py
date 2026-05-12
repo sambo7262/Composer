@@ -555,3 +555,221 @@ def test_proposal_card_pass2_chip_uses_tap_not_hover():
     # Inside the Pass-2 block, no :hover-only state gates visibility.
     # Tailwind hover:bg-* utilities are fine; raw CSS `:hover {` would not be.
     assert ":hover {" not in pass2_block
+
+
+# ===========================================================================
+# Phase 6.2 Plan 02 — WIZ-08 "Start Over" button + confirm modal (D-24..D-25).
+#
+# Tests cover:
+# - settings_page passes vibe_count to template context
+# - Start Over button visible only when vibe_count > 0
+# - D-25 locked content in the modal (Archive your current Composer
+#   playlists, (archived YYYY-MM-DD), Clear all vibe assignments, Restart
+#   the setup wizard, Plex/Anthropic/Lidarr preserved, This cannot be undone)
+# - Alpine $dispatch pattern for modal open/close
+# - Tap-target compliance (min-h-11) — Pitfall 17
+# - Tap-not-hover (Pitfall 18)
+# - Confirm button hx-post=/api/setup/start-over
+# ===========================================================================
+
+
+def _client_with_settings():
+    """TestClient instance for the settings-page integration tests."""
+    from fastapi.testclient import TestClient
+    from sqlmodel import SQLModel
+    from app.models.event_log import EventLog  # noqa: F401
+    from app.models.llm_usage import LLMUsage  # noqa: F401
+    from app.models.settings import ServiceConfig  # noqa: F401
+    from app.models.taste_profile import TasteProfile  # noqa: F401
+    from app.models.track import SyncState, Track  # noqa: F401
+    from app.models.vibe import (  # noqa: F401
+        ManagedPlaylist, MigrationLog, SetupState, SlotInLog, TrackVibe, Vibe,
+    )
+    from app.database import get_engine
+    SQLModel.metadata.create_all(get_engine())
+    from app.main import app
+    return TestClient(app)
+
+
+def _seed_vibe_rows(n: int) -> None:
+    """Insert ``n`` Vibe rows into the live test database."""
+    from datetime import datetime, timezone
+    from sqlmodel import Session
+    from app.database import get_engine
+    from app.models.vibe import Vibe
+
+    now = datetime.now(timezone.utc).isoformat()
+    with Session(get_engine()) as s:
+        for i in range(n):
+            s.add(Vibe(
+                name=f"Vibe-{i}",
+                description="x",
+                is_active=True,
+                created_at=now,
+            ))
+        s.commit()
+
+
+def _render_start_over_modal() -> str:
+    """Render the partials/start_over_modal.html template directly."""
+    from fastapi.templating import Jinja2Templates
+
+    templates = Jinja2Templates(directory="app/templates")
+    t = templates.get_template("partials/start_over_modal.html")
+    return t.render()
+
+
+def test_settings_page_passes_vibe_count_to_template():
+    """The settings page handler MUST query vibe_count and pass it into the
+    template context, so the template can conditionally show the Start Over
+    button when vibe_count > 0 (D-24)."""
+    with _client_with_settings() as c:
+        _seed_vibe_rows(3)
+        response = c.get("/settings")
+        assert response.status_code == 200
+        # With 3 vibes seeded, the Start Over button block must render.
+        assert "Start Over" in response.text
+
+
+def test_start_over_button_visible_when_vibes_exist():
+    """Seed 3 vibes → Start Over button renders with destructive styling."""
+    with _client_with_settings() as c:
+        _seed_vibe_rows(3)
+        response = c.get("/settings")
+        assert response.status_code == 200
+        body = response.text
+        assert "Start Over" in body
+        # Locate the Start Over button block.
+        button_idx = body.find("Start Over")
+        assert button_idx != -1
+        # Look at a generous window around the button for the destructive
+        # styling signal. We accept any one of {error, destructive, danger}
+        # tokens; Claude has discretion on the exact class.
+        window = body[max(0, button_idx - 800): button_idx + 800]
+        destructive_signals = ("error", "destructive", "danger")
+        assert any(sig in window for sig in destructive_signals), (
+            "Start Over button must carry a destructive visual signal "
+            f"(any of {destructive_signals}); found none in:\n{window!r}"
+        )
+
+
+def test_start_over_button_hidden_when_no_vibes_exist():
+    """Empty Vibe table → no Start Over button (D-24 — never offer
+    destruction when there's nothing to destroy)."""
+    with _client_with_settings() as c:
+        response = c.get("/settings")
+        assert response.status_code == 200
+        body = response.text
+        # The Start Over POST target must NOT be present in the rendered
+        # body when there are no vibes.
+        assert 'hx-post="/api/setup/start-over"' not in body
+
+
+def test_start_over_modal_contains_d25_required_content():
+    """D-25 — content is locked; tone polish is Claude's discretion."""
+    html = _render_start_over_modal()
+    # Locked content fragments per D-25:
+    required_fragments = [
+        "Archive your current Composer playlists",
+        # Either literal placeholder OR an example date.
+        # The plan accepts either; check for the date-format hint.
+        "(archived YYYY-MM-DD)",
+        "Clear all vibe assignments",
+        "Restart the setup wizard",
+        "Plex, Anthropic, and Lidarr credentials are preserved",
+        "This cannot be undone",
+    ]
+    for frag in required_fragments:
+        assert frag in html, (
+            f"Modal missing required D-25 fragment {frag!r}.\n"
+            f"Rendered HTML:\n{html}"
+        )
+
+    # Cancel + Start Over actions.
+    assert "Cancel" in html
+    # The confirm button has the literal label "Start Over" (the heading
+    # uses "Start Over?" with a question mark — the button is just "Start
+    # Over"). Find at least 2 occurrences: heading ("Start Over?") +
+    # button ("Start Over").
+    assert html.count("Start Over") >= 2
+
+
+def test_start_over_modal_uses_alpine_dispatch_pattern():
+    """The modal must integrate via Alpine $dispatch — open via window event
+    and dismiss via @click → $dispatch (mirrors recluster_modal pattern)."""
+    html = _render_start_over_modal()
+    # Must listen for an open event on window.
+    assert "open-start-over" in html, (
+        "Modal must listen for an Alpine open event (open-start-over)"
+    )
+    # Must dispatch (close-start-over OR set open=false) on cancel.
+    # Both patterns are acceptable — assert one of them.
+    has_close_dispatch = "$dispatch('close-start-over')" in html or \
+        '$dispatch("close-start-over")' in html or \
+        "open = false" in html
+    assert has_close_dispatch, (
+        "Modal must dispatch close-start-over OR set open=false to close"
+    )
+
+
+def _find_start_over_button_block(body: str) -> str:
+    """Locate the rendered Start Over button block (the literal between an
+    open-tag and its closing >Start Over< text). Returns a window around
+    the button's class attribute. Skips occurrences inside HTML comments."""
+    import re
+
+    # Strip HTML comments to avoid matching commentary in settings.html.
+    body_no_comments = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
+    # Find the first occurrence of ">Start Over<" (button label between
+    # angle brackets — works for both `<button ...>Start Over</button>`
+    # and `<button>\n  Start Over\n</button>` if there are newlines we
+    # need a loose match).
+    match = re.search(
+        r"<button[^>]*>[\s\n]*Start Over[\s\n]*</button>", body_no_comments,
+        flags=re.DOTALL,
+    )
+    assert match, (
+        "No <button>...Start Over...</button> found in rendered settings page"
+    )
+    return match.group(0)
+
+
+def test_start_over_button_min_h_11_tap_target():
+    """Pitfall 17: the Start Over button must have a 44px minimum tap
+    target. Tailwind `min-h-11` is the project convention."""
+    with _client_with_settings() as c:
+        _seed_vibe_rows(2)
+        response = c.get("/settings")
+        button_block = _find_start_over_button_block(response.text)
+        assert "min-h-11" in button_block, (
+            "Start Over button must have min-h-11 tap target "
+            "(Pitfall 17 / 44px minimum). Rendered:\n"
+            f"{button_block}"
+        )
+
+
+def test_start_over_button_no_hover_only_states():
+    """Pitfall 18: tap-not-hover. The Start Over button must not gate any
+    state behind hover: alone — it should also have active: (and/or focus:)
+    so mobile taps work as well as desktop hover."""
+    import re
+
+    with _client_with_settings() as c:
+        _seed_vibe_rows(2)
+        response = c.get("/settings")
+        button_block = _find_start_over_button_block(response.text)
+        hover_tokens = re.findall(r"hover:\S+", button_block)
+        if hover_tokens:
+            assert "active:" in button_block or "focus:" in button_block, (
+                f"Start Over button has hover: states ({hover_tokens}) but "
+                f"NO active:/focus: companion — Pitfall 18 violation"
+            )
+
+
+def test_start_over_modal_confirm_button_hx_post_target():
+    """The confirm button must HTMX-POST to /api/setup/start-over. The user
+    lands on /setup after HTMX honors the 204 HX-Redirect."""
+    html = _render_start_over_modal()
+    assert 'hx-post="/api/setup/start-over"' in html, (
+        "Confirm button must hx-post to /api/setup/start-over"
+    )
