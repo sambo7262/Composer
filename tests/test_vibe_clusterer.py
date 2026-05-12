@@ -1730,8 +1730,8 @@ async def test_pass2_adaptive_thinking_enabled(db_with_phase6, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pass2_max_tokens_4000(db_with_phase6, monkeypatch):
-    """Pass 2 calls use max_tokens=4000 (RESEARCH §4.3)."""
+async def test_pass2_max_tokens_uses_constant(db_with_phase6, monkeypatch):
+    """Pass 2 calls use ``PASS2_MAX_TOKENS`` (RESEARCH §4.3 + hotfix 260512-kvs)."""
     from app.services import vibe_clusterer as vc
 
     agg = _make_pass1_aggregate(30)
@@ -1782,8 +1782,8 @@ async def test_pass2_max_tokens_4000(db_with_phase6, monkeypatch):
 
     pass2_tokens = seen_max_tokens_by_purpose.get("vibe_assign_pass2", [])
     assert pass2_tokens, "Pass 2 must have run"
-    assert all(t == 4000 for t in pass2_tokens), (
-        f"Pass 2 must use max_tokens=4000; got {pass2_tokens}"
+    assert all(t == vc.PASS2_MAX_TOKENS for t in pass2_tokens), (
+        f"Pass 2 must use max_tokens={vc.PASS2_MAX_TOKENS}; got {pass2_tokens}"
     )
 
 

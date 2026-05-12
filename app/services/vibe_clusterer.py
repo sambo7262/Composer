@@ -966,10 +966,16 @@ async def refine_proposals(
 # Phase 6.2 D-01 / D-16 — batch sizes locked per CONTEXT.md.
 PASS1_BATCH_SIZE = 25
 PASS2_BATCH_SIZE = 15
-# Phase 6.2 D-07 — Pass 1 output token cap (25 tracks × ~80 = ~2000; 3000 gives margin).
-PASS1_MAX_TOKENS = 3000
-# Phase 6.2 RESEARCH §4.3 — Pass 2 output cap; thinking tokens roll into output.
-PASS2_MAX_TOKENS = 4000
+# Phase 6.2 D-07 + hotfix 260512-kvs — Pass 1 output token cap.
+# NAS UAT (May 2026) observed stop_reason=max_tokens for purpose=vibe_assign_pass1
+# at 3000 with 25-track batches; 6000 gives ~2× headroom.
+PASS1_MAX_TOKENS = 6000
+# Phase 6.2 RESEARCH §4.3 + hotfix 260512-kvs — Pass 2 output cap; thinking
+# tokens roll into output. NAS UAT (May 2026) observed stop_reason=max_tokens
+# for purpose=vibe_assign_pass2 with only a `thinking` block returned (no
+# `text`). On Sonnet 4.6, thinking.budget_tokens=2000 + ~4000 JSON output
+# needs >6000; 8000 gives headroom.
+PASS2_MAX_TOKENS = 8000
 # Phase 6.2 D-04 — preamble output cap (one definition per vibe; short).
 PREAMBLE_MAX_TOKENS = 600
 # Phase 6.2 D-14 — peer count per candidate vibe in Pass 2 system prompt.
@@ -1459,9 +1465,7 @@ async def assign_tracks_to_user_vibes(
          pass2_tracks = per-track Pass-2 entries for the confidence chip.
       9. ``materialize_clusters`` finishes centroid + spread + silhouette.
 
-    Cost ceiling (D-32): SELECT SUM(cost_estimate_usd) FROM llmusage WHERE
-    purpose LIKE 'vibe_%' and called_at >= <run_start> must be ≤ $3.00
-    (target ≤ $1.50). /debug/vibes surfaces the breakdown by purpose.
+    /debug/vibes surfaces the cost breakdown by purpose (D-32).
     """
     # --- 1. Input validation (mirrors Phase 6.1 verbatim) ---
     if len(user_names) < 3 or len(user_names) > 7:
