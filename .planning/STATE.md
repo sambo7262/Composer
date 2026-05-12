@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: — Music Companion
 status: executing
-stopped_at: Phase 06.1 executed + verified (codebase 18/18 must-haves, 121/121 tests). 4 hotfixes shipped during NAS UAT (260510-sht None-session, 260510-t5n JSON trailing prose, 260510-tng LLM wrapper field, 260511-bpf cross-album playlist dedupe). Phase 6.2 added to ROADMAP (LLM-Direct Vibe Assignment) with VIBE-13/14 — not yet planned. Phase 06.1 still status=In Progress pending real-NAS UAT.
+stopped_at: Phase 06.2 executed + verified (28/28 must-haves, 182 Phase 6.2 tests pass, 0 critical review findings). 2 hotfixes shipped during NAS UAT (260512-k3n adaptive-thinking translation + LLM progress card; 260512-kvs max_tokens bump 4000→8000 + $3 cap removal). NAS UAT 2026-05-12 confirmed propose flow produces 6 vibes from 593-track library and pushes them to Plex as `Composer · {name}`. Phase 6.2 complete.
 last_updated: "2026-05-12T20:03:08.736Z"
-last_activity: 2026-05-12 -- Phase 06.2 execution started
+last_activity: 2026-05-12 -- Phase 06.2 verified complete (28/28 must-haves, NAS UAT passed)
 progress:
   total_phases: 10
-  completed_phases: 7
-  total_plans: 24
-  completed_plans: 22
+  completed_phases: 8
+  total_plans: 26
+  completed_plans: 24
   percent: 92
 ---
 
@@ -21,22 +21,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-08)
 
 **Core value:** Your Plex stars are the truth. Composer turns them into living vibe playlists and a steady stream of personalized discoveries — without you having to describe a vibe each time.
-**Current focus:** Phase 06.2 — llm-direct-vibe-assignment
+**Current focus:** Phase 6 SC2 UAT (auto-slot on new rating) → Phase 7 — Suggestions Queue + v1 Chat Retirement
 
 ## Current Position
 
-Phase: 06.2 (llm-direct-vibe-assignment) — EXECUTING
-Plan: 1 of 2
-Status: Executing Phase 06.2
-Last activity: 2026-05-12 -- Completed quick task 260512-kvs: Phase 6.2 hotfix #2 (max_tokens bump + $3 cap removal)
+Phase: 06.2 (llm-direct-vibe-assignment) — COMPLETE (verified 2026-05-12)
+Plan: 2 of 2 (both verified)
+Status: Phase 6.2 complete. Auto-slot pipeline (`event_handlers.handle_rating_changed` → `vibe_service.slot_track`) is shipped from earlier phases and ready for UAT — rate a new track in Plexamp, confirm it lands in the right `Composer · {name}` playlist within ~10s via `/debug/vibes` "Last 20 slot-in decisions" panel. Then Phase 7 (Suggestions Queue + v1 Chat Retirement) is next.
+Last activity: 2026-05-12 -- Phase 06.2 verified complete (28/28 must-haves, NAS UAT passed)
 
 ### v2.0 Phase Snapshot
 
 | Phase | Goal (one-line) | Status |
 |-------|-----------------|--------|
-| 5 — Plex Event Foundation + Rating Sync | Composer reliably ingests Plex webhook + polling events, dedupes them, propagates `RatingChanged` end-to-end | Next up |
-| 6 — Vibe Clustering + Setup Wizard | First-run wizard ends with 3–7 named vibe playlists in Plex, auto-slotting newly-rated tracks | Pending |
-| 7 — Suggestions Queue + v1 Chat Retirement | Continuous Composer · Suggestions playlist drains and refills; vibes home is the new landing page | Pending |
+| 5 — Plex Event Foundation + Rating Sync | Composer reliably ingests Plex webhook + polling events, dedupes them, propagates `RatingChanged` end-to-end | Complete |
+| 6 — Vibe Clustering + Setup Wizard | First-run wizard ends with 3–7 named vibe playlists in Plex, auto-slotting newly-rated tracks | 6.1 + 6.2 complete; SC2 (auto-slot UAT) pending |
+| 7 — Suggestions Queue + v1 Chat Retirement | Continuous Composer · Suggestions playlist drains and refills; vibes home is the new landing page | Next up |
 | 8 — Lidarr Discovery + Polish | Taste-aware artist discovery, one-click add, auto-ingest of arrivals, mobile responsive pass | Pending |
 | 9 — Feed the Engine (OPTIONAL) | Bulk rating, play-rated nudge, Surprise Me — cuttable | Pending |
 
@@ -186,11 +186,11 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-05-11T15:30:00Z
-Stopped at: Phase 06.1 executed + verified (codebase 18/18 must-haves, 121/121 tests). 4 hotfixes shipped during NAS UAT (260510-sht None-session, 260510-t5n JSON trailing prose, 260510-tng LLM wrapper field, 260511-bpf cross-album playlist dedupe). Phase 6.2 added to ROADMAP (LLM-Direct Vibe Assignment) with VIBE-13/14 — not yet planned. Phase 06.1 still status=In Progress pending real-NAS UAT.
-Resume file: .planning/phases/06.1-vibe-wizard-foundations-server-led-clustering-user-led-vibe-/06.1-HUMAN-UAT.md
+Last session: 2026-05-12T22:00:00Z
+Stopped at: Phase 06.2 (LLM-Direct Vibe Assignment) verified complete. 28/28 must-haves pass goal-backward analysis against live codebase; 182 Phase 6.2 tests green; 0 critical review findings. Two hotfixes shipped during NAS UAT (260512-k3n adaptive-thinking translation + LLM progress card; 260512-kvs max_tokens 4000→8000 bump + $3 cap removal). User-confirmed end-to-end: 593-track library → 6 named vibes → `Composer · {name}` playlists in Plex. Phase 6.1 implicitly verified by 6.2 building successfully on its foundation.
+Resume file: .planning/phases/06.2-llm-direct-vibe-assignment/06.2-VERIFICATION.md
 Next actions:
 
-  - After NAS UAT completes: `/gsd-verify-work 06.1` to mark HUMAN-UAT items pass/fail
-  - If UAT passes: `/gsd-discuss-phase 6.2` to flesh out LLM-direct vibe assignment design contract
-  - If UAT surfaces issues: `/gsd-plan-phase 06.1 --gaps` for gap-closure plans
+  - UAT Phase 6 SC2: rate a previously-unrated track in Plexamp; within ~10s confirm it appears in the right `Composer · {name}` playlist; check `/debug/vibes` "Last 20 slot-in decisions" panel for the receipt (track, vibe name, computed distance).
+  - When SC2 confirms: `/gsd-execute-phase 7` or `/gsd-plan-phase 7` for Suggestions Queue + v1 Chat Retirement (depending on whether plans exist).
+  - Optional cleanup queue (deferred from 6.2 review): pad system prompts >2048 tokens to engage Anthropic caching; address WR-01 (finalize dead code) and WR-03 (zero-member vibe leak); triage pre-existing test failures in `deferred-items.md`.
