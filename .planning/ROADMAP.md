@@ -31,8 +31,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 #### Milestone v2.0 — Music Companion (active)
 
 - [x] **Phase 5: Plex Event Foundation + Rating Sync** — Composer reliably ingests Plex webhook + polling events, dedupes them, and propagates RatingChanged end-to-end (completed 2026-05-10)
-- [ ] **Phase 6: Vibe Clustering + Setup Wizard** — User completes first-run wizard and ends with 3–7 named vibe playlists in Plex, populated from rated set, auto-slotting newly-rated tracks
-- [ ] **Phase 6.1: Vibe Wizard Foundations: server-led clustering + user-led vibe input** (INSERTED) — Server-led membership from k-means labels + user-typed vibe names replace LLM-led seed-picking; ensures all rated tracks land in a vibe playlist
+- [x] **Phase 6: Vibe Clustering + Setup Wizard** — User completes first-run wizard and ends with 3–7 named vibe playlists in Plex, populated from rated set, auto-slotting newly-rated tracks (completed 2026-05-13; capability delivered via inserted Phases 6.1 + 6.2)
+- [x] **Phase 6.1: Vibe Wizard Foundations: server-led clustering + user-led vibe input** (INSERTED) — Server-led membership from k-means labels + user-typed vibe names replace LLM-led seed-picking; ensures all rated tracks land in a vibe playlist (completed 2026-05-13)
 - [x] **Phase 6.2: LLM-Direct Vibe Assignment** (INSERTED) — Replace k-means membership decisions with LLM-direct zero-shot assignment per user-typed vibe; two-pass design (confidence-graded assign + boundary peer-review); audio features become a tiebreaker for obscure tracks (completed 2026-05-12)
 - [ ] **Phase 7: Suggestions Queue + v1 Chat Retirement** — Continuous Composer · Suggestions playlist drains as the user listens and refills with taste-aware picks; v1 mood-chat retires; vibes home becomes the new landing page
 - [ ] **Phase 8: Lidarr Discovery + Polish** — Taste-aware artist discovery with one-click add to Lidarr; auto-ingest of new arrivals; legacy screens responsive on mobile
@@ -283,7 +283,7 @@ Phase 9 has no downstream dependents; it can ship parallel to Phase 8 or be cut 
 | 3. Audio Feature Extraction | 3/3 | Complete | 2026-04-09 |
 | 4. Playlist Generation | 3/3 | Complete (retiring in v2.0) | 2026-04-10 |
 | 5. Plex Event Foundation + Rating Sync | 4/4 | Complete    | 2026-05-10 |
-| 6. Vibe Clustering + Setup Wizard | 0/TBD | Not started | - |
+| 6. Vibe Clustering + Setup Wizard | 9/9 (3 Phase 6 + 2 Phase 6.1 + 2 Phase 6.2 + 2 hotfixes) | Complete | 2026-05-13 |
 | 7. Suggestions Queue + v1 Chat Retirement | 0/TBD | Not started | - |
 | 8. Lidarr Discovery + Polish | 0/TBD | Not started | - |
 | 9. Feed the Engine (OPTIONAL) | 0/TBD | Not started (cuttable) | - |

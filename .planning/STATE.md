@@ -5,10 +5,10 @@ milestone_name: — Music Companion
 status: executing
 stopped_at: Phase 06.2 executed + verified (28/28 must-haves, 182 Phase 6.2 tests pass, 0 critical review findings). 2 hotfixes shipped during NAS UAT (260512-k3n adaptive-thinking translation + LLM progress card; 260512-kvs max_tokens bump 4000→8000 + $3 cap removal). NAS UAT 2026-05-12 confirmed propose flow produces 6 vibes from 593-track library and pushes them to Plex as `Composer · {name}`. Phase 6.2 complete.
 last_updated: "2026-05-12T20:03:08.736Z"
-last_activity: 2026-05-12 -- Phase 06.2 verified complete (28/28 must-haves, NAS UAT passed)
+last_activity: 2026-05-13 -- Phase 6 fully complete (6.1 + 6.2 verified; SC2 auto-slot UAT confirmed on NAS)
 progress:
   total_phases: 10
-  completed_phases: 8
+  completed_phases: 9
   total_plans: 26
   completed_plans: 24
   percent: 92
@@ -21,21 +21,21 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-08)
 
 **Core value:** Your Plex stars are the truth. Composer turns them into living vibe playlists and a steady stream of personalized discoveries — without you having to describe a vibe each time.
-**Current focus:** Phase 6 SC2 UAT (auto-slot on new rating) → Phase 7 — Suggestions Queue + v1 Chat Retirement
+**Current focus:** Phase 7 — Suggestions Queue + v1 Chat Retirement
 
 ## Current Position
 
-Phase: 06.2 (llm-direct-vibe-assignment) — COMPLETE (verified 2026-05-12)
-Plan: 2 of 2 (both verified)
-Status: Phase 6.2 complete. Auto-slot pipeline (`event_handlers.handle_rating_changed` → `vibe_service.slot_track`) is shipped from earlier phases and ready for UAT — rate a new track in Plexamp, confirm it lands in the right `Composer · {name}` playlist within ~10s via `/debug/vibes` "Last 20 slot-in decisions" panel. Then Phase 7 (Suggestions Queue + v1 Chat Retirement) is next.
-Last activity: 2026-05-12 -- Phase 06.2 verified complete (28/28 must-haves, NAS UAT passed)
+Phase: 07 (suggestions-queue) — NOT STARTED
+Plan: 0 of N (plans TBD)
+Status: Phase 6 fully complete (6.1 + 6.2 verified; SC2 auto-slot UAT confirmed on NAS 2026-05-13 — all tests pass). Ready to plan Phase 7. Carry-forward: cost-meter caching is load-bearing for Phase 7 SC4 ("`cache_read_input_tokens` accumulating") — the "caching not engaged" warning seen during 6.2 needs the system-prompt-padding fix as part of Phase 7 (no longer a deferred cleanup).
+Last activity: 2026-05-13 -- Phase 6 fully complete (6.1 + 6.2 verified; SC2 auto-slot UAT confirmed on NAS)
 
 ### v2.0 Phase Snapshot
 
 | Phase | Goal (one-line) | Status |
 |-------|-----------------|--------|
 | 5 — Plex Event Foundation + Rating Sync | Composer reliably ingests Plex webhook + polling events, dedupes them, propagates `RatingChanged` end-to-end | Complete |
-| 6 — Vibe Clustering + Setup Wizard | First-run wizard ends with 3–7 named vibe playlists in Plex, auto-slotting newly-rated tracks | 6.1 + 6.2 complete; SC2 (auto-slot UAT) pending |
+| 6 — Vibe Clustering + Setup Wizard | First-run wizard ends with 3–7 named vibe playlists in Plex, auto-slotting newly-rated tracks | Complete (2026-05-13) |
 | 7 — Suggestions Queue + v1 Chat Retirement | Continuous Composer · Suggestions playlist drains and refills; vibes home is the new landing page | Next up |
 | 8 — Lidarr Discovery + Polish | Taste-aware artist discovery, one-click add, auto-ingest of arrivals, mobile responsive pass | Pending |
 | 9 — Feed the Engine (OPTIONAL) | Bulk rating, play-rated nudge, Surprise Me — cuttable | Pending |
@@ -186,11 +186,12 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-05-12T22:00:00Z
-Stopped at: Phase 06.2 (LLM-Direct Vibe Assignment) verified complete. 28/28 must-haves pass goal-backward analysis against live codebase; 182 Phase 6.2 tests green; 0 critical review findings. Two hotfixes shipped during NAS UAT (260512-k3n adaptive-thinking translation + LLM progress card; 260512-kvs max_tokens 4000→8000 bump + $3 cap removal). User-confirmed end-to-end: 593-track library → 6 named vibes → `Composer · {name}` playlists in Plex. Phase 6.1 implicitly verified by 6.2 building successfully on its foundation.
-Resume file: .planning/phases/06.2-llm-direct-vibe-assignment/06.2-VERIFICATION.md
+Last session: 2026-05-13T00:00:00Z
+Stopped at: Phase 6 (Vibe Clustering + Setup Wizard) fully complete. 6.1 + 6.2 plans verified against codebase (28/28 must-haves, 182 Phase 6.2 tests green, 0 critical review findings); NAS UAT 2026-05-13 confirmed SC2 (auto-slot on new rating) end-to-end — rated track appears in matching `Composer · {name}` Plex playlist within ~10s, `/debug/vibes` "Last 20 slot-in decisions" panel renders the receipt correctly. Phase 7 (Suggestions Queue + v1 Chat Retirement) is next up.
+Resume file: .planning/ROADMAP.md (Phase 7 section, line 208)
 Next actions:
 
-  - UAT Phase 6 SC2: rate a previously-unrated track in Plexamp; within ~10s confirm it appears in the right `Composer · {name}` playlist; check `/debug/vibes` "Last 20 slot-in decisions" panel for the receipt (track, vibe name, computed distance).
-  - When SC2 confirms: `/gsd-execute-phase 7` or `/gsd-plan-phase 7` for Suggestions Queue + v1 Chat Retirement (depending on whether plans exist).
-  - Optional cleanup queue (deferred from 6.2 review): pad system prompts >2048 tokens to engage Anthropic caching; address WR-01 (finalize dead code) and WR-03 (zero-member vibe leak); triage pre-existing test failures in `deferred-items.md`.
+  - `/gsd-plan-phase 7` to break Suggestions Queue + v1 Chat Retirement into plans. Phase 7 requirements: SUGG-01..11, UI-01..06, OPS-05, DEBUG-03, DEBUG-05.
+  - During Phase 7 planning, fold in the Anthropic prompt-caching fix (pad system prompts >2048 tokens) — Phase 7 SC4 explicitly requires `cache_read_input_tokens` to be accumulating, so this is no longer a deferred cleanup.
+  - Phase 7 ships the LLM cost circuit breaker (Pitfall 11) in the FIRST commit, not the last — daily 50 calls + 5/60s burst + 60s per-event debounce. Plan accordingly.
+  - Optional cleanup queue (still deferred, doesn't block Phase 7): WR-01 finalize dead code, WR-03 zero-member vibe leak; pre-existing test failures in `deferred-items.md`.
