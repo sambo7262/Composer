@@ -805,6 +805,149 @@ class TestRefillSideEffects:
         call_args_str = str(update_mock.await_args)
         assert "sentinel-plex-rk" in call_args_str
 
+    def test_first_refill_materializes_plex_playlist_when_sentinel(
+        self, db_phase7_v2,
+    ):
+        """CR-01 regression — when the ManagedPlaylist(kind='suggestions') row
+        carries the empty-string sentinel plex_rating_key, the first
+        non-empty refill MUST call _materialize_suggestions_plex_playlist
+        (lazily creates the Plex playlist) and MUST NOT call
+        update_playlist_items (which would 404 with the sentinel key).
+        """
+        from app.services import suggestions_service
+        from app.services.suggestions_service import (
+            SuggestionRankingPick, SuggestionRankingResponse,
+        )
+
+        # Seed the sentinel-row state (empty plex_rating_key).
+        _seed_managed_suggestions(db_phase7_v2, plex_rk="")
+        _seed_vibe(db_phase7_v2)
+        _seed_taste_profile(db_phase7_v2)
+        for i in range(50):
+            _seed_track(db_phase7_v2, rk=f"rk-{i}")
+
+        async def cap(*args, **kwargs):
+            return SuggestionRankingResponse(picks=[
+                SuggestionRankingPick(candidate_index=0, rationale="r"),
+            ])
+
+        materialize_mock = AsyncMock(return_value="new-plex-rk-123")
+        update_mock = AsyncMock(return_value=None)
+
+        with patch.object(
+            suggestions_service, "_get_anthropic_client"
+        ) as mock_get_client, patch.object(
+            suggestions_service, "_materialize_suggestions_plex_playlist",
+            new=materialize_mock,
+        ), patch.object(
+            suggestions_service, "update_playlist_items", new=update_mock,
+        ):
+            client_instance = MagicMock()
+            client_instance.call_with_structured_output = cap
+            mock_get_client.return_value = client_instance
+            _run_async(suggestions_service.refill_suggestions_queue())
+
+        # Materialize MUST be awaited; update_playlist_items MUST NOT be.
+        assert materialize_mock.await_count >= 1, (
+            "CR-01 — first refill with sentinel rk must call "
+            "_materialize_suggestions_plex_playlist."
+        )
+        assert update_mock.await_count == 0, (
+            "CR-01 — update_playlist_items must NOT be called against "
+            "the empty-string sentinel rating key."
+        )
+
+    def test_subsequent_refill_uses_update_playlist_items(
+        self, db_phase7_v2,
+    ):
+        """CR-01 regression — once the sentinel has been replaced with a real
+        plex_rating_key, subsequent refills MUST use update_playlist_items
+        (additive push, Pitfall 5) — not materialize again.
+        """
+        from app.services import suggestions_service
+        from app.services.suggestions_service import (
+            SuggestionRankingPick, SuggestionRankingResponse,
+        )
+
+        _seed_managed_suggestions(db_phase7_v2, plex_rk="real-plex-rk-456")
+        _seed_vibe(db_phase7_v2)
+        _seed_taste_profile(db_phase7_v2)
+        for i in range(50):
+            _seed_track(db_phase7_v2, rk=f"rk-{i}")
+
+        async def cap(*args, **kwargs):
+            return SuggestionRankingResponse(picks=[
+                SuggestionRankingPick(candidate_index=0, rationale="r"),
+            ])
+
+        materialize_mock = AsyncMock(return_value="should-not-be-used")
+        update_mock = AsyncMock(return_value=None)
+
+        with patch.object(
+            suggestions_service, "_get_anthropic_client"
+        ) as mock_get_client, patch.object(
+            suggestions_service, "_materialize_suggestions_plex_playlist",
+            new=materialize_mock,
+        ), patch.object(
+            suggestions_service, "update_playlist_items", new=update_mock,
+        ):
+            client_instance = MagicMock()
+            client_instance.call_with_structured_output = cap
+            mock_get_client.return_value = client_instance
+            _run_async(suggestions_service.refill_suggestions_queue())
+
+        assert materialize_mock.await_count == 0
+        assert update_mock.await_count >= 1
+        assert "real-plex-rk-456" in str(update_mock.await_args)
+
+    def test_update_suggestions_managed_playlist_rk_sync_updates_in_place(
+        self, db_phase7_v2,
+    ):
+        """CR-01 helper — _update_suggestions_managed_playlist_rk_sync MUST
+        update the existing kind='suggestions' row in place (not insert a
+        new row). The row's plex_rating_key changes from sentinel to the
+        new rating key; track_count and last_pushed_at also refresh.
+        """
+        from app.models.vibe import ManagedPlaylist
+        from app.services.suggestions_service import (
+            _update_suggestions_managed_playlist_rk_sync,
+        )
+
+        _seed_managed_suggestions(db_phase7_v2, plex_rk="")
+        before_count = len(
+            db_phase7_v2.exec(select(ManagedPlaylist)).all()
+        )
+        assert before_count == 1
+
+        result = _update_suggestions_managed_playlist_rk_sync("new-rk-789", 7)
+        assert result is True
+
+        rows = db_phase7_v2.exec(
+            select(ManagedPlaylist).where(
+                ManagedPlaylist.kind == "suggestions"
+            )
+        ).all()
+        # Refresh detached objects.
+        for r in rows:
+            db_phase7_v2.refresh(r)
+        assert len(rows) == 1, (
+            "CR-01 — must update the row in place, not insert a new one."
+        )
+        assert rows[0].plex_rating_key == "new-rk-789"
+        assert rows[0].track_count == 7
+
+    def test_update_suggestions_managed_playlist_rk_sync_returns_false_when_missing(
+        self, db_phase7_v2,
+    ):
+        """CR-01 helper — returns False (no insert) when no suggestions row
+        exists. Caller treats this as bootstrap-skipped."""
+        from app.services.suggestions_service import (
+            _update_suggestions_managed_playlist_rk_sync,
+        )
+
+        result = _update_suggestions_managed_playlist_rk_sync("any-rk", 0)
+        assert result is False
+
     def test_topup_to_target_after_drain(self, db_phase7_v2):
         from app.services import suggestions_service
         from app.services.suggestions_service import (

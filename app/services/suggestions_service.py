@@ -163,6 +163,33 @@ def _insert_refill_pending_marker_sync(deficit: int) -> None:
         session.commit()
 
 
+def _update_suggestions_managed_playlist_rk_sync(
+    new_plex_rating_key: str, track_count: int,
+) -> bool:
+    """CR-01 fix — replace the deferred-sentinel plex_rating_key on the
+    existing ManagedPlaylist(kind='suggestions') row in-place. Used by
+    the first non-empty refill to materialize the Plex playlist.
+
+    Returns True if a row was updated, False if no suggestions row exists
+    (caller should treat as a bootstrap-skipped state).
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with Session(get_engine()) as session:
+        row = session.exec(
+            select(ManagedPlaylist).where(
+                ManagedPlaylist.kind == "suggestions"
+            )
+        ).first()
+        if row is None:
+            return False
+        row.plex_rating_key = new_plex_rating_key
+        row.track_count = track_count
+        row.last_pushed_at = now
+        session.add(row)
+        session.commit()
+        return True
+
+
 def _read_migration_log_sync(phase_id: str) -> Optional[MigrationLog]:
     with Session(get_engine()) as session:
         return session.exec(
@@ -193,22 +220,92 @@ def _upsert_migration_log_sync(
 async def _create_plex_suggestions_playlist() -> Optional[str]:
     """Plan 01 placeholder for the Plex playlist creation step.
 
-    Returns None to signal "deferred — Plan 02 will create the playlist
-    on the first refill". This indirection exists so tests can patch the
-    helper to assert it is or is not called along the idempotent paths
-    without touching real Plex.
+    Returns None to signal "deferred — first refill will create the
+    playlist". This indirection exists so tests can patch the helper to
+    assert it is or is not called along the idempotent paths without
+    touching real Plex.
 
-    Plan 02 will replace this with a real call to
-    ``plex_playlist_service.create_playlist(plex_url, plex_token,
-    SUGGESTIONS_PLAYLIST_NAME, seed_rating_keys)`` once the first
-    suggestions batch is available, and update the ManagedPlaylist row
-    with the returned ratingKey.
+    The deferred materialization lives in
+    :func:`_materialize_suggestions_plex_playlist` (CR-01 fix), called by
+    both refill entry points the first time they have at least one pick
+    AND the existing ManagedPlaylist row still carries the empty-string
+    sentinel.
     """
-    # Plan 01: no-op. PlexAPI rejects createPlaylist with an empty items
-    # list (BadRequest), and Plan 01 has no seed tracks to pass. The
-    # ManagedPlaylist row gets the empty-string sentinel; Plan 02 fills
-    # it in on first refill.
+    # Bootstrap path: no-op. PlexAPI rejects createPlaylist with an empty
+    # items list (BadRequest), and bootstrap has no seed tracks to pass.
+    # The ManagedPlaylist row gets the empty-string sentinel; the first
+    # refill calls _materialize_suggestions_plex_playlist to fill it in.
     return None
+
+
+async def _materialize_suggestions_plex_playlist(
+    plex_url: str, plex_token: str, seed_rating_keys: List[str],
+) -> Optional[str]:
+    """CR-01 fix — create the Composer · Suggestions Plex playlist on the
+    first non-empty refill and update the existing ManagedPlaylist
+    (kind='suggestions') row in-place with the returned ratingKey.
+
+    Returns the new ratingKey on success, or None if the call failed (logged
+    via ``logger.exception``) so the caller can continue without raising.
+
+    Why this lives here and not in ``plex_playlist_service``:
+      - ``plex_playlist_service.create_playlist`` inserts a new
+        ``ManagedPlaylist(kind='vibe')`` row. Suggestions need to UPDATE
+        the existing ``kind='suggestions'`` sentinel row instead — using
+        the generic helper would leave us with two rows (one of the wrong
+        kind) to clean up. A small inline PlexServer call keeps the row
+        invariant clean.
+      - Every PlexAPI call wrapped in ``asyncio.to_thread`` per
+        Phase 5 D-09 / Pitfall 4.
+    """
+    if not plex_url or not plex_token:
+        logger.info(
+            "Suggestions Plex materialization skipped: Plex not configured "
+            "(plex_url or plex_token empty)."
+        )
+        return None
+    if not seed_rating_keys:
+        return None  # nothing to seed; caller will retry on next refill
+
+    from plexapi.server import PlexServer
+
+    def _create_sync() -> Tuple[str, int]:
+        plex = PlexServer(plex_url, plex_token, timeout=30)
+        key_str = ",".join(str(k) for k in seed_rating_keys)
+        tracks = plex.fetchItems(f"/library/metadata/{key_str}")
+        new_pl = plex.createPlaylist(
+            title=SUGGESTIONS_PLAYLIST_NAME, items=tracks,
+        )
+        return str(new_pl.ratingKey), len(tracks)
+
+    try:
+        new_rk, track_count = await asyncio.to_thread(_create_sync)
+    except Exception:
+        logger.exception(
+            "First Suggestions refill: failed to materialize Plex playlist "
+            "%r — will retry on next refill.",
+            SUGGESTIONS_PLAYLIST_NAME,
+        )
+        return None
+
+    updated = await asyncio.to_thread(
+        _update_suggestions_managed_playlist_rk_sync, new_rk, track_count,
+    )
+    if not updated:
+        logger.warning(
+            "Suggestions Plex playlist created (ratingKey=%s) but no "
+            "ManagedPlaylist(kind='suggestions') row found to update — "
+            "bootstrap was likely skipped. Plex playlist is orphaned.",
+            new_rk,
+        )
+        return new_rk
+
+    logger.info(
+        "First Suggestions refill: created Plex playlist %r "
+        "(ratingKey=%s, %d seed tracks); ManagedPlaylist row updated.",
+        SUGGESTIONS_PLAYLIST_NAME, new_rk, track_count,
+    )
+    return new_rk
 
 
 async def bootstrap_suggestions_queue() -> None:
@@ -1307,7 +1404,19 @@ async def refill_suggestions_queue(
     if kept:
         rating_keys = [shortlist[p.candidate_index]["plex_rating_key"] for p in kept]
         mp = await asyncio.to_thread(_find_suggestions_managed_playlist_sync)
-        if mp is not None and mp.plex_rating_key:
+        if mp is None:
+            logger.warning(
+                "refill_suggestions_queue: no ManagedPlaylist(kind=suggestions) "
+                "row found; bootstrap was likely skipped. Skipping Plex push."
+            )
+        elif not mp.plex_rating_key:
+            # CR-01 fix — first non-empty refill: materialize the deferred
+            # Plex playlist and update the sentinel row in-place.
+            plex_url, plex_token = await asyncio.to_thread(_read_plex_creds_sync)
+            await _materialize_suggestions_plex_playlist(
+                plex_url, plex_token, rating_keys,
+            )
+        else:
             plex_url, plex_token = await asyncio.to_thread(_read_plex_creds_sync)
             try:
                 await update_playlist_items(
@@ -1476,7 +1585,20 @@ async def refill_suggestions_for_vibe(
     if kept:
         rating_keys = [shortlist[p.candidate_index]["plex_rating_key"] for p in kept]
         mp = await asyncio.to_thread(_find_suggestions_managed_playlist_sync)
-        if mp is not None and mp.plex_rating_key:
+        if mp is None:
+            logger.warning(
+                "refill_suggestions_for_vibe: no ManagedPlaylist(kind="
+                "suggestions) row found; bootstrap was likely skipped. "
+                "Skipping Plex push."
+            )
+        elif not mp.plex_rating_key:
+            # CR-01 fix — first non-empty refill (via the vibe CTA path):
+            # materialize the deferred Plex playlist.
+            plex_url, plex_token = await asyncio.to_thread(_read_plex_creds_sync)
+            await _materialize_suggestions_plex_playlist(
+                plex_url, plex_token, rating_keys,
+            )
+        else:
             plex_url, plex_token = await asyncio.to_thread(_read_plex_creds_sync)
             try:
                 await update_playlist_items(
