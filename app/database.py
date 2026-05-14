@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
+import sqlite3
 from typing import Generator
 
 from sqlalchemy import event
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, SQLModel, create_engine
 
 from app import config
+
+logger = logging.getLogger(__name__)
 
 _engine = None
 
@@ -204,8 +209,19 @@ def init_db() -> None:
     # when the CREATE INDEX statement targets it.
     SQLModel.metadata.create_all(engine)
 
-    # Add any missing columns to existing tables
+    # Add any missing columns to existing tables.
+    # WR-01 fix: log exceptions instead of swallowing them silently. By the
+    # time we reach here, create_all has already created every table, so a
+    # "table missing" error is no longer the expected case — surface it.
     try:
         _migrate_add_columns(engine)
+    except (sqlite3.OperationalError, OperationalError) as exc:
+        logger.warning(
+            "init_db: lightweight migration encountered an OperationalError "
+            "(likely a missing column / index on a non-critical legacy "
+            "table); continuing. error=%s",
+            exc,
+        )
     except Exception:
-        pass  # Table may not exist yet on first run — create_all handles it
+        logger.exception("init_db: unexpected error in _migrate_add_columns")
+        raise
