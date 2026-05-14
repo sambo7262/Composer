@@ -55,6 +55,13 @@ PHASE_07_MIGRATION_ID = "7.0-suggestions-bootstrap"
 # this and runs the real plex_playlist_service.create_playlist call with the
 # first batch of suggestions.
 DEFERRED_PLEX_RATING_KEY_SENTINEL = ""
+# Phase 7 hotfix 260514-e6w: structured SuggestionRankingResponse JSON for
+# deficit=30 picks + shortlist context exceeds the prior 2000 budget and
+# triggers stop_reason=max_tokens → truncated JSON → pydantic validation
+# failure → refill aborts. Bumped to 8000 (same class as hotfix 260512-kvs
+# Phase 6.2 PASS2). Proper architectural fix lives in
+# .planning/notes/phase-07-followup-cost-architecture.md (Phase 7.1).
+SUGGESTIONS_RANK_MAX_TOKENS = 8000
 
 
 @dataclass
@@ -1298,7 +1305,7 @@ async def refill_suggestions_queue(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         response_model=SuggestionRankingResponse,
-        max_tokens=2000,
+        max_tokens=SUGGESTIONS_RANK_MAX_TOKENS,
         purpose="suggestions_rank",
         thinking="off",
     )
@@ -1334,7 +1341,7 @@ async def refill_suggestions_queue(
             system_prompt=system_prompt,
             user_prompt=retry_user_prompt,
             response_model=SuggestionRankingResponse,
-            max_tokens=2000,
+            max_tokens=SUGGESTIONS_RANK_MAX_TOKENS,
             purpose="suggestions_rank",
             thinking="off",
         )
@@ -1499,7 +1506,7 @@ async def refill_suggestions_for_vibe(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         response_model=SuggestionRankingResponse,
-        max_tokens=2000,
+        max_tokens=SUGGESTIONS_RANK_MAX_TOKENS,
         purpose="suggestions_rank",
         thinking="off",
     )
@@ -1517,7 +1524,7 @@ async def refill_suggestions_for_vibe(
             system_prompt=system_prompt,
             user_prompt=retry_user_prompt,
             response_model=SuggestionRankingResponse,
-            max_tokens=2000,
+            max_tokens=SUGGESTIONS_RANK_MAX_TOKENS,
             purpose="suggestions_rank",
             thinking="off",
         )

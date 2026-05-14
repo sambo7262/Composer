@@ -409,3 +409,74 @@ class TestSuggestionsServiceAstShape:
             "Phase 5 D-09 violation in suggestions_service.py:\n"
             + "\n".join(violations)
         )
+
+
+# ---------------------------------------------------------------------------
+# Hotfix 260514-e6w: pin SUGGESTIONS_RANK_MAX_TOKENS and forbid the literal
+# max_tokens=2000 from creeping back into suggestions_service.py.
+# Background: NAS UAT 2026-05-14 16:51 UTC stop_reason=max_tokens →
+# truncated JSON → SuggestionRankingResponse pydantic validation failure
+# → refill_suggestions_queue aborted. See
+# .planning/notes/phase-07-followup-cost-architecture.md.
+# ---------------------------------------------------------------------------
+
+
+class TestSuggestionsRankMaxTokensHotfix260514E6w:
+    def test_suggestions_rank_max_tokens_constant_pinned(self):
+        """The named constant exists and equals 8000.
+
+        Pins the value so a "let me trim it back" silent regression fails
+        loudly. If the proper SQL-refill + weekly-discovery architecture
+        lands (see .planning/notes/phase-07-followup-cost-architecture.md),
+        this test should be updated/removed alongside that change — not
+        before.
+        """
+        from app.services.suggestions_service import (
+            SUGGESTIONS_RANK_MAX_TOKENS,
+        )
+
+        assert SUGGESTIONS_RANK_MAX_TOKENS == 8000
+        assert isinstance(SUGGESTIONS_RANK_MAX_TOKENS, int)
+
+    def test_no_hardcoded_max_tokens_2000_in_suggestions_service(self):
+        """Static AST scan: no `max_tokens=2000` literal in suggestions_service.py.
+
+        Pattern reference: tests/test_event_handlers.py
+        ::TestStaticAnalysis::test_no_blocking_plexapi_in_async (lines 292+).
+
+        AST (not grep) so a comment containing the string "max_tokens=2000"
+        — including this test's own docstring or the constant's own comment
+        — does NOT trip the assertion. Only an actual keyword argument with
+        a literal int value of 2000 is forbidden.
+        """
+        path = (
+            Path(__file__).parent.parent
+            / "app"
+            / "services"
+            / "suggestions_service.py"
+        )
+        source = path.read_text()
+        tree = ast.parse(source)
+
+        violations: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg != "max_tokens":
+                    continue
+                if (
+                    isinstance(kw.value, ast.Constant)
+                    and kw.value.value == 2000
+                ):
+                    violations.append(
+                        f"max_tokens=2000 literal at line {kw.value.lineno} "
+                        f"— must reference SUGGESTIONS_RANK_MAX_TOKENS instead "
+                        f"(hotfix 260514-e6w)"
+                    )
+
+        assert violations == [], (
+            "Hotfix 260514-e6w violation: forbidden max_tokens=2000 literal "
+            "found in app/services/suggestions_service.py:\n"
+            + "\n".join(violations)
+        )
