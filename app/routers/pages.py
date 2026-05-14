@@ -156,6 +156,22 @@ async def read_chat_retired() -> HTMLResponse:
     )
 
 
+@router.get("/discover", response_class=HTMLResponse)
+async def read_discover_placeholder(request: Request):
+    """Phase 7 (CR-04 fix) — /discover placeholder until Phase 8.
+
+    The mobile bottom tab bar (partials/bottom_tab_bar.html) renders a
+    "Discover" entry; this route exists so taps land on a 200 instead of
+    a 404 until Phase 8 ships Lidarr-driven artist discovery.
+    """
+    templates = get_templates()
+    return templates.TemplateResponse(
+        request,
+        "pages/discover_placeholder.html",
+        {"active_page": "discover"},
+    )
+
+
 @router.get("/debug", response_class=HTMLResponse)
 async def read_debug_index(request: Request):
     """DEBUG-05 — index page linking to all debug surfaces.

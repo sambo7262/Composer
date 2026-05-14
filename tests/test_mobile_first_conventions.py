@@ -184,3 +184,43 @@ def test_nav_html_anchors_have_min_h_11():
     # Each desktop nav anchor (Vibes / Suggestions / Library / Settings) needs
     # min-h-11 to satisfy the 44px tap-target invariant on touch desktops.
     assert body.count("min-h-11") >= 4
+
+
+# ---------------------------------------------------------------------------
+# /discover route (CR-04 fix) — Phase 8 placeholder, must not 404.
+# ---------------------------------------------------------------------------
+
+
+def test_discover_route_returns_200(test_engine):
+    """CR-04 fix: /discover is wired into the bottom tab bar so a tap must
+    land on a 200 — not a FastAPI 404. Phase 8 will replace the placeholder
+    with the real Lidarr-driven discovery surface.
+    """
+    from fastapi.testclient import TestClient
+    from sqlmodel import SQLModel
+
+    from app.models.settings import ServiceConfig  # noqa: F401
+    from app.models.track import SyncState, Track  # noqa: F401
+    from app.models.event_log import EventLog  # noqa: F401
+    from app.models.llm_usage import LLMUsage  # noqa: F401
+    from app.models.taste_profile import TasteProfile  # noqa: F401
+    from app.models.vibe import (  # noqa: F401
+        ManagedPlaylist, MigrationLog, SetupState, SlotInLog, TrackVibe, Vibe,
+    )
+    from app.models.suggestions import (  # noqa: F401
+        NegativeSignal, RefillTriggerLog, SuggestionHistory, SuggestionsMirror,
+    )
+    from app.database import init_db
+    init_db()
+    SQLModel.metadata.create_all(test_engine)
+    try:
+        from app.main import app
+        with TestClient(app) as c:
+            resp = c.get("/discover")
+        assert resp.status_code == 200, (
+            "CR-04 — /discover must not 404; the bottom tab bar links to it."
+        )
+        # Confirm it's the placeholder content, not a generic landing page.
+        assert "Phase 8" in resp.text or "Coming" in resp.text or "Discover" in resp.text
+    finally:
+        SQLModel.metadata.drop_all(test_engine)

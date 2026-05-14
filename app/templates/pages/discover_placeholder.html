@@ -1,0 +1,21 @@
+{# Phase 7 (CR-04 fix) — /discover placeholder.
+   Lidarr-driven artist discovery lands in Phase 8 (see ROADMAP). The bottom
+   tab bar already renders a "Discover" entry; this page exists so taps land
+   on a real 200 response instead of a 404. Plain HTML, no JS, no HTMX swaps. #}
+{% extends "base.html" %}
+{% set active_page = "discover" %}
+{% block title %}Discover · Composer{% endblock %}
+{% block content %}
+  <div class="pt-2 pb-4">
+    <h1 class="text-[22px] font-semibold text-text-primary mb-2">
+      Discover
+    </h1>
+    <p class="text-text-secondary text-[14px] mb-3">
+      Coming in Phase 8 — Lidarr-driven artist discovery.
+    </p>
+    <p class="text-text-muted text-[13px]">
+      We'll surface new artists adjacent to your taste profile and let you
+      add them to Lidarr without leaving Composer.
+    </p>
+  </div>
+{% endblock %}
