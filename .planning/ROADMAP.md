@@ -35,6 +35,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 6.1: Vibe Wizard Foundations: server-led clustering + user-led vibe input** (INSERTED) — Server-led membership from k-means labels + user-typed vibe names replace LLM-led seed-picking; ensures all rated tracks land in a vibe playlist (completed 2026-05-13)
 - [x] **Phase 6.2: LLM-Direct Vibe Assignment** (INSERTED) — Replace k-means membership decisions with LLM-direct zero-shot assignment per user-typed vibe; two-pass design (confidence-graded assign + boundary peer-review); audio features become a tiebreaker for obscure tracks (completed 2026-05-12)
 - [ ] **Phase 7: Suggestions Queue + v1 Chat Retirement** — Continuous Composer · Suggestions playlist drains as the user listens and refills with taste-aware picks; v1 mood-chat retires; vibes home becomes the new landing page
+- [ ] **Phase 7.1: Suggestions Cost Architecture: SQL refill + weekly discovery** (INSERTED) — Replace per-event LLM refill (~$0.05/play, trips $0.42 daily breaker after 8 plays) with SQL hot path against Phase 6 TrackVibe scores + one weekly LLM "discovery" call; drops steady-state cost from ~$150/mo to ~$0.20/mo
 - [ ] **Phase 8: Lidarr Discovery + Polish** — Taste-aware artist discovery with one-click add to Lidarr; auto-ingest of new arrivals; legacy screens responsive on mobile
 - [ ] **Phase 9 (OPTIONAL): Feed the Engine** — Bulk rating, play-rated nudge, Surprise Me; cuttable without affecting any other phase
 
@@ -233,6 +234,30 @@ Plans:
   - **LLM observability with first ranking call** (OPS-05): structured log per call (`{model, input_tokens, cache_creation_input_tokens, cache_read_input_tokens, output_tokens, cost_estimate_usd, reason}`); daily aggregate exposed in settings.
   - **Debug surface for suggestions** (DEBUG-03): `/debug/suggestions` page shows current queue contents (track + vibe + score + rationale), last 20 refill triggers (event source, candidates evaluated, picks made, latency), recent skip-tracking signals, current circuit-breaker state, and last 20 LLM calls (model, cache hit/miss, tokens, cost, prompt summary). Highest-leverage debug page since suggestions is where most user "why did it pick that?" questions land.
   - **Debug index linked from settings** (DEBUG-05): `/debug` index page lists all debug surfaces (`/debug/events`, `/debug/vibes`, `/debug/suggestions`, `/debug/discovery` once it lands). Settings page footer links to `/debug` so the user can find diagnostics without remembering URLs. All debug pages render plain HTML (no JS-only content) so output is copy-pasteable.
+
+### Phase 07.1: Suggestions Cost Architecture: SQL refill + weekly discovery (INSERTED)
+
+**Goal:** Replace Phase 7's per-event LLM refill (which costs ~$0.05/play and trips the $0.42 daily breaker after ~8 plays — confirmed by NAS UAT 2026-05-14, captured in `.planning/notes/phase-07-followup-cost-architecture.md`) with a hybrid: (1) SQL-driven refill in the hot path against Phase 6's pre-computed `TrackVibe.distance` (free, instant on every drain), and (2) a once-weekly LLM "discovery" call that injects ~5 tracks the user owns but rarely plays (taste-aware variety). Drops steady-state cost from ~$150/mo to ~$0.20/mo while preserving Phase 7's AI-curated property.
+
+**Requirements**: NEW: SUGG-12 (SQL refill from TrackVibe), SUGG-13 (weekly discovery LLM call), SUGG-14 (defensive max_tokens sizing); REWORKS: SUGG-04 (the "LLM ranks shortlist on every refill" semantic is replaced)
+
+**Depends on:** Phase 7 (SuggestionsMirror + handle_track_played drain + Composer · Suggestions playlist materialization), Phase 6.2 (TrackVibe.distance computed for every track)
+
+**Plans:** TBD (set after /gsd-plan-phase 7.1)
+
+**Success Criteria** (what must be TRUE):
+1. Refill on every play uses ZERO LLM tokens (SQL query against `TrackVibe.distance` ordered ascending, filtered by recency)
+2. Weekly LLM discovery call fires on a configurable schedule (default Sunday 03:00 UTC), injecting ~5 tracks unplayed in 90+ days that fit the user's current taste profile
+3. Daily LLM cost for steady-state listening (no rating changes, no library updates): $0.00
+4. Mirror is repopulated to target (default 30) within seconds of any drain
+5. Phase 7's per-event `refill_suggestions_queue` is removed or feature-flagged off by default; the LLM-led path lives only in the weekly discovery call
+6. New constants pinned via regression tests; the truncation pitfall from quick task 260514-e6w cannot recur (defensive `max_tokens` sizing + `stop_reason=max_tokens` retry guard)
+
+**Key Concerns** (pitfalls to bake in):
+- **Don't reintroduce per-event LLM cost** — the entire point. Refill hot path stays SQL-only; LLM never fires from `handle_track_played` directly.
+- **Defensive max_tokens** — quick task 260514-e6w bumped to 8000 as a temporary fix; the discovery call should size generously and add a `stop_reason=max_tokens` retry that doubles budget rather than returning truncated JSON to pydantic.
+- **Caching becomes moot** — weekly calls always cold-start the cache. Don't waste effort on D-07's longer preamble.
+- **Migration of in-flight state** — existing `MigrationLog` rows from Phase 7 + populated `SuggestionsMirror` data must remain valid; the SQL refill takes over draining the existing mirror seamlessly.
 
 ### Phase 8: Lidarr Discovery + Polish
 **Goal**: User can discover new artists matching their taste and one-click add to Lidarr; new arrivals from Lidarr auto-ingest into Essentia analysis + vibe scoring; legacy v1 screens (settings, library) are responsive on mobile portrait
