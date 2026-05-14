@@ -6,18 +6,18 @@ sync_service.py / analysis_service.py / vibe_service.py).
 Public API:
   - bootstrap_suggestions_queue() — register the Composer · Suggestions
     ManagedPlaylist row. Idempotent: if the row already exists, returns
-    silently. PLAN 01 DEVIATION: the Plex playlist itself is created during
-    Plan 02's first refill (when there are tracks to seed it with), because
-    PlexAPI rejects createPlaylist calls with an empty items list. Plan 01
-    registers a ManagedPlaylist row with ``plex_rating_key=""`` sentinel;
-    Plan 02 detects the sentinel, creates the Plex playlist, and updates
-    the row.
+    silently. The Plex playlist itself is materialized on first non-empty
+    refill (because PlexAPI rejects createPlaylist calls with an empty
+    items list). Bootstrap registers a ManagedPlaylist row with
+    ``plex_rating_key=""`` sentinel; refill detects the sentinel and calls
+    :func:`_materialize_suggestions_plex_playlist` to create the Plex
+    playlist and update the row (CR-01).
   - drain_track_from_mirror(rating_key) — remove the track from
     SuggestionsMirror IF it is currently a member. Returns True if removed.
-  - maybe_schedule_refill(target=30) — if mirror size < target, write an
-    EventLog row with event_type='suggestions_refill_pending' for Plan 02 to
-    consume. Returns the deficit (target - current_size); 0 means no
-    refill needed.
+  - maybe_schedule_refill(target=30) — if mirror size < target, directly
+    await :func:`refill_suggestions_queue` (Plan 02 W4 replaced Plan 01's
+    EventLog-marker pattern with an in-line LLM-ranking refill). Returns
+    the deficit (target - current_size); 0 means no refill needed.
   - run_phase_07_suggestions_bootstrap() — lifespan migration entry point;
     gated by MigrationLog(phase_id='7.0-suggestions-bootstrap').
   - get_state() — return the module-level SuggestionsServiceStatus dataclass.
@@ -130,37 +130,6 @@ def _count_mirror_rows_sync() -> int:
             ).scalar()
             or 0
         )
-
-
-def _insert_refill_pending_marker_sync(deficit: int) -> None:
-    """Plan 01: write a marker row to EventLog so Plan 02 can pick it up.
-    Plan 02 replaces this marker with a direct refill call; this keeps
-    Plan 01 isolated from any LLM call.
-
-    Uses INSERT OR IGNORE + the same 5-second-bucket dedupe pattern as
-    Phase 5 D-07 so tight-loop callers collapse via UNIQUE(dedupe_key).
-    """
-    now = datetime.now(timezone.utc)
-    bucket = int(now.timestamp() // 5)
-    dedupe_key = f"suggestions_refill_pending|{bucket}"
-    with Session(get_engine()) as session:
-        session.execute(
-            text(
-                """
-                INSERT OR IGNORE INTO eventlog
-                    (source, event_type, plex_rating_key, dedupe_key,
-                     received_at, raw_payload)
-                VALUES ('manual', 'suggestions_refill_pending', NULL,
-                        :dk, :ra, :rp)
-                """
-            ),
-            {
-                "dk": dedupe_key,
-                "ra": now.isoformat(),
-                "rp": f'{{"deficit": {deficit}}}',
-            },
-        )
-        session.commit()
 
 
 def _update_suggestions_managed_playlist_rk_sync(
