@@ -666,10 +666,10 @@ async def recluster_commit(
                                 plex_url, plex_token,
                                 playlist_name, member_keys, new_vibe_id,
                             )
-                            await asyncio.to_thread(
-                                _link_managed_to_vibe_sync,
-                                new_pl_key, new_vibe_id,
-                            )
+                            # WR-06 fix: create_playlist already inserted the
+                            # ManagedPlaylist row with vibe_id; the previous
+                            # _link_managed_to_vibe_sync follow-up was a
+                            # no-op write — dropped.
                             await asyncio.to_thread(
                                 _insert_trackvibes_sync,
                                 new_vibe_id, member_keys,
@@ -742,10 +742,10 @@ async def recluster_commit(
                                 plex_url, plex_token,
                                 playlist_name, member_keys, new_vibe_id,
                             )
-                            await asyncio.to_thread(
-                                _link_managed_to_vibe_sync,
-                                new_pl_key, new_vibe_id,
-                            )
+                            # WR-06 fix: create_playlist already inserted the
+                            # ManagedPlaylist row with vibe_id; the previous
+                            # _link_managed_to_vibe_sync follow-up was a
+                            # no-op write — dropped.
                             await asyncio.to_thread(
                                 _insert_trackvibes_sync,
                                 new_vibe_id, member_keys,
@@ -787,10 +787,9 @@ async def recluster_commit(
                             plex_url, plex_token,
                             playlist_name, member_keys, new_vibe_id,
                         )
-                        await asyncio.to_thread(
-                            _link_managed_to_vibe_sync,
-                            new_pl_key, new_vibe_id,
-                        )
+                        # WR-06 fix: create_playlist already inserted the
+                        # ManagedPlaylist row with vibe_id; redundant
+                        # _link_managed_to_vibe_sync call dropped.
                         await asyncio.to_thread(
                             _insert_trackvibes_sync,
                             new_vibe_id, member_keys,

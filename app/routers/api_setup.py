@@ -610,11 +610,13 @@ async def finalize(request: Request, session: Session = Depends(get_session)):
             async with sema:
                 vibe_id = await asyncio.to_thread(_insert_vibe_sync, prop)
                 playlist_name = f"Composer · {prop.name}"
+                # WR-06 fix: create_playlist already inserts the
+                # ManagedPlaylist row WITH vibe_id baked in (see
+                # plex_playlist_service._insert_managed_playlist_sync).
+                # The previous follow-up _link_managed_to_vibe_sync call
+                # was a guaranteed no-op write — dropped.
                 playlist_rk = await create_playlist(
                     plex_url, plex_token, playlist_name, member_keys, vibe_id
-                )
-                await asyncio.to_thread(
-                    _link_managed_to_vibe_sync, playlist_rk, vibe_id
                 )
                 await asyncio.to_thread(
                     _insert_trackvibes_sync, vibe_id, member_keys
