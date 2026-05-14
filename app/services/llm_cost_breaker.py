@@ -34,6 +34,13 @@ BURST_WINDOW_SECONDS = 60      # SUGG-11
 BURST_LIMIT = 5                # SUGG-11
 DEBOUNCE_SECONDS = 30          # D-03 (per CONTEXT.md "no refill within 30s")
 
+# WR-11 fix — SUGG-11 soft budget displayed by the cost meter card. Hard
+# enforcement is via DAILY_QUOTA (call count); this is the dollar-amount we
+# render on the Settings page so the operator sees spend vs. expectation.
+# Keeping it as a single named constant means a future budget bump is a
+# single-file change instead of editing a Jinja template literal.
+DAILY_COST_BUDGET_USD = 0.42
+
 
 class CostBreakerTrippedError(Exception):
     """Raised when a refill call exceeds daily/burst/debounce thresholds.

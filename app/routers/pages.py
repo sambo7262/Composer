@@ -315,7 +315,9 @@ async def settings_page(request: Request, session: Session = Depends(get_session
 
     from app.models.llm_usage import LLMUsage
     from app.services.llm_cost_breaker import (
-        DAILY_QUOTA, get_state as breaker_state,
+        DAILY_COST_BUDGET_USD,
+        DAILY_QUOTA,
+        get_state as breaker_state,
     )
 
     midnight_iso = _dt.now(_tz.utc).replace(
@@ -365,6 +367,7 @@ async def settings_page(request: Request, session: Session = Depends(get_session
             "today_calls": today_calls,
             "today_cost_usd": today_cost_usd,
             "daily_quota": DAILY_QUOTA,
+            "daily_budget_usd": DAILY_COST_BUDGET_USD,
             "cache_hit_pct": cache_hit_pct,
             "breaker_paused": breaker_paused,
             "breaker_reason": breaker_reason,

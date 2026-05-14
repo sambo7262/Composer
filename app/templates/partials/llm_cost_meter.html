@@ -7,7 +7,7 @@
   <p class="text-[14px] text-text-secondary">
     {{ today_calls }} call{% if today_calls != 1 %}s{% endif %},
     ${{ "%.2f"|format(today_cost_usd) }} /
-    ${{ "%.2f"|format(0.42) }} budgeted
+    ${{ "%.2f"|format(daily_budget_usd if daily_budget_usd is defined else 0.42) }} budgeted
     ({{ today_calls }}/{{ daily_quota }} daily quota)
   </p>
   {% if cache_hit_pct is not none %}
