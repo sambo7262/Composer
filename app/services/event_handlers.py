@@ -200,7 +200,9 @@ async def handle_rating_changed(event: RatingChangedEvent) -> None:
 
 
 async def handle_track_played(event: TrackPlayedEvent) -> None:
-    """RATE-04: increment Track.view_count + update Track.last_viewed_at.
+    """RATE-04 (Phase 5): increment Track.view_count + update Track.last_viewed_at.
+    SUGG-03 (Phase 7): if the played track is in SuggestionsMirror, drain it
+    and schedule a refill via the threshold gate.
 
     Reads the lastViewedAt timestamp from the event payload itself rather than
     re-fetching from Plex (Pitfall 7) — webhook delivers a snapshot we trust.
@@ -211,6 +213,27 @@ async def handle_track_played(event: TrackPlayedEvent) -> None:
     await asyncio.to_thread(
         _update_track_play_sync, event.plex_rating_key, event.last_viewed_at
     )
+
+    # Phase 7 (SUGG-03) — best-effort drain hook. Mirrors the slot_track hook
+    # on handle_rating_changed (Phase 6 D-15): lazy import to avoid
+    # circular-dep risk via suggestions_service -> ... ; try/except so the
+    # primary rating-update path stays robust even if the suggestions hot
+    # path is temporarily wedged. Re-import on every call so tests can
+    # monkeypatch ``suggestions_service.drain_track_from_mirror`` via
+    # attribute assignment.
+    try:
+        from app.services import suggestions_service
+
+        removed = await suggestions_service.drain_track_from_mirror(
+            event.plex_rating_key
+        )
+        if removed:
+            await suggestions_service.maybe_schedule_refill()
+    except Exception:
+        logger.exception(
+            "Suggestions drain/refill hook failed; "
+            "TrackPlayed view_count update succeeded"
+        )
 
 
 async def handle_library_added(event: LibraryAddedEvent) -> None:

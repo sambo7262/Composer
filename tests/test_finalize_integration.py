@@ -223,7 +223,12 @@ def test_finalize_integration_creates_three_vibes_and_three_playlists(
         for v in vibes:
             assert v.is_active is True
             assert v.created_at
-        managed = session.exec(select(ManagedPlaylist)).all()
+        # Phase 7 Plan 01: filter to kind='vibe' since finalize now also
+        # calls bootstrap_suggestions_queue which may add a
+        # ManagedPlaylist(kind='suggestions') row.
+        managed = session.exec(
+            select(ManagedPlaylist).where(ManagedPlaylist.kind == "vibe")
+        ).all()
         assert len(managed) == 3
         for mp in managed:
             assert mp.kind == "vibe"
@@ -294,8 +299,13 @@ def test_finalize_integration_handles_partial_failure(
         # Two vibes created (3rd raised before INSERT chain completed).
         # Note: The 3rd Vibe row IS created (we INSERT vibe first, then create_playlist).
         # So we expect exactly 3 Vibe rows but only 2 ManagedPlaylist rows.
+        # Phase 7 Plan 01: lifespan migration runs on TestClient startup and
+        # inserts a ManagedPlaylist(kind='suggestions') row — filter the
+        # assertion to kind='vibe' so the Phase 6 contract is unaffected.
         vibes = session.exec(select(Vibe)).all()
-        managed = session.exec(select(ManagedPlaylist)).all()
+        managed = session.exec(
+            select(ManagedPlaylist).where(ManagedPlaylist.kind == "vibe")
+        ).all()
         assert len(managed) == 2
         # The 3rd Vibe row may exist (we create Vibe before create_playlist).
         # Acceptable invariants: at least 2 Vibe rows + exactly 2 ManagedPlaylist rows.

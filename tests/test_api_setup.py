@@ -451,9 +451,19 @@ def test_post_setup_finalize_creates_vibes_and_playlists(
     with Session(test_engine) as session:
         vibes = session.exec(select(Vibe)).all()
         assert len(vibes) == 3
-        managed = session.exec(select(ManagedPlaylist)).all()
+        # Phase 7 Plan 01: finalize also calls bootstrap_suggestions_queue,
+        # which may add a ManagedPlaylist(kind='suggestions') row on Phase 7
+        # test fixtures that register SuggestionsMirror. This test runs
+        # under client_with_phase6 which does NOT register SuggestionsMirror
+        # but the lazy-imported bootstrap WILL still register a kind=
+        # 'suggestions' ManagedPlaylist row regardless (the ManagedPlaylist
+        # table is registered). Scope the assertion to kind='vibe' rows so
+        # the Phase 6 contract is unaffected.
+        managed = session.exec(
+            select(ManagedPlaylist).where(ManagedPlaylist.kind == "vibe")
+        ).all()
         assert len(managed) == 3
-        # Each ManagedPlaylist should have a vibe_id linked.
+        # Each ManagedPlaylist(kind='vibe') should have a vibe_id linked.
         for mp in managed:
             assert mp.vibe_id is not None
         track_vibes = session.exec(select(TrackVibe)).all()

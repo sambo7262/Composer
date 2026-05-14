@@ -652,6 +652,28 @@ async def finalize(request: Request, session: Session = Depends(get_session)):
                 "user can recover via /debug/vibes reslot button"
             )
 
+        # Phase 7 D-01 — wizard finalize is ONE of two bootstrap callers
+        # (the other is the run_phase_07_suggestions_bootstrap lifespan
+        # migration in app/main.py). Best-effort: if Plex is briefly
+        # unreachable or the suggestions_service is wedged, the lifespan
+        # migration retries on next restart so the user is never blocked
+        # from completing the wizard. We import the suggestions_service
+        # module here (rather than the bound function) so tests can
+        # monkeypatch the attribute on the module and have it observed
+        # at await time.
+        try:
+            from app.services import suggestions_service
+
+            await suggestions_service.bootstrap_suggestions_queue()
+            logger.info(
+                "Phase 7 finalize: bootstrap_suggestions_queue complete"
+            )
+        except Exception:  # noqa: BLE001 — never break finalize on bootstrap
+            logger.exception(
+                "Phase 7 finalize: bootstrap_suggestions_queue failed; "
+                "lifespan migration will retry on next restart"
+            )
+
         state.step = "done"
         state.completed_at = _now_iso()
         session.add(state)
