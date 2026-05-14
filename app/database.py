@@ -189,6 +189,8 @@ def init_db() -> None:
         TrackVibe,
         Vibe,
     )
+    # Phase 7 Plan 01 (SUGG-02) — register SuggestionsMirror before create_all.
+    from app.models.suggestions import SuggestionsMirror  # noqa: F401
 
     engine = get_engine()
     # create_all MUST run before _migrate_add_columns so the eventlog table exists

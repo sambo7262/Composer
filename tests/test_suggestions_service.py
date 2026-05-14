@@ -90,12 +90,18 @@ class TestSuggestionsMirrorTable:
 
         # PRAGMA table_info returns (cid, name, type, notnull, dflt_value, pk)
         by_name = {r[1]: r[2].upper() for r in rows}
-        assert "track_id" in by_name and by_name["track_id"] == "INTEGER"
-        assert "position" in by_name and by_name["position"] == "INTEGER"
-        assert "added_at" in by_name and by_name["added_at"] == "TEXT"
-        assert "rationale" in by_name and by_name["rationale"] == "TEXT"
-        assert "vibe_id" in by_name and by_name["vibe_id"] == "INTEGER"
-        assert "score" in by_name and by_name["score"] in {"REAL", "FLOAT"}
+        # SQLite stores SQLModel ``str`` columns as VARCHAR (no length affinity
+        # distinction from TEXT); SQLModel ``Optional[float]`` lands as FLOAT
+        # which SQLite treats as REAL via type affinity.
+        TEXT_TYPES = {"TEXT", "VARCHAR"}
+        INT_TYPES = {"INTEGER", "INT"}
+        REAL_TYPES = {"REAL", "FLOAT", "DOUBLE"}
+        assert "track_id" in by_name and by_name["track_id"] in INT_TYPES
+        assert "position" in by_name and by_name["position"] in INT_TYPES
+        assert "added_at" in by_name and by_name["added_at"] in TEXT_TYPES
+        assert "rationale" in by_name and by_name["rationale"] in TEXT_TYPES
+        assert "vibe_id" in by_name and by_name["vibe_id"] in INT_TYPES
+        assert "score" in by_name and by_name["score"] in REAL_TYPES
 
     def test_suggestions_mirror_track_id_unique(self, db_phase7):
         """UNIQUE(track_id) — inserting two rows with the same track_id raises
