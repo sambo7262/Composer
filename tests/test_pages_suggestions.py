@@ -91,8 +91,8 @@ def _seed_vibe(session, *, name="V1", description=None):
 
 
 def _seed_plex_configured(session):
-    from app.services.settings_service import upsert_service
-    upsert_service(
+    from app.services.settings_service import save_setting
+    save_setting(
         session, service_name="plex",
         url="http://plex.local:32400",
         credential="x" * 20,
@@ -329,12 +329,13 @@ class TestVibesHome:
         with Session(test_engine) as s:
             _seed_plex_configured(s)
             v = _seed_vibe(s, name="Full")
+            vibe_id = v.id  # capture before further commits expire v
             from app.models.vibe import TrackVibe
             now = datetime.now(timezone.utc).isoformat()
             for i in range(30):
                 t = _seed_track(s, plex_rating_key=f"rk-{i}", title=f"T{i}")
                 s.add(TrackVibe(
-                    track_id=t.id, vibe_id=v.id, distance=0.1,
+                    track_id=t.id, vibe_id=vibe_id, distance=0.1,
                     assigned_at=now, assigned_by="cluster",
                 ))
             s.commit()
@@ -343,4 +344,4 @@ class TestVibesHome:
         # The Full vibe card should NOT include the Find candidates link.
         # We assert the substring is not present anywhere on the page (no
         # other vibe is sparse since only one was seeded).
-        assert f'hx-post="/api/vibes/{v.id}/find-candidates"' not in body
+        assert f'hx-post="/api/vibes/{vibe_id}/find-candidates"' not in body

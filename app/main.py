@@ -14,12 +14,13 @@ from fastapi.templating import Jinja2Templates
 from app.database import init_db
 from app.routers import (
     api_analysis,
-    api_chat,
+    api_chat,  # Phase 7 — retired (UI-06): every endpoint returns 404 for an explicit signal.
     api_health,
     api_library,
     api_rating_sync,
     api_settings,
     api_setup,  # Phase 6
+    api_suggestions,  # Phase 7 (Plan 03) — POST /api/suggestions/{rk}/dismiss
     api_sync,
     api_vibes,  # Phase 6 Plan 04
     api_webhooks,
@@ -284,6 +285,7 @@ app.include_router(api_webhooks.router)  # Phase 5
 app.include_router(api_rating_sync.router)  # Phase 5
 app.include_router(api_setup.router)  # Phase 6 — MUST be before pages.router
 app.include_router(api_vibes.router)  # Phase 6 Plan 04 — MUST be before pages.router
+app.include_router(api_suggestions.router)  # Phase 7 Plan 03 (UI-06 / D-10)
 
 # Register feature_chip_text helper as a Jinja2 global so templates can call it.
 from app.services.vibe_helpers import feature_chip_text  # noqa: E402

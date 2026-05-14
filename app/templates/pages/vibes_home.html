@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% set active_page = "vibes" %}
+{% block title %}Vibes · Composer{% endblock %}
+{% block content %}
+  <div class="pt-2 pb-4">
+    <h1 class="text-[22px] font-semibold text-text-primary mb-3">
+      Your vibes
+    </h1>
+    {% if vibes|length == 0 %}
+      <p class="text-text-secondary">
+        No vibes yet.
+        <a href="/setup" class="text-accent underline min-h-11 inline-flex items-center">
+          Run the setup wizard
+        </a>.
+      </p>
+    {% else %}
+      <ul class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {% for v in vibes %}
+          {% include "partials/vibe_card.html" %}
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </div>
+{% endblock %}
