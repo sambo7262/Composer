@@ -215,7 +215,11 @@ Plans:
   3. Mobile portrait layout at 375px wide: bottom tab bar (Vibes / Suggestions / Discover / Settings) is visible above the iOS toolbar (uses `h-dvh` + `safe-area-inset-bottom`); every tappable element measures ≥44px; no hover-only states block information access
   4. Settings page shows the current daily LLM cost meter ("Anthropic spend today: 7 calls, $0.02 / $0.42 budgeted") with `cache_read_input_tokens` visibly accumulating across calls (caching is hitting)
   5. A misconfigured refresh trigger (or any refill loop firing >5 times in 60s) trips the LLM cost circuit breaker; the UI surfaces "Suggestions paused — cost limit hit" and no further LLM ranking calls fire until the next event window
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 07-01-PLAN.md — Queue foundation: SuggestionsMirror model, bootstrap_suggestions_queue (dual-caller wizard finalize + lifespan migration), handle_track_played drain branch, extend AST PlexAPI test
+- [ ] 07-02-PLAN.md — LLM ranking pipeline + cost circuit breaker (same-commit per Pitfall 11) + skip-tracking (SuggestionHistory / NegativeSignal / RefillTriggerLog) + settings cost meter + SUGG-10 vibe coverage CTA
+- [ ] 07-03-PLAN.md — Mobile-first base shell (bottom tab bar, h-dvh, safe-area-inset, 44px targets) + /suggestions page + vibes home + v1 chat retirement + /debug index + /debug/suggestions
 **UI hint**: yes
 **Key Concerns** (pitfalls to bake in):
   - **LLM cost circuit breaker — FIRST commit, not last** (Pitfall 11, SUGG-11): daily quota (50 calls), burst limit (5 calls / 60s), per-event debounce (60s cooldown per `(track_id, event_type)`). All four (counter + dashboard + breaker + debounce) ship in the same commit as the first ranking call. Adding them after a runaway means refunding spend.
