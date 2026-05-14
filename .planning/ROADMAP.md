@@ -217,7 +217,7 @@ Plans:
   5. A misconfigured refresh trigger (or any refill loop firing >5 times in 60s) trips the LLM cost circuit breaker; the UI surfaces "Suggestions paused — cost limit hit" and no further LLM ranking calls fire until the next event window
 **Plans:** 3 plans
 Plans:
-- [ ] 07-01-PLAN.md — Queue foundation: SuggestionsMirror model, bootstrap_suggestions_queue (dual-caller wizard finalize + lifespan migration), handle_track_played drain branch, extend AST PlexAPI test
+- [x] 07-01-PLAN.md — Queue foundation: SuggestionsMirror model, bootstrap_suggestions_queue (dual-caller wizard finalize + lifespan migration), handle_track_played drain branch, extend AST PlexAPI test
 - [ ] 07-02-PLAN.md — LLM ranking pipeline + cost circuit breaker (same-commit per Pitfall 11) + skip-tracking (SuggestionHistory / NegativeSignal / RefillTriggerLog) + settings cost meter + SUGG-10 vibe coverage CTA
 - [ ] 07-03-PLAN.md — Mobile-first base shell (bottom tab bar, h-dvh, safe-area-inset, 44px targets) + /suggestions page + vibes home + v1 chat retirement + /debug index + /debug/suggestions
 **UI hint**: yes
