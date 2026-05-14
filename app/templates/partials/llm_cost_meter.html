@@ -1,0 +1,29 @@
+{# Phase 7 Plan 02 (OPS-05) — Anthropic spend today + cache hit % card. #}
+<section id="llm-cost-meter"
+         class="mt-6 rounded-lg border border-border bg-surface-card p-4">
+  <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+    Anthropic spend today
+  </h2>
+  <p class="text-[14px] text-text-secondary">
+    {{ today_calls }} call{% if today_calls != 1 %}s{% endif %},
+    ${{ "%.2f"|format(today_cost_usd) }} /
+    ${{ "%.2f"|format(0.42) }} budgeted
+    ({{ today_calls }}/{{ daily_quota }} daily quota)
+  </p>
+  {% if cache_hit_pct is not none %}
+    <p class="text-[13px] text-text-secondary mt-1">
+      Cache hit: {{ cache_hit_pct }}%
+      {% if cache_hit_pct == 0 %}
+        <span class="text-warning ml-1">— caching not engaged
+        (system prompt may be below 2048 tokens)</span>
+      {% endif %}
+    </p>
+  {% else %}
+    <p class="text-[13px] text-text-muted mt-1">Cache hit: —</p>
+  {% endif %}
+  {% if breaker_paused %}
+    <p class="mt-2 text-[14px] text-error font-medium">
+      Suggestions paused — cost limit hit ({{ breaker_reason }})
+    </p>
+  {% endif %}
+</section>

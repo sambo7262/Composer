@@ -973,9 +973,17 @@ async def last_llm_call_progress(
     Phase 5 convention: tight except clauses only — the try/except below
     is scoped to datetime.fromisoformat for malformed legacy rows.
     """
+    # Phase 7 Plan 02 (OPS-05) — extend the LIKE clause to also match
+    # ``suggestions_%`` purposes so the polling card surfaces refill calls
+    # alongside vibe_clustering / vibe_assign calls.
+    from sqlalchemy import or_
+
     row = session.exec(
         select(LLMUsage)
-        .where(LLMUsage.purpose.like("vibe_%"))  # type: ignore[union-attr]
+        .where(or_(
+            LLMUsage.purpose.like("vibe_%"),  # type: ignore[union-attr]
+            LLMUsage.purpose.like("suggestions_%"),  # type: ignore[union-attr]
+        ))
         .order_by(LLMUsage.id.desc())  # type: ignore[union-attr]
     ).first()
 
@@ -1003,6 +1011,44 @@ async def last_llm_call_progress(
             "called_at": row.called_at,
             "elapsed_seconds": elapsed,
         }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Plan 02 (SUGG-10) — targeted vibe coverage CTA endpoint.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{vibe_id}/find-candidates", response_class=HTMLResponse)
+async def find_vibe_candidates(
+    request: Request,
+    vibe_id: int,
+    session: Session = Depends(get_session),
+):
+    """SUGG-10 — targeted refill restricted to ONE vibe (CTA only).
+
+    The CTA only fires on explicit user tap (no automatic call) per
+    CONTEXT.md "Claude's Discretion". Returns the existing
+    ``llm_progress_card.html`` partial; the polling endpoint
+    ``/api/vibes/last-llm-call/progress`` (extended in Plan 02 to also
+    match ``suggestions_%`` purposes) surfaces progress.
+    """
+    from app.services import suggestions_service
+
+    vibe = session.exec(select(Vibe).where(Vibe.id == vibe_id)).first()
+    if vibe is None:
+        return HTMLResponse(status_code=404, content="Vibe not found")
+
+    # Targeted refill (W2 single-vibe partition); micro-batch size 15 per
+    # CONTEXT.md "Claude's Discretion" (smaller than the whole-queue 30).
+    await suggestions_service.refill_suggestions_for_vibe(
+        vibe_id, target=15,
+    )
+
+    from app.routers.pages import get_templates
+    templates = get_templates()
+    return templates.TemplateResponse(
+        request, "partials/llm_progress_card.html", {},
     )
 
 
