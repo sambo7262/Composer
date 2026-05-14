@@ -252,11 +252,19 @@ async def handle_track_played(event: TrackPlayedEvent) -> None:
     try:
         from app.services import suggestions_service
 
-        removed = await suggestions_service.drain_track_from_mirror(
+        # CDL hotfix (260514): drop the `if removed:` gate. The original gate
+        # caused a bootstrap deadlock — on a fresh deploy SuggestionsMirror is
+        # empty, drain returns False, so refill never fired and the
+        # Composer · Suggestions Plex playlist (created inside
+        # refill_suggestions_queue when mp.plex_rating_key == '') was never
+        # materialized. The deficit check inside maybe_schedule_refill
+        # (suggestions_service.py:362-364) preserves the steady-state
+        # "no churn" intent at the correct layer: deficit=0 → short-circuit;
+        # deficit>0 → refill fires.
+        await suggestions_service.drain_track_from_mirror(
             event.plex_rating_key
         )
-        if removed:
-            await suggestions_service.maybe_schedule_refill()
+        await suggestions_service.maybe_schedule_refill()
     except Exception:
         logger.exception(
             "Suggestions drain/refill hook failed; "

@@ -556,10 +556,13 @@ class TestHandleTrackPlayedSuggestionsDrain:
     def test_no_op_when_track_not_in_mirror_revised(
         self, db_with_phase7
     ):
-        """Plan 02 W4 revision: confirmed identity preserve. When the played
-        track is NOT in the mirror, ``refill_suggestions_queue`` must NOT be
-        awaited (the drain returned False → no in-line refill). view_count++
-        still happens.
+        """CDL hotfix (260514): handle_track_played now ALWAYS awaits
+        maybe_schedule_refill (the if-removed gate was dropped to fix the
+        bootstrap deadlock). When the mirror is at target=30, the deficit guard
+        inside maybe_schedule_refill (suggestions_service.py:362-364)
+        short-circuits before refill_suggestions_queue is reached — so the mock
+        here is correctly NOT called. view_count++ still happens. This preserves
+        the original "no churn in steady state" intent at the correct layer.
         """
         from datetime import datetime, timezone
         from unittest.mock import AsyncMock
@@ -625,9 +628,76 @@ class TestHandleTrackPlayedSuggestionsDrain:
             ).first()
             assert outsider.view_count == 1
 
-        # Drain returned False → refill is NOT awaited. Plan 02 wired
-        # ``refill_suggestions_queue`` to fire only when drain returned True.
+        # Mirror at target → deficit=0 → maybe_schedule_refill short-circuits
+        # before reaching refill_suggestions_queue. The mock is never invoked.
+        # (Pre-CDL-hotfix this was guaranteed by `if removed:` in event_handlers;
+        # post-hotfix it is guaranteed by the deficit guard one layer deeper.)
         mock_refill.assert_not_called()
+
+    def test_empty_mirror_track_not_in_mirror_still_schedules_refill(
+        self, db_with_phase7
+    ):
+        """Bootstrap regression (CDL hotfix 260514): when SuggestionsMirror
+        is empty, handle_track_played MUST schedule a refill even if the
+        played track is not a mirror member, so the Composer · Suggestions
+        playlist materializes on first play. Pre-fix this deadlocked because
+        the `if removed:` gate suppressed the refill on a False drain.
+        """
+        from datetime import datetime, timezone
+        from unittest.mock import AsyncMock
+
+        from app.models.events import TrackPlayedEvent
+        from app.models.track import Track
+        from app.services import suggestions_service
+        from app.services.event_handlers import handle_track_played
+        from app.database import get_engine
+
+        # Played track exists; SuggestionsMirror is empty (db_with_phase7
+        # provides a fresh DB — no mirror rows seeded by this test).
+        played = Track(
+            plex_rating_key="777",
+            title="Bootstrap",
+            artist="Fresh",
+        )
+        db_with_phase7.add(played)
+        db_with_phase7.commit()
+
+        evt = TrackPlayedEvent(
+            plex_rating_key="777",
+            last_viewed_at="2026-05-14T08:37:13+00:00",
+            source="webhook",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        # Mock maybe_schedule_refill directly (the most direct assertion of
+        # the bug fix — the gate is gone, so this MUST be awaited regardless
+        # of the drain return value). Also mock refill_suggestions_queue to
+        # prevent a real LLM/Plex call inside maybe_schedule_refill if the
+        # mock is somehow bypassed.
+        original_maybe = suggestions_service.maybe_schedule_refill
+        original_refill = suggestions_service.refill_suggestions_queue
+        mock_maybe = AsyncMock(return_value=30)  # deficit=30 (empty mirror)
+        mock_refill = AsyncMock(return_value=None)
+        suggestions_service.maybe_schedule_refill = mock_maybe
+        suggestions_service.refill_suggestions_queue = mock_refill
+        try:
+            _run_async(handle_track_played(evt))
+        finally:
+            suggestions_service.maybe_schedule_refill = original_maybe
+            suggestions_service.refill_suggestions_queue = original_refill
+
+        # Phase 5 RATE-04 view_count++ still happens.
+        with Session(get_engine()) as fresh:
+            updated = fresh.exec(
+                select(Track).where(Track.plex_rating_key == "777")
+            ).first()
+            assert updated.view_count == 1
+            assert updated.last_viewed_at == "2026-05-14T08:37:13+00:00"
+
+        # The bug fix: maybe_schedule_refill MUST be awaited even though
+        # drain_track_from_mirror returned False (mirror was empty, so the
+        # played track was not a member).
+        mock_maybe.assert_awaited_once()
 
     def test_drain_failure_does_not_break_rating_update(self, db_with_phase7):
         """If drain_track_from_mirror raises, the Phase 5 view_count update
