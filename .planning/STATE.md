@@ -5,7 +5,7 @@ milestone_name: — Music Companion
 status: executing
 stopped_at: Phase 06.2 executed + verified (28/28 must-haves, 182 Phase 6.2 tests pass, 0 critical review findings). 2 hotfixes shipped during NAS UAT (260512-k3n adaptive-thinking translation + LLM progress card; 260512-kvs max_tokens bump 4000→8000 + $3 cap removal). NAS UAT 2026-05-12 confirmed propose flow produces 6 vibes from 593-track library and pushes them to Plex as `Composer · {name}`. Phase 6.2 complete.
 last_updated: "2026-05-12T20:03:08.736Z"
-last_activity: 2026-05-13 -- Phase 6 fully complete (6.1 + 6.2 verified; SC2 auto-slot UAT confirmed on NAS)
+last_activity: 2026-05-13 -- Phase 7 context gathered (4 gray areas resolved; ready for planning)
 progress:
   total_phases: 10
   completed_phases: 9
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-05-08)
 
 ## Current Position
 
-Phase: 07 (suggestions-queue) — NOT STARTED
-Plan: 0 of N (plans TBD)
-Status: Phase 6 fully complete (6.1 + 6.2 verified; SC2 auto-slot UAT confirmed on NAS 2026-05-13 — all tests pass). Ready to plan Phase 7. Carry-forward: cost-meter caching is load-bearing for Phase 7 SC4 ("`cache_read_input_tokens` accumulating") — the "caching not engaged" warning seen during 6.2 needs the system-prompt-padding fix as part of Phase 7 (no longer a deferred cleanup).
-Last activity: 2026-05-13 -- Phase 6 fully complete (6.1 + 6.2 verified; SC2 auto-slot UAT confirmed on NAS)
+Phase: 07 (suggestions-queue-v1-chat-retirement) — CONTEXT GATHERED
+Plan: 0 of N (plans TBD — next step is `/gsd-plan-phase 7`)
+Status: Phase 7 discussion complete. CONTEXT.md captures 13 implementation decisions (D-01..D-13) across refill cadence + bootstrap, shortlist composition, queue UI, skip-tracking calibration. Carry-forward locks documented (cost circuit breaker FIRST commit, prompt cache ttl:1h explicit, Pydantic track-ID validation, mobile-first conventions, `/debug/suggestions` + `/debug` index). The system-prompt-caching fix (>2048 tokens) is folded into Phase 7 D-07 as load-bearing for SC4. Ready to spawn researcher + planner.
+Last activity: 2026-05-13 -- Phase 7 context gathered (4 gray areas resolved; ready for planning)
 
 ### v2.0 Phase Snapshot
 
@@ -186,12 +186,12 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-05-13T00:00:00Z
-Stopped at: Phase 6 (Vibe Clustering + Setup Wizard) fully complete. 6.1 + 6.2 plans verified against codebase (28/28 must-haves, 182 Phase 6.2 tests green, 0 critical review findings); NAS UAT 2026-05-13 confirmed SC2 (auto-slot on new rating) end-to-end — rated track appears in matching `Composer · {name}` Plex playlist within ~10s, `/debug/vibes` "Last 20 slot-in decisions" panel renders the receipt correctly. Phase 7 (Suggestions Queue + v1 Chat Retirement) is next up.
-Resume file: .planning/ROADMAP.md (Phase 7 section, line 208)
+Last session: 2026-05-13T01:00:00Z
+Stopped at: Phase 7 context gathered via /gsd-discuss-phase. Four gray areas resolved (refill cadence + bootstrap, shortlist composition, queue UI + dismiss interaction, skip-tracking calibration); 13 implementation decisions captured in `07-CONTEXT.md`. Researcher and planner can proceed without re-asking the user. The system-prompt-caching fix (Anthropic >2048-token minimum that bit Phase 6.2) is folded into Phase 7 D-07 as the shared longer preamble — load-bearing for SC4 ("`cache_read_input_tokens` accumulating").
+Resume file: .planning/phases/07-suggestions-queue-v1-chat-retirement/07-CONTEXT.md
 Next actions:
 
-  - `/gsd-plan-phase 7` to break Suggestions Queue + v1 Chat Retirement into plans. Phase 7 requirements: SUGG-01..11, UI-01..06, OPS-05, DEBUG-03, DEBUG-05.
-  - During Phase 7 planning, fold in the Anthropic prompt-caching fix (pad system prompts >2048 tokens) — Phase 7 SC4 explicitly requires `cache_read_input_tokens` to be accumulating, so this is no longer a deferred cleanup.
+  - `/gsd-plan-phase 7` to break Phase 7 into plans. Researcher reads `07-CONTEXT.md` for what to investigate; planner reads it for what's locked.
+  - Phase 7 requirements: SUGG-01..11 (11 reqs), UI-01..06 (6 reqs), OPS-05 (1 req), DEBUG-03 + DEBUG-05 (2 reqs) = 20 requirements total.
   - Phase 7 ships the LLM cost circuit breaker (Pitfall 11) in the FIRST commit, not the last — daily 50 calls + 5/60s burst + 60s per-event debounce. Plan accordingly.
   - Optional cleanup queue (still deferred, doesn't block Phase 7): WR-01 finalize dead code, WR-03 zero-member vibe leak; pre-existing test failures in `deferred-items.md`.
