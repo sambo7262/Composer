@@ -19,3 +19,10 @@
      min-w-11). Declared here as the single project-wide source of truth. */
   --touch-target-min: 44px;
 }
+
+/* Phase 7 (WR-03 fix) — global x-cloak rule.
+   Alpine.js uses x-cloak to hide elements until x-data has hydrated.
+   Without this rule, expanded panels (and any other x-show / x-if region
+   that ships with x-cloak) flash on a cold load before Alpine attaches.
+   Defined globally so every partial benefits without inline <style> blocks. */
+[x-cloak] { display: none !important; }
