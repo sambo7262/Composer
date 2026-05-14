@@ -778,6 +778,7 @@ async def start_over(session: Session = Depends(get_session)):
 
     from app.models.vibe import (
         ManagedPlaylist as MP,
+        MigrationLog as ML,
         SetupState as SS,
         SlotInLog as SL,
         TrackVibe as TV,
@@ -787,6 +788,7 @@ async def start_over(session: Session = Depends(get_session)):
         get_decrypted_credential,
         get_setting,
     )
+    from app.services.suggestions_service import PHASE_07_MIGRATION_ID
 
     suffix = f"(archived {date.today().isoformat()})"
 
@@ -850,6 +852,18 @@ async def start_over(session: Session = Depends(get_session)):
             s.exec(delete(TV))
             s.exec(delete(MP))
             s.exec(delete(VB))
+
+            # WR-02 fix: also clear the Phase 7 suggestions-bootstrap
+            # MigrationLog gate so the next lifespan boot re-runs
+            # run_phase_07_suggestions_bootstrap and registers a fresh
+            # ManagedPlaylist(kind='suggestions') sentinel row. Without
+            # this, the start-over flow archives the Composer · Suggestions
+            # Plex playlist + deletes its ManagedPlaylist row, leaving the
+            # user with NO way to re-create the queue unless they manually
+            # delete the MigrationLog row.
+            s.exec(
+                delete(ML).where(ML.phase_id == PHASE_07_MIGRATION_ID)
+            )
 
             # Reset SetupState id=1 (defensive: create if missing).
             state = s.exec(select(SS).where(SS.id == 1)).first()
