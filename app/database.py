@@ -190,7 +190,14 @@ def init_db() -> None:
         Vibe,
     )
     # Phase 7 Plan 01 (SUGG-02) — register SuggestionsMirror before create_all.
-    from app.models.suggestions import SuggestionsMirror  # noqa: F401
+    # Phase 7 Plan 02 — register SuggestionHistory, NegativeSignal,
+    # RefillTriggerLog (SUGG-07, D-11/D-12/D-13, /debug/suggestions feed).
+    from app.models.suggestions import (  # noqa: F401
+        NegativeSignal,
+        RefillTriggerLog,
+        SuggestionHistory,
+        SuggestionsMirror,
+    )
 
     engine = get_engine()
     # create_all MUST run before _migrate_add_columns so the eventlog table exists

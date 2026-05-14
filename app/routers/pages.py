@@ -80,6 +80,9 @@ async def settings_page(request: Request, session: Session = Depends(get_session
     template can render the destructive "Start Over" button only when
     ``Vibe.count() > 0`` — never offer destruction when there's nothing
     to destroy.
+
+    Phase 7 Plan 02 (OPS-05): also passes today's LLM spend + cache hit %
+    + breaker-paused state for the cost meter card.
     """
     templates = get_templates()
     plex_configured = is_service_configured(session, "plex")
@@ -101,6 +104,44 @@ async def settings_page(request: Request, session: Session = Depends(get_session
         vibe_count = vibe_count[0]
     vibe_count = int(vibe_count)
 
+    # Phase 7 Plan 02 (OPS-05) — Anthropic spend today + cache hit %.
+    from datetime import datetime as _dt, timezone as _tz
+
+    from app.models.llm_usage import LLMUsage
+    from app.services.llm_cost_breaker import (
+        DAILY_QUOTA, get_state as breaker_state,
+    )
+
+    midnight_iso = _dt.now(_tz.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    ).isoformat()
+    today_rows = session.exec(
+        select(LLMUsage).where(LLMUsage.called_at >= midnight_iso)  # type: ignore[arg-type]
+    ).all()
+    today_calls = len(today_rows)
+    today_cost_usd = sum((r.cost_estimate_usd or 0.0) for r in today_rows)
+    total_cache_creation = sum(r.cache_creation_input_tokens or 0 for r in today_rows)
+    total_cache_read = sum(r.cache_read_input_tokens or 0 for r in today_rows)
+    cache_hit_pct = None
+    if (total_cache_creation + total_cache_read) > 0:
+        cache_hit_pct = int(round(
+            100.0 * total_cache_read / (total_cache_creation + total_cache_read)
+        ))
+
+    breaker = breaker_state()
+    breaker_paused = False
+    breaker_reason = None
+    if breaker.last_tripped_at:
+        try:
+            tripped_dt = _dt.fromisoformat(breaker.last_tripped_at)
+            if tripped_dt.tzinfo is None:
+                tripped_dt = tripped_dt.replace(tzinfo=_tz.utc)
+            if (_dt.now(_tz.utc) - tripped_dt).total_seconds() < 60:
+                breaker_paused = True
+                breaker_reason = breaker.last_tripped_reason
+        except ValueError:
+            pass
+
     return templates.TemplateResponse(
         request,
         "pages/settings.html",
@@ -114,6 +155,13 @@ async def settings_page(request: Request, session: Session = Depends(get_session
             "lidarr_setting": lidarr_setting,
             "sync_interval": sync_interval,
             "vibe_count": vibe_count,
+            # OPS-05 cost meter context
+            "today_calls": today_calls,
+            "today_cost_usd": today_cost_usd,
+            "daily_quota": DAILY_QUOTA,
+            "cache_hit_pct": cache_hit_pct,
+            "breaker_paused": breaker_paused,
+            "breaker_reason": breaker_reason,
         },
     )
 

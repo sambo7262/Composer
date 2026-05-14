@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlmodel import Session
 
@@ -74,6 +75,44 @@ async def _trigger_polling() -> None:
     from app.services.poll_service import run_poll
 
     asyncio.create_task(run_poll())
+
+
+def schedule_soft_negative_sweep() -> None:
+    """Phase 7 (Plan 02, B1) — daily SUGG-08 cron caller.
+
+    Registers a cron job on the singleton AsyncIOScheduler that fires
+    ``suggestions_service.handle_soft_negative_sweep`` at UTC 04:00 daily.
+    Without this caller, ``NegativeSignal(signal_type='soft')`` rows are
+    never written in production and SUGG-08 is not functionally delivered.
+
+    UTC 04:00 chosen because:
+      - Quiet hour for music listening (most users not actively scrobbling).
+      - Avoids overlapping with TrackPlayed-driven refill bursts (D-03
+        threshold-only refill cadence).
+      - Same low-traffic window used by other arr-stack cron tasks in
+        self-hosted setups.
+
+    ``replace_existing=True`` mirrors ``schedule_sync`` / ``schedule_polling``
+    so the job is idempotent across restarts AND across settings reloads.
+    """
+    # Lazy import to keep sync_scheduler import-graph small and avoid a
+    # circular dep with suggestions_service (which imports from
+    # plex_playlist_service which imports from settings_service, etc.).
+    from app.services.suggestions_service import handle_soft_negative_sweep
+
+    scheduler = get_scheduler()
+    if scheduler.get_job("suggestions_soft_negative_sweep"):
+        scheduler.remove_job("suggestions_soft_negative_sweep")
+    scheduler.add_job(
+        handle_soft_negative_sweep,
+        trigger=CronTrigger(hour=4, minute=0, timezone="UTC"),
+        id="suggestions_soft_negative_sweep",
+        replace_existing=True,
+        name="Suggestions soft-negative sweep (daily 04:00 UTC)",
+    )
+    logger.info(
+        "Scheduled suggestions soft-negative sweep daily at 04:00 UTC"
+    )
 
 
 async def start_scheduler() -> None:

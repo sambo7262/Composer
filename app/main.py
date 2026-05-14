@@ -252,6 +252,13 @@ async def lifespan(app: FastAPI):
     get_event_bus()
     await start_dispatcher()
     await start_scheduler()
+    # Phase 7 Plan 02 (B1) — register the SUGG-08 daily soft-negative
+    # sweep job on the same AsyncIOScheduler singleton that
+    # start_scheduler() just started. MUST be after start_scheduler() so
+    # the scheduler is running before add_job runs.
+    from app.services.sync_scheduler import schedule_soft_negative_sweep
+
+    schedule_soft_negative_sweep()
     # Phase 5 (D-10 / Pitfall 7): auto-trigger backfill if we have tracks but
     # nothing is rated — classic "first deploy onto an existing v1 library".
     from app.services.backfill_service import maybe_trigger_first_run_backfill

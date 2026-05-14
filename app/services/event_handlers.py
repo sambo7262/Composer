@@ -198,6 +198,34 @@ async def handle_rating_changed(event: RatingChangedEvent) -> None:
             "Vibe slot-in hook failed; rating update succeeded"
         )
 
+    # Phase 7 (D-13) — clear hard-negative artist deboost on 3+ star rates.
+    # Best-effort: re-import on every call so tests can monkeypatch
+    # ``suggestions_service.handle_artist_rating_recovery`` via attribute
+    # assignment.
+    try:
+        if event.new_rating is not None and event.new_rating >= 6.0:
+            from app.services import suggestions_service
+            from app.models.track import Track
+
+            def _read_artist_sync() -> Optional[str]:
+                with Session(get_engine()) as s:
+                    t = s.exec(
+                        select(Track).where(
+                            Track.plex_rating_key == event.plex_rating_key
+                        )
+                    ).first()
+                    return t.artist if t is not None else None
+
+            artist = await asyncio.to_thread(_read_artist_sync)
+            if artist:
+                await suggestions_service.handle_artist_rating_recovery(
+                    artist, event.new_rating,
+                )
+    except Exception:
+        logger.exception(
+            "Artist hard-negative recovery hook failed; rating update succeeded"
+        )
+
 
 async def handle_track_played(event: TrackPlayedEvent) -> None:
     """RATE-04 (Phase 5): increment Track.view_count + update Track.last_viewed_at.
