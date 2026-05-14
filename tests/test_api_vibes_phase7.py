@@ -97,6 +97,78 @@ class TestFindVibeCandidatesEndpoint:
         resp = client_phase7.get("/api/vibes/1/find-candidates")
         assert resp.status_code == 405
 
+    def test_response_renders_autostart_progress_card(
+        self, client_phase7, test_engine,
+    ):
+        """CR-03 fix: the response is the progress card with autostart=true so
+        Alpine begins polling on swap-in (the htmx:beforeRequest listener has
+        already fired by the time the partial reaches the DOM).
+        """
+        from app.services import suggestions_service
+        from app.services.suggestions_service import RefillResult
+
+        with Session(test_engine) as s:
+            vid = _seed_vibe(s, name="V-cr03")
+
+        mock_refill = AsyncMock(return_value=RefillResult(
+            candidates_evaluated=15, picks_returned=15,
+            picks_validated=15, picks_inserted=15,
+        ))
+        with patch.object(
+            suggestions_service, "refill_suggestions_for_vibe", new=mock_refill,
+        ):
+            resp = client_phase7.post(f"/api/vibes/{vid}/find-candidates")
+
+        assert resp.status_code == 200
+        body = resp.text
+        # The Alpine factory MUST be invoked with `true` so the card's
+        # init() autostarts polling. (`llmProgressCard(false)` is the
+        # server-rendered empty-state path on /suggestions — different.)
+        assert "llmProgressCard(true)" in body, (
+            "CR-03 — find-candidates response must render "
+            "llmProgressCard(true) so the progress card auto-starts polling."
+        )
+
+    def test_fires_refill_as_background_task(
+        self, client_phase7, test_engine,
+    ):
+        """CR-03 fix: the endpoint MUST NOT block on the LLM round-trip. The
+        response should return quickly (< 1s) even when the refill coroutine
+        is slow. We simulate a 2s refill and assert the response returns
+        before the refill completes — the response-time gap is the contract.
+        """
+        import time as _time
+        from app.services import suggestions_service
+        from app.services.suggestions_service import RefillResult
+
+        with Session(test_engine) as s:
+            vid = _seed_vibe(s, name="V-slow")
+
+        async def slow_refill(*args, **kwargs):
+            import asyncio
+            await asyncio.sleep(0.5)
+            return RefillResult(
+                candidates_evaluated=15, picks_returned=15,
+                picks_validated=15, picks_inserted=15,
+            )
+
+        with patch.object(
+            suggestions_service, "refill_suggestions_for_vibe",
+            new=slow_refill,
+        ):
+            t0 = _time.monotonic()
+            resp = client_phase7.post(f"/api/vibes/{vid}/find-candidates")
+            elapsed = _time.monotonic() - t0
+
+        assert resp.status_code == 200
+        # The handler must return BEFORE the 0.5s refill completes — fire-and
+        # -forget contract. If we ever go back to awaiting the refill the
+        # elapsed time would be ≥ 0.5s; the threshold below is generous.
+        assert elapsed < 0.4, (
+            f"CR-03 — find-candidates must fire-and-forget the refill; "
+            f"response took {elapsed:.3f}s (expected < 0.4s)."
+        )
+
 
 class TestProgressEndpointMatchesSuggestionsPurposes:
     def test_progress_matches_suggestions_rank(self, client_phase7, test_engine):

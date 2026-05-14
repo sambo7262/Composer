@@ -4,10 +4,16 @@
      - current pass label (preamble / Pass 1 / Pass 2)
      - elapsed seconds since the latest vibe_* LLMUsage row's called_at
    "batch X of Y" is intentionally omitted — LLMUsage has no batch columns
-   (would require schema migration; out of scope for a hotfix). #}
+   (would require schema migration; out of scope for a hotfix).
+
+   Phase 7 CR-03 fix — when this partial is returned as the HTMX response of a
+   fire-and-forget endpoint (e.g. POST /api/vibes/{id}/find-candidates), the
+   default htmx:beforeRequest listener has already fired and missed; pass
+   `autostart=True` from the route handler to call start() during x-init so
+   the card actually shows and begins polling. #}
 <style>[x-cloak]{display:none!important}</style>
 <div id="llm-progress-card"
-     x-data="llmProgressCard()"
+     x-data="llmProgressCard({{ 'true' if autostart else 'false' }})"
      x-show="inflight"
      x-cloak
      class="mb-4 p-4 rounded-lg border border-accent/30 bg-accent/5">
@@ -28,12 +34,13 @@
 </div>
 
 <script>
-  function llmProgressCard() {
+  function llmProgressCard(autostart) {
     return {
       inflight: false,
       purpose: null,
       elapsedSeconds: null,
       _pollHandle: null,
+      _autostart: autostart === true,
       get passLabel() {
         switch (this.purpose) {
           case 'vibe_definitions_preamble': return '(defining your vibes)';
@@ -42,6 +49,7 @@
           case 'vibe_clustering_initial':   return '(initial clustering)';
           case 'vibe_clustering_refine':    return '(refining proposals)';
           case 'vibe_clustering_recluster': return '(reclustering)';
+          case 'suggestions_rank':          return '(ranking candidates)';
           default: return this.purpose ? '(' + this.purpose + ')' : '';
         }
       },
@@ -80,6 +88,13 @@
         };
         document.body.addEventListener('htmx:beforeRequest', trigger);
         document.body.addEventListener('htmx:afterRequest', release);
+        // CR-03 fix — when the partial is rendered as the HTMX response of a
+        // fire-and-forget endpoint (e.g. /api/vibes/{id}/find-candidates), the
+        // htmx:beforeRequest event has already fired before the swap. Start
+        // polling immediately so the card shows.
+        if (this._autostart) {
+          this.start();
+        }
       },
     };
   }

@@ -125,7 +125,11 @@ class TestSuggestionsPage:
         resp = client_full.get("/suggestions")
         assert resp.status_code == 200
         body = resp.text
-        assert "x-data=\"llmProgressCard()\"" in body or "llmProgressCard()" in body
+        # CR-03 fix: the Alpine component now takes an `autostart` arg.
+        # Match the function name only (`llmProgressCard(` — either
+        # `llmProgressCard(false)` from server-render or
+        # `llmProgressCard(true)` from the find-candidates HTMX swap path).
+        assert "llmProgressCard(" in body
 
     def test_page_uses_active_page_suggestions(self, client_full):
         resp = client_full.get("/suggestions")

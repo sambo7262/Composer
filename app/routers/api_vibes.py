@@ -1028,10 +1028,13 @@ async def find_vibe_candidates(
     """SUGG-10 — targeted refill restricted to ONE vibe (CTA only).
 
     The CTA only fires on explicit user tap (no automatic call) per
-    CONTEXT.md "Claude's Discretion". Returns the existing
-    ``llm_progress_card.html`` partial; the polling endpoint
-    ``/api/vibes/last-llm-call/progress`` (extended in Plan 02 to also
-    match ``suggestions_%`` purposes) surfaces progress.
+    CONTEXT.md "Claude's Discretion".
+
+    CR-03 fix: fire-and-forget the LLM-heavy refill so the response returns
+    immediately with the progress card. The polling endpoint
+    ``/api/vibes/last-llm-call/progress`` (extended in Plan 02 to also match
+    ``suggestions_%`` purposes) surfaces in-flight progress. Mirrors the
+    ``/api/vibes/reslot-all`` pattern.
     """
     from app.services import suggestions_service
 
@@ -1039,16 +1042,24 @@ async def find_vibe_candidates(
     if vibe is None:
         return HTMLResponse(status_code=404, content="Vibe not found")
 
-    # Targeted refill (W2 single-vibe partition); micro-batch size 15 per
-    # CONTEXT.md "Claude's Discretion" (smaller than the whole-queue 30).
-    await suggestions_service.refill_suggestions_for_vibe(
-        vibe_id, target=15,
+    # CR-03 fix — fire-and-forget. Targeted refill (W2 single-vibe partition);
+    # micro-batch size 15 per CONTEXT.md "Claude's Discretion" (smaller than
+    # the whole-queue 30). Returning immediately lets the HTMX swap render
+    # the progress card before the LLM round-trip completes.
+    asyncio.create_task(
+        suggestions_service.refill_suggestions_for_vibe(
+            vibe_id, target=15,
+        )
     )
 
-    from app.routers.pages import get_templates
-    templates = get_templates()
-    return templates.TemplateResponse(
-        request, "partials/llm_progress_card.html", {},
+    return get_templates().TemplateResponse(
+        request,
+        "partials/llm_progress_card.html",
+        # CR-03 fix — `autostart` tells the card's Alpine init to call
+        # start() immediately on swap-in. The default htmx:beforeRequest
+        # listener already fired by the time this partial reaches the DOM,
+        # so we cannot rely on it to start polling.
+        {"autostart": True},
     )
 
 
