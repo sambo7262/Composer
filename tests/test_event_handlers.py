@@ -298,10 +298,12 @@ class TestStaticAnalysis:
         library / fetchItems / createPlaylist / addItems / removeItems /
         editTitle) outside of an asyncio.to_thread wrapper.
 
-        Files walked (extended in Phase 6 Plan 02 — see plan 06-02):
-          - app/services/event_handlers.py (Phase 5 origin)
+        Files walked (extended in Phase 6 Plan 02 — see plan 06-02;
+        Phase 7 Plan 01 added suggestions_service.py):
+          - app/services/event_handlers.py    (Phase 5 origin)
           - app/services/plex_playlist_service.py (Phase 6 Plan 02 Task 2)
-          - app/services/vibe_service.py        (Phase 6 Plan 02 Task 3)
+          - app/services/vibe_service.py      (Phase 6 Plan 02 Task 3)
+          - app/services/suggestions_service.py   (Phase 7 Plan 01)
 
         Files that do not yet exist on disk are skipped — preserves backwards
         compatibility while Plan 02 commits land in order.
@@ -311,6 +313,7 @@ class TestStaticAnalysis:
             services_dir / "event_handlers.py",
             services_dir / "plex_playlist_service.py",
             services_dir / "vibe_service.py",
+            services_dir / "suggestions_service.py",  # Phase 7 Plan 01
         ]
 
         forbidden_names = {
@@ -425,3 +428,238 @@ class TestStaticAnalysis:
             "Forbidden blocking PlexAPI calls outside asyncio.to_thread in:\n"
             + "\n".join(violations)
         )
+
+
+# ===========================================================================
+# Phase 7 Plan 01 Task 2 — handle_track_played drain branch tests
+# ===========================================================================
+
+
+@pytest.fixture
+def db_with_phase7(test_engine):
+    """Phase 5 + 6 + 7 tables for the drain-branch tests."""
+    from app.models.settings import ServiceConfig  # noqa: F401
+    from app.models.track import SyncState, Track  # noqa: F401
+    from app.models.event_log import EventLog  # noqa: F401
+    from app.models.llm_usage import LLMUsage  # noqa: F401
+    from app.models.taste_profile import TasteProfile  # noqa: F401
+    from app.models.vibe import (  # noqa: F401
+        ManagedPlaylist,
+        MigrationLog,
+        SetupState,
+        SlotInLog,
+        TrackVibe,
+        Vibe,
+    )
+    from app.models.suggestions import SuggestionsMirror  # noqa: F401
+
+    SQLModel.metadata.create_all(test_engine)
+    with Session(test_engine) as session:
+        yield session
+    SQLModel.metadata.drop_all(test_engine)
+
+
+@pytest.fixture(autouse=True)
+def _reset_suggestions_singleton():
+    try:
+        from app.services import suggestions_service
+        suggestions_service._status = suggestions_service.SuggestionsServiceStatus()
+    except (ImportError, AttributeError):
+        pass
+    yield
+    try:
+        from app.services import suggestions_service
+        suggestions_service._status = suggestions_service.SuggestionsServiceStatus()
+    except (ImportError, AttributeError):
+        pass
+
+
+class TestHandleTrackPlayedSuggestionsDrain:
+    """SUGG-03 drain half: handle_track_played removes the track from
+    SuggestionsMirror if currently a member AND schedules a refill via the
+    threshold gate, while preserving the existing Phase 5 RATE-04 view_count
+    + last_viewed_at update.
+    """
+
+    def test_drains_mirror_when_track_is_member(self, db_with_phase7):
+        from datetime import datetime, timezone
+
+        from app.models.events import TrackPlayedEvent
+        from app.models.event_log import EventLog
+        from app.models.suggestions import SuggestionsMirror
+        from app.models.track import Track
+        from app.services.event_handlers import handle_track_played
+        from app.database import get_engine
+
+        track = Track(
+            plex_rating_key="42",
+            title="X",
+            artist="Y",
+            view_count=3,
+            last_viewed_at=None,
+        )
+        db_with_phase7.add(track)
+        db_with_phase7.commit()
+        db_with_phase7.refresh(track)
+        db_with_phase7.add(
+            SuggestionsMirror(
+                track_id=track.id,
+                position=0,
+                added_at=datetime.now(timezone.utc).isoformat(),
+            )
+        )
+        db_with_phase7.commit()
+
+        evt = TrackPlayedEvent(
+            plex_rating_key="42",
+            last_viewed_at="2026-05-13T12:00:00+00:00",
+            source="webhook",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        _run_async(handle_track_played(evt))
+
+        # (1) Phase 5 RATE-04 view_count + last_viewed_at still updated.
+        with Session(get_engine()) as fresh:
+            updated = fresh.exec(
+                select(Track).where(Track.plex_rating_key == "42")
+            ).first()
+            assert updated.view_count == 4
+            assert updated.last_viewed_at == "2026-05-13T12:00:00+00:00"
+
+            # (2) SuggestionsMirror row drained.
+            mirror_rows = fresh.exec(
+                select(SuggestionsMirror).where(
+                    SuggestionsMirror.track_id == track.id
+                )
+            ).all()
+            assert len(mirror_rows) == 0
+
+            # (3) Threshold-gate marker scheduled (mirror is now empty <
+            # target=30 → deficit=30).
+            refill_markers = fresh.exec(
+                select(EventLog).where(
+                    EventLog.event_type == "suggestions_refill_pending"
+                )
+            ).all()
+            assert len(refill_markers) == 1
+
+    def test_no_refill_when_track_not_in_mirror_and_target_already_met(
+        self, db_with_phase7
+    ):
+        """When the played track is NOT in the mirror AND the mirror is
+        already at target, no refill marker is written (deficit=0).
+        """
+        from datetime import datetime, timezone
+
+        from app.models.events import TrackPlayedEvent
+        from app.models.event_log import EventLog
+        from app.models.suggestions import SuggestionsMirror
+        from app.models.track import Track
+        from app.services.event_handlers import handle_track_played
+        from app.database import get_engine
+
+        # Played track itself (not a mirror member).
+        played = Track(
+            plex_rating_key="99",
+            title="Outsider",
+            artist="External",
+        )
+        db_with_phase7.add(played)
+
+        # Seed 30 unrelated tracks + 30 mirror rows so deficit=0.
+        for i in range(30):
+            t = Track(
+                plex_rating_key=str(2000 + i),
+                title=f"M{i}",
+                artist="A",
+            )
+            db_with_phase7.add(t)
+        db_with_phase7.commit()
+
+        for idx, t in enumerate(
+            db_with_phase7.exec(
+                select(Track).where(Track.plex_rating_key.like("2%"))
+            ).all()
+        ):
+            db_with_phase7.add(
+                SuggestionsMirror(
+                    track_id=t.id,
+                    position=idx,
+                    added_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
+        db_with_phase7.commit()
+
+        evt = TrackPlayedEvent(
+            plex_rating_key="99",
+            last_viewed_at="2026-05-13T12:00:00+00:00",
+            source="webhook",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        _run_async(handle_track_played(evt))
+
+        with Session(get_engine()) as fresh:
+            # Drain returned False — no mirror row matched ratingKey "99".
+            # The threshold gate is only triggered when `removed` is True
+            # (see event_handlers.handle_track_played); since drain returned
+            # False, maybe_schedule_refill is NOT called → no marker.
+            refill_markers = fresh.exec(
+                select(EventLog).where(
+                    EventLog.event_type == "suggestions_refill_pending"
+                )
+            ).all()
+            assert len(refill_markers) == 0
+
+            # view_count still incremented.
+            outsider = fresh.exec(
+                select(Track).where(Track.plex_rating_key == "99")
+            ).first()
+            assert outsider.view_count == 1
+
+    def test_drain_failure_does_not_break_rating_update(self, db_with_phase7):
+        """If drain_track_from_mirror raises, the Phase 5 view_count update
+        must still commit (mirrors the slot_track hook on handle_rating_changed
+        — try/except, never break the primary path).
+        """
+        from datetime import datetime, timezone
+
+        from app.models.events import TrackPlayedEvent
+        from app.models.track import Track
+        from app.services.event_handlers import handle_track_played
+        from app.database import get_engine
+        from app.services import suggestions_service
+
+        track = Track(
+            plex_rating_key="50",
+            title="X",
+            artist="Y",
+            view_count=0,
+        )
+        db_with_phase7.add(track)
+        db_with_phase7.commit()
+
+        async def boom(rating_key):
+            raise RuntimeError("simulated mirror outage")
+
+        original = suggestions_service.drain_track_from_mirror
+        suggestions_service.drain_track_from_mirror = boom
+        try:
+            evt = TrackPlayedEvent(
+                plex_rating_key="50",
+                last_viewed_at="2026-05-13T13:00:00+00:00",
+                source="webhook",
+                received_at=datetime.now(timezone.utc).isoformat(),
+            )
+            _run_async(handle_track_played(evt))
+        finally:
+            suggestions_service.drain_track_from_mirror = original
+
+        with Session(get_engine()) as fresh:
+            updated = fresh.exec(
+                select(Track).where(Track.plex_rating_key == "50")
+            ).first()
+            # Phase 5 update still committed — the drain hook is best-effort.
+            assert updated.view_count == 1
+            assert updated.last_viewed_at == "2026-05-13T13:00:00+00:00"
