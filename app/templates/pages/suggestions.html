@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% set active_page = "suggestions" %}
+{% block title %}Suggestions · Composer{% endblock %}
+{% block content %}
+  <div class="pt-2 pb-4">
+    <h1 class="text-[22px] font-semibold text-text-primary mb-3">
+      Suggestions
+    </h1>
+
+    {% if suggestions|length == 0 %}
+      {# Empty-state: bootstrap or refill in flight (CONTEXT discretion). #}
+      <p class="text-text-secondary text-[14px] mb-3">
+        Building your queue&hellip;
+      </p>
+      {% include "partials/llm_progress_card.html" %}
+    {% else %}
+      <ul id="suggestions-list" class="space-y-1">
+        {% for s in suggestions %}
+          {% include "partials/suggestions_row.html" %}
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </div>
+{% endblock %}

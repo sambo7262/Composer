@@ -1,0 +1,41 @@
+{# Phase 7 UI-02 — mobile bottom tab bar.
+   Hidden at md+ breakpoints; nav.html (top nav) takes over there.
+   Uses env(safe-area-inset-bottom) per Pitfall 16 to clear the iOS home
+   indicator. Tap targets 44px via min-h-11 per Pitfall 17 / UI-04.
+   Active state is a class switch (border-accent / text-text-primary) per
+   Pitfall 18 — never a :hover-only rule.
+
+   /discover is a Phase 8 surface (placeholder until then). The link still
+   renders so users see the full mental model — when /discover lands, no
+   template change needed here. #}
+<nav class="fixed bottom-0 inset-x-0 md:hidden
+            bg-surface-card border-t border-border
+            pb-[env(safe-area-inset-bottom)]
+            z-40"
+     aria-label="Mobile navigation">
+  <ul class="grid grid-cols-4 gap-1">
+    {% set tabs = [
+      ('vibes',       '/vibes',       'Vibes'),
+      ('suggestions', '/suggestions', 'Suggestions'),
+      ('discover',    '/discover',    'Discover'),
+      ('settings',    '/settings',    'Settings'),
+    ] %}
+    {% for slug, href, label in tabs %}
+      <li>
+        <a href="{{ href }}"
+           class="flex flex-col items-center justify-center
+                  min-h-11 py-2 px-2
+                  text-[12px] no-underline transition-colors
+                  {% if active_page == slug %}
+                    text-text-primary
+                    border-t-2 border-accent
+                  {% else %}
+                    text-text-secondary
+                  {% endif %}"
+           aria-current="{% if active_page == slug %}page{% else %}false{% endif %}">
+          {{ label }}
+        </a>
+      </li>
+    {% endfor %}
+  </ul>
+</nav>

@@ -1,24 +1,32 @@
-<!-- Nav bar: 56px height, surface-card bg, bottom border -->
-<nav class="w-full h-14 bg-surface-card border-b border-border">
+{# Phase 7 (UI-06 / UI-04) — desktop top nav.
+   Hidden on mobile via `hidden md:block`; bottom_tab_bar.html takes over
+   on mobile. v1 chat link removed entirely. Each anchor has min-h-11 to
+   satisfy the 44px tap-target invariant on touch desktops. #}
+<nav class="w-full h-14 bg-surface-card border-b border-border hidden md:block">
     <div class="max-w-[720px] mx-auto h-full flex items-center justify-between px-4">
-        <span class="text-[22px] font-semibold text-text-primary">
+        <a href="/"
+           class="text-[22px] font-semibold text-text-primary no-underline">
             Composer
-        </span>
+        </a>
         <div class="flex items-center gap-4">
-            <a href="/"
-               class="text-[15px] {% if active_page == 'compose' %}text-text-primary border-b-2 border-accent{% else %}text-text-secondary hover:text-text-primary{% endif %} transition-colors no-underline pb-1">
-                Compose
+            <a href="/vibes"
+               class="text-[15px] {% if active_page == 'vibes' %}text-text-primary border-b-2 border-accent{% else %}text-text-secondary hover:text-text-primary{% endif %} transition-colors no-underline pb-1 min-h-11 flex items-center">
+                Vibes
+            </a>
+            <a href="/suggestions"
+               class="text-[15px] {% if active_page == 'suggestions' %}text-text-primary border-b-2 border-accent{% else %}text-text-secondary hover:text-text-primary{% endif %} transition-colors no-underline pb-1 min-h-11 flex items-center">
+                Suggestions
             </a>
             <a href="/library"
-               class="text-[15px] {% if active_page == 'library' %}text-text-primary border-b-2 border-accent{% else %}text-text-secondary hover:text-text-primary{% endif %} transition-colors no-underline pb-1">
+               class="text-[15px] {% if active_page == 'library' %}text-text-primary border-b-2 border-accent{% else %}text-text-secondary hover:text-text-primary{% endif %} transition-colors no-underline pb-1 min-h-11 flex items-center">
                 Library
             </a>
             <a href="/settings"
-               class="text-[15px] {% if active_page == 'settings' %}text-text-primary border-b-2 border-accent{% else %}text-text-secondary hover:text-text-primary{% endif %} transition-colors no-underline pb-1">
+               class="text-[15px] {% if active_page == 'settings' %}text-text-primary border-b-2 border-accent{% else %}text-text-secondary hover:text-text-primary{% endif %} transition-colors no-underline pb-1 min-h-11 flex items-center">
                 Settings
             </a>
             <a href="/settings" aria-label="Settings"
-               class="text-text-secondary hover:text-text-primary transition-colors">
+               class="text-text-secondary hover:text-text-primary transition-colors min-h-11 flex items-center">
                 <!-- Lucide Settings (gear) icon - 24x24 -->
                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
                      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

@@ -17,8 +17,13 @@
     {% include "partials/nav.html" %}
     {% endblock %}
 
-    <main class="max-w-[720px] mx-auto pt-12 px-4">
+    {# Phase 7 (UI-03 / Pitfall 16) — bottom padding reserves space for the
+       fixed mobile tab bar below (64px height + safe-area-inset on iOS). #}
+    <main class="max-w-[720px] mx-auto pt-12 px-4 pb-[calc(env(safe-area-inset-bottom)+64px)]">
         {% block content %}{% endblock %}
     </main>
+
+    {# Phase 7 (UI-02) — mobile bottom tab bar; hidden at md+ via Tailwind. #}
+    {% include "partials/bottom_tab_bar.html" %}
 </body>
 </html>

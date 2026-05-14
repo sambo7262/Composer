@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% set active_page = "settings" %}
+{% block title %}Debug: Suggestions · Composer{% endblock %}
+{% block content %}
+  <div class="pt-2 pb-4 space-y-6">
+    <h1 class="text-[22px] font-semibold text-text-primary">
+      /debug/suggestions
+    </h1>
+
+    <section>
+      <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+        Cost breaker state
+      </h2>
+      <pre class="bg-surface-elevated rounded p-3 text-[12px] font-mono whitespace-pre-wrap">today_calls: {{ breaker.today_calls }}
+today_cost_usd: ${{ "%.4f"|format(breaker.today_cost_usd) }}
+last_call_at: {{ breaker.last_call_at or '—' }}
+last_tripped_at: {{ breaker.last_tripped_at or '—' }}
+last_tripped_reason: {{ breaker.last_tripped_reason or '—' }}</pre>
+    </section>
+
+    <section>
+      <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+        Current queue ({{ queue|length }} / 30)
+      </h2>
+      {% if queue|length == 0 %}
+        <p class="text-text-secondary text-[14px]">Empty.</p>
+      {% else %}
+        <ol class="space-y-1 text-[13px]">
+          {% for s in queue %}
+            <li class="bg-surface-card border border-border rounded p-2">
+              <code class="text-text-primary">{{ s.row.position }}.
+                {{ s.track.title | e }} — {{ s.track.artist | e }}</code>
+              <div class="text-[12px] text-text-secondary mt-1">
+                vibe: {{ (s.vibe.name | e) if s.vibe else 'none' }} ·
+                score: {{ "%.3f"|format(s.row.score or 0.0) }} ·
+                added: {{ s.row.added_at }}
+              </div>
+              {% if s.row.rationale %}
+                <div class="text-[12px] text-text-muted mt-1">
+                  <em>{{ s.row.rationale | e }}</em>
+                </div>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+      {% endif %}
+    </section>
+
+    <section>
+      <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+        Last 20 refill triggers
+      </h2>
+      {% if refill_log|length == 0 %}
+        <p class="text-text-secondary text-[14px]">None recorded.</p>
+      {% else %}
+        <table class="w-full text-[12px] font-mono">
+          <thead>
+            <tr class="text-text-secondary">
+              <th class="text-left">triggered_at</th>
+              <th class="text-left">source</th>
+              <th class="text-right">candidates</th>
+              <th class="text-right">picks</th>
+              <th class="text-right">latency_ms</th>
+              <th class="text-right">cost_usd</th>
+              <th class="text-left">tripped?</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in refill_log %}
+              <tr>
+                <td>{{ r.triggered_at }}</td>
+                <td>{{ r.event_source }}</td>
+                <td class="text-right">{{ r.candidates_evaluated }}</td>
+                <td class="text-right">{{ r.picks_made }}</td>
+                <td class="text-right">{{ r.latency_ms }}</td>
+                <td class="text-right">${{ "%.4f"|format(r.cost_estimate_usd or 0) }}</td>
+                <td>{{ 'yes' if r.breaker_tripped else 'no' }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+
+    <section>
+      <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+        Last 20 LLM calls (purpose suggestions_*)
+      </h2>
+      {% if llm_calls|length == 0 %}
+        <p class="text-text-secondary text-[14px]">None recorded.</p>
+      {% else %}
+        <table class="w-full text-[12px] font-mono">
+          <thead>
+            <tr class="text-text-secondary">
+              <th class="text-left">called_at</th>
+              <th class="text-left">purpose</th>
+              <th class="text-right">in</th>
+              <th class="text-right">cache_create</th>
+              <th class="text-right">cache_read</th>
+              <th class="text-right">out</th>
+              <th class="text-right">cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for u in llm_calls %}
+              <tr>
+                <td>{{ u.called_at }}</td>
+                <td>{{ u.purpose }}</td>
+                <td class="text-right">{{ u.input_tokens }}</td>
+                <td class="text-right">{{ u.cache_creation_input_tokens }}</td>
+                <td class="text-right">{{ u.cache_read_input_tokens }}</td>
+                <td class="text-right">{{ u.output_tokens }}</td>
+                <td class="text-right">${{ "%.4f"|format(u.cost_estimate_usd or 0) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+
+    <section>
+      <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+        Recent negative signals (last 20)
+      </h2>
+      {% if negative_signals|length == 0 %}
+        <p class="text-text-secondary text-[14px]">None.</p>
+      {% else %}
+        <table class="w-full text-[12px] font-mono">
+          <thead>
+            <tr class="text-text-secondary">
+              <th class="text-left">created_at</th>
+              <th class="text-left">type</th>
+              <th class="text-left">track / artist</th>
+              <th class="text-left">recovery_pending</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for n in negative_signals %}
+              <tr>
+                <td>{{ n.created_at }}</td>
+                <td>{{ n.signal_type }}</td>
+                <td>track_id={{ n.track_id or '—' }} ·
+                    artist={{ (n.artist | e) if n.artist else '—' }}</td>
+                <td>{{ 'yes' if n.recovery_pending else 'no' }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+  </div>
+{% endblock %}

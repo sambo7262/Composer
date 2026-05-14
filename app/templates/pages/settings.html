@@ -96,9 +96,12 @@
 {% endif %}
 
 <!-- Phase 6 Plan 04 (D-37): dual diagnostics footer (replaces single link from Phase 5).
-     "View diagnostics →" was renamed "View event diagnostics →" to disambiguate
-     from the new "View vibes diagnostics →" link. -->
+     Phase 7 Plan 03 (DEBUG-05): adds the /debug index link. The per-surface
+     links remain so direct deep-links still work. -->
 <footer class="mt-12 pt-6 border-t border-border space-y-1">
+  <a href="/debug" class="block text-[13px] text-accent underline min-h-11 inline-flex items-center">
+    View diagnostics →
+  </a>
   <a href="/debug/events" class="block text-[13px] text-text-secondary hover:text-accent">
     View event diagnostics →
   </a>

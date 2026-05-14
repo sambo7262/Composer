@@ -1,0 +1,29 @@
+{# Phase 7 (UI-01) — vibe card on the vibes home.
+   SUGG-10 — "Find candidates" CTA when track_count < 25 (default per CONTEXT
+   discretion). Renders the existing llm_progress_card.html partial via
+   HTMX swap from /api/vibes/{id}/find-candidates (Plan 02 endpoint).
+
+   T-07-03-01..02 — name + description rendered with `| e` for explicit XSS
+   escape. #}
+<li class="bg-surface-card border border-border rounded-lg p-3 min-h-11">
+  <h2 class="text-[16px] font-semibold text-text-primary truncate">
+    {{ v.name | e }}
+  </h2>
+  <p class="text-[13px] text-text-secondary mt-1">
+    {{ v.track_count }} track{% if v.track_count != 1 %}s{% endif %}
+  </p>
+  {% if v.description %}
+    <p class="text-[12px] text-text-muted mt-1">{{ v.description | e }}</p>
+  {% endif %}
+  {% if v.track_count < 25 %}
+    <button type="button"
+            hx-post="/api/vibes/{{ v.id }}/find-candidates"
+            hx-target="this"
+            hx-swap="outerHTML"
+            class="mt-2 inline-flex items-center justify-center
+                   min-h-11 rounded-md border border-accent bg-accent/10
+                   text-accent text-[13px] px-3 py-1.5">
+      Find candidates
+    </button>
+  {% endif %}
+</li>

@@ -1,0 +1,30 @@
+{# Phase 7 (D-09 / D-10) — inline expanded panel.
+   Rationale + Play in Plexamp deeplink + Dismiss button. Two-tap dismiss
+   (expand-then-tap) per D-10 — no accidental dismiss from mis-tap on the
+   compact row. #}
+<p class="text-[13px] text-text-primary mb-2">
+  {% if s.row.rationale %}
+    <span class="text-text-secondary">Why this track? </span>
+    {{ s.row.rationale | e }}
+  {% else %}
+    <span class="text-text-muted">No rationale recorded.</span>
+  {% endif %}
+</p>
+<div class="flex gap-2 mt-1">
+  <a href="plexamp://play/{{ s.track.plex_rating_key }}"
+     data-rating-key="{{ s.track.plex_rating_key }}"
+     class="flex-1 text-center min-h-11 inline-flex items-center justify-center
+            rounded-md bg-accent text-text-primary px-3 py-1.5
+            text-[14px] no-underline">
+    Play in Plexamp
+  </a>
+  <button type="button"
+          hx-post="/api/suggestions/{{ s.track.plex_rating_key }}/dismiss"
+          hx-target="#suggestion-row-{{ s.track.plex_rating_key }}"
+          hx-swap="outerHTML"
+          class="flex-1 min-h-11 rounded-md border border-border
+                 bg-surface-card text-text-secondary px-3 py-1.5
+                 text-[14px]">
+    Dismiss
+  </button>
+</div>

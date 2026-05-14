@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% set active_page = "settings" %}
+{% block title %}Debug · Composer{% endblock %}
+{% block content %}
+  <div class="pt-2 pb-4">
+    <h1 class="text-[22px] font-semibold text-text-primary mb-2">
+      Debug surfaces
+    </h1>
+    <p class="text-text-secondary text-[13px] mb-3">
+      Diagnostic-only. Plain HTML — copy-paste a screenshot when something
+      looks wrong.
+    </p>
+    <ul class="space-y-2">
+      <li>
+        <a href="/debug/events"
+           class="block min-h-11 p-3 rounded-lg border border-border
+                  bg-surface-card no-underline">
+          <span class="text-text-primary font-medium">/debug/events</span>
+          <span class="block text-[13px] text-text-secondary mt-0.5">
+            Plex webhook + poll event log (Phase 5)
+          </span>
+        </a>
+      </li>
+      <li>
+        <a href="/debug/vibes"
+           class="block min-h-11 p-3 rounded-lg border border-border
+                  bg-surface-card no-underline">
+          <span class="text-text-primary font-medium">/debug/vibes</span>
+          <span class="block text-[13px] text-text-secondary mt-0.5">
+            Vibe centroids + slot-in decisions (Phase 6 / 6.2)
+          </span>
+        </a>
+      </li>
+      <li>
+        <a href="/debug/suggestions"
+           class="block min-h-11 p-3 rounded-lg border border-border
+                  bg-surface-card no-underline">
+          <span class="text-text-primary font-medium">/debug/suggestions</span>
+          <span class="block text-[13px] text-text-secondary mt-0.5">
+            Queue contents + refill triggers + LLM cost (Phase 7)
+          </span>
+        </a>
+      </li>
+      <li>
+        <span class="block min-h-11 p-3 rounded-lg border border-border
+                     bg-surface-muted text-text-muted">
+          /debug/discovery
+          <span class="text-[12px]">(Phase 8 — not yet shipped)</span>
+        </span>
+      </li>
+    </ul>
+  </div>
+{% endblock %}

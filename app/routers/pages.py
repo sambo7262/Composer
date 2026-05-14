@@ -30,11 +30,14 @@ def get_templates():
 
 @router.get("/", response_class=HTMLResponse)
 async def home(request: Request, session: Session = Depends(get_session)):
-    """Root page. Shows welcome if Plex not configured, else compose chat.
+    """Root page (UI-01).
 
     Phase 6 (D-07 / WIZ-01): when Plex is configured AND no Vibe rows exist
-    AND there are >=1 rated tracks, auto-redirect to /setup. Once any Vibe row
-    exists, this redirect no longer fires.
+    AND there are >=1 rated tracks, auto-redirect to /setup.
+
+    Phase 7 (UI-01): once vibes exist, render the v2 vibes home page as the
+    landing surface. The legacy chat.html return is removed (UI-06 — chat
+    retired).
     """
     templates = get_templates()
     plex_configured = is_service_configured(session, "plex")
@@ -59,15 +62,187 @@ async def home(request: Request, session: Session = Depends(get_session)):
     if vibe_count == 0 and rated_count >= 1:
         return RedirectResponse("/setup", status_code=302)
 
-    anthropic_configured = is_service_configured(session, "anthropic")
+    # Phase 7 UI-01 — render the vibes home as the landing page.
+    return await read_vibes_home(request, session)
+
+
+@router.get("/vibes", response_class=HTMLResponse)
+async def read_vibes_home(
+    request: Request, session: Session = Depends(get_session),
+):
+    """UI-01 — vibes home / landing page.
+
+    Renders one card per ACTIVE vibe (archived vibes excluded — D-28).
+    Each card shows name + track count + optional description, plus a
+    SUGG-10 "Find candidates" CTA when track_count < 25 (the CONTEXT
+    discretion threshold).
+    """
+    from app.models.vibe import TrackVibe
+
+    templates = get_templates()
+    vibes = session.exec(
+        select(Vibe)
+        .where(Vibe.is_active == True)  # noqa: E712
+        .order_by(col(Vibe.id).asc())
+    ).all()
+    enriched = []
+    for v in vibes:
+        n = session.exec(
+            select(func.count())
+            .select_from(TrackVibe)
+            .where(TrackVibe.vibe_id == v.id)
+        ).one()
+        if isinstance(n, tuple):
+            n = n[0]
+        enriched.append(type("V", (), {
+            "id": v.id,
+            "name": v.name,
+            "description": v.description,
+            "track_count": int(n),
+        }))
+    return templates.TemplateResponse(
+        request,
+        "pages/vibes_home.html",
+        {"active_page": "vibes", "vibes": enriched},
+    )
+
+
+@router.get("/suggestions", response_class=HTMLResponse)
+async def read_suggestions(
+    request: Request, session: Session = Depends(get_session),
+):
+    """The Suggestions queue page (D-08 compact list / D-09 tap-to-expand
+    / D-10 dismiss inside expanded view).
+
+    Reads SuggestionsMirror rows ordered by position (lower = top), joins
+    each to Track for title/artist/plex_rating_key and to Vibe for the
+    vibe chip. Empty state shows the existing llm_progress_card partial
+    (CONTEXT discretion — bootstrap loader reuse).
+    """
+    from app.models.suggestions import SuggestionsMirror
+
+    templates = get_templates()
+    rows = session.exec(
+        select(SuggestionsMirror).order_by(col(SuggestionsMirror.position).asc())
+    ).all()
+    enriched = []
+    for r in rows:
+        track = session.exec(
+            select(Track).where(Track.id == r.track_id)
+        ).first()
+        vibe = None
+        if r.vibe_id is not None:
+            vibe = session.exec(
+                select(Vibe).where(Vibe.id == r.vibe_id)
+            ).first()
+        if track is not None:
+            enriched.append({"row": r, "track": track, "vibe": vibe})
+    return templates.TemplateResponse(
+        request,
+        "pages/suggestions.html",
+        {"active_page": "suggestions", "suggestions": enriched},
+    )
+
+
+@router.get("/chat", response_class=HTMLResponse)
+async def read_chat_retired() -> HTMLResponse:
+    """UI-06 — legacy chat surface returns 404."""
+    return HTMLResponse(
+        status_code=404,
+        content=(
+            "The mood-chat UI was retired in Phase 7. "
+            "Use Suggestions or Vibes instead."
+        ),
+    )
+
+
+@router.get("/debug", response_class=HTMLResponse)
+async def read_debug_index(request: Request):
+    """DEBUG-05 — index page linking to all debug surfaces.
+
+    Plain HTML, no JS-only content. Linked from the settings footer.
+    """
+    templates = get_templates()
+    return templates.TemplateResponse(
+        request,
+        "pages/debug_index.html",
+        {"active_page": "settings"},
+    )
+
+
+@router.get("/debug/suggestions", response_class=HTMLResponse)
+async def read_debug_suggestions(
+    request: Request, session: Session = Depends(get_session),
+):
+    """DEBUG-03 — Suggestions queue diagnostic surface.
+
+    Sections (in render order):
+      1. Cost breaker state (in-process singleton from llm_cost_breaker).
+      2. Current SuggestionsMirror queue (track + vibe + score + rationale).
+      3. Last 20 RefillTriggerLog rows (DESC triggered_at).
+      4. Last 20 LLMUsage rows where purpose LIKE 'suggestions_%'.
+      5. Last 20 NegativeSignal rows (DESC created_at).
+
+    Plain HTML; copy-friendly via <pre> + <code> + <table> blocks
+    (DEBUG-05 invariant). T-07-03-01..03 — every Track / Vibe / artist
+    / rationale field rendered with explicit `| e` for XSS escape.
+    """
+    from app.models.suggestions import (
+        NegativeSignal, RefillTriggerLog, SuggestionsMirror,
+    )
+    from app.models.llm_usage import LLMUsage
+    from app.services.llm_cost_breaker import get_state as breaker_state
+
+    templates = get_templates()
+
+    # 1. Current queue — ordered by position ascending (lower = top).
+    rows = session.exec(
+        select(SuggestionsMirror)
+        .order_by(col(SuggestionsMirror.position).asc())
+    ).all()
+    queue = []
+    for r in rows:
+        track = session.exec(select(Track).where(Track.id == r.track_id)).first()
+        vibe = None
+        if r.vibe_id is not None:
+            vibe = session.exec(
+                select(Vibe).where(Vibe.id == r.vibe_id)
+            ).first()
+        if track is not None:
+            queue.append({"row": r, "track": track, "vibe": vibe})
+
+    # 2. Last 20 refill triggers — DESC by triggered_at.
+    refill_log = session.exec(
+        select(RefillTriggerLog)
+        .order_by(col(RefillTriggerLog.triggered_at).desc())
+        .limit(20)
+    ).all()
+
+    # 3. Last 20 LLMUsage rows with suggestions_* purpose — DESC by called_at.
+    llm_calls = session.exec(
+        select(LLMUsage)
+        .where(col(LLMUsage.purpose).like("suggestions_%"))
+        .order_by(col(LLMUsage.called_at).desc())
+        .limit(20)
+    ).all()
+
+    # 4. Last 20 negative signals — DESC by created_at.
+    negative_signals = session.exec(
+        select(NegativeSignal)
+        .order_by(col(NegativeSignal.created_at).desc())
+        .limit(20)
+    ).all()
 
     return templates.TemplateResponse(
         request,
-        "pages/chat.html",
+        "pages/debug_suggestions.html",
         {
-            "active_page": "compose",
-            "anthropic_configured": anthropic_configured,
-            "session_id": str(uuid.uuid4()),
+            "active_page": "settings",
+            "queue": queue,
+            "refill_log": refill_log,
+            "llm_calls": llm_calls,
+            "negative_signals": negative_signals,
+            "breaker": breaker_state(),
         },
     )
 
