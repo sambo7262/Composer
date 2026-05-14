@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-05-08)
 Phase: 07 (suggestions-queue-v1-chat-retirement) — CONTEXT GATHERED
 Plan: 0 of N (plans TBD — next step is `/gsd-plan-phase 7`)
 Status: Phase 7 discussion complete. CONTEXT.md captures 13 implementation decisions (D-01..D-13) across refill cadence + bootstrap, shortlist composition, queue UI, skip-tracking calibration. Carry-forward locks documented (cost circuit breaker FIRST commit, prompt cache ttl:1h explicit, Pydantic track-ID validation, mobile-first conventions, `/debug/suggestions` + `/debug` index). The system-prompt-caching fix (>2048 tokens) is folded into Phase 7 D-07 as load-bearing for SC4. Ready to spawn researcher + planner.
-Last activity: 2026-05-13 -- Phase 7 context gathered (4 gray areas resolved; ready for planning)
+Last activity: 2026-05-14 -- Completed quick task 260514-cdl: Phase 7 bootstrap deadlock hotfix (`if removed:` gate dropped — empty-mirror webhooks now schedule refill)
 
 ### v2.0 Phase Snapshot
 
@@ -183,6 +183,7 @@ Recent decisions affecting current work:
 | 260511-bpf | Dedupe Plex playlist members by (artist, title) canonical key — fixes cross-album dupes (quality-aware dedupe deferred to Phase 6.2) | 2026-05-11 | 1371b53 | [260511-bpf-dedupe-plex-playlist-members-by-artist-t](./quick/260511-bpf-dedupe-plex-playlist-members-by-artist-t/) |
 | 260512-k3n | Phase 6.2 hotfix: translate `thinking="adaptive"` to `{"type":"enabled","budget_tokens":2000}` with 400-fallback retry, plus live "Calling Anthropic…" progress card on propose page | 2026-05-12 | d57befe | [260512-k3n-hotfix-phase-6-2-replace-adaptive-thinki](./quick/260512-k3n-hotfix-phase-6-2-replace-adaptive-thinki/) |
 | 260512-kvs | Phase 6.2 hotfix #2: bump `PASS1_MAX_TOKENS` 3000→6000 + `PASS2_MAX_TOKENS` 4000→8000 (Pass 2 with extended thinking was returning thinking-only blocks on `stop_reason=max_tokens`); remove $3 cost-cap warning from /debug/vibes per user request | 2026-05-12 | 9ff83e3 | [260512-kvs-hotfix-2-remove-3-cost-cap-warning-bump-](./quick/260512-kvs-hotfix-2-remove-3-cost-cap-warning-bump-/) |
+| 260514-cdl | Phase 7 bootstrap deadlock hotfix: drop `if removed:` gate in `handle_track_played` so `maybe_schedule_refill` always runs after drain (deficit check inside preserves no-churn intent); empty-mirror regression test added | 2026-05-14 | 8594589 | [260514-cdl-fix-phase-7-suggestions-bootstrap-deadlo](./quick/260514-cdl-fix-phase-7-suggestions-bootstrap-deadlo/) |
 
 ## Session Continuity
 
