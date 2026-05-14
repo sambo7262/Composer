@@ -451,9 +451,19 @@ def test_post_setup_finalize_creates_vibes_and_playlists(
     with Session(test_engine) as session:
         vibes = session.exec(select(Vibe)).all()
         assert len(vibes) == 3
-        managed = session.exec(select(ManagedPlaylist)).all()
+        # Phase 7 Plan 01: finalize also calls bootstrap_suggestions_queue,
+        # which may add a ManagedPlaylist(kind='suggestions') row on Phase 7
+        # test fixtures that register SuggestionsMirror. This test runs
+        # under client_with_phase6 which does NOT register SuggestionsMirror
+        # but the lazy-imported bootstrap WILL still register a kind=
+        # 'suggestions' ManagedPlaylist row regardless (the ManagedPlaylist
+        # table is registered). Scope the assertion to kind='vibe' rows so
+        # the Phase 6 contract is unaffected.
+        managed = session.exec(
+            select(ManagedPlaylist).where(ManagedPlaylist.kind == "vibe")
+        ).all()
         assert len(managed) == 3
-        # Each ManagedPlaylist should have a vibe_id linked.
+        # Each ManagedPlaylist(kind='vibe') should have a vibe_id linked.
         for mp in managed:
             assert mp.vibe_id is not None
         track_vibes = session.exec(select(TrackVibe)).all()
@@ -1697,3 +1707,183 @@ def test_start_over_does_not_run_phase_61_migration_gate(
         assert row.completed_at == sentinel, (
             "MigrationLog.completed_at was modified"
         )
+
+
+# ===========================================================================
+# Phase 7 Plan 01 Task 2 — finalize() awaits bootstrap_suggestions_queue
+# after reslot_all_rated_tracks success (D-01 wizard-finalize caller).
+# ===========================================================================
+
+
+@pytest.fixture
+def client_with_phase7(test_engine) -> Generator[TestClient, None, None]:
+    """Same as client_with_phase6 but also registers the Phase 7 tables.
+
+    Phase 7 adds:
+      - SuggestionsMirror (queue source-of-truth, FK to track + vibe).
+      - MigrationLog (already registered by Phase 6.1; Phase 7 reuses it
+        with phase_id='7.0-suggestions-bootstrap').
+    """
+    from app.models.settings import ServiceConfig  # noqa: F401
+    from app.models.track import SyncState, Track  # noqa: F401
+    from app.models.event_log import EventLog  # noqa: F401
+    from app.models.llm_usage import LLMUsage  # noqa: F401
+    from app.models.taste_profile import TasteProfile  # noqa: F401
+    from app.models.vibe import (  # noqa: F401
+        ManagedPlaylist,
+        MigrationLog,
+        SetupState,
+        SlotInLog,
+        TrackVibe,
+        Vibe,
+    )
+    from app.models.suggestions import SuggestionsMirror  # noqa: F401
+
+    SQLModel.metadata.create_all(test_engine)
+
+    from app.main import app
+
+    with TestClient(app) as c:
+        yield c
+
+    SQLModel.metadata.drop_all(test_engine)
+
+
+@pytest.fixture(autouse=True)
+def _reset_suggestions_singleton_api_setup():
+    try:
+        from app.services import suggestions_service
+        suggestions_service._status = suggestions_service.SuggestionsServiceStatus()
+    except (ImportError, AttributeError):
+        pass
+    yield
+    try:
+        from app.services import suggestions_service
+        suggestions_service._status = suggestions_service.SuggestionsServiceStatus()
+    except (ImportError, AttributeError):
+        pass
+
+
+def test_finalize_calls_bootstrap_suggestions_queue_after_reslot(
+    client_with_phase7, test_engine, monkeypatch
+):
+    """D-01 — wizard finalize is one of two bootstrap callers. The bootstrap
+    MUST be awaited AFTER reslot_all_rated_tracks (so the vibe playlists
+    exist before Plan 02's first refill tries to read them) and BEFORE
+    _finalize_status flips to 'completed'.
+    """
+    from unittest.mock import AsyncMock
+
+    from app.routers import api_setup
+    from app.services import suggestions_service
+    from app.services.settings_service import save_setting
+
+    with Session(test_engine) as session:
+        save_setting(session, "plex", "http://plex.local", "fake-token")
+        _seed_rated_tracks(session, 60)
+        _seed_setup_state(
+            session,
+            step="proposing",
+            draft_proposals_json=_make_proposal_set_json(3),
+            refinement_turn_count=2,
+        )
+
+    call_order: list[str] = []
+
+    async def fake_create_playlist(plex_url, plex_token, name, rating_keys, vibe_id=None):
+        from app.models.vibe import ManagedPlaylist
+        new_key = f"playlist-{vibe_id or len(call_order)}"
+        with Session(test_engine) as session:
+            session.add(
+                ManagedPlaylist(
+                    kind="vibe",
+                    vibe_id=vibe_id,
+                    plex_rating_key=new_key,
+                    composer_name=name,
+                    track_count=len(rating_keys),
+                )
+            )
+            session.commit()
+        return new_key
+
+    async def fake_reslot():
+        call_order.append("reslot")
+        return 0
+
+    bootstrap_mock = AsyncMock(side_effect=lambda: call_order.append("bootstrap"))
+
+    monkeypatch.setattr(api_setup, "create_playlist", fake_create_playlist)
+    monkeypatch.setattr(api_setup, "reslot_all_rated_tracks", fake_reslot)
+    monkeypatch.setattr(
+        suggestions_service, "bootstrap_suggestions_queue", bootstrap_mock
+    )
+
+    response = client_with_phase7.post("/api/setup/finalize")
+    assert response.status_code == 200, response.text
+
+    # bootstrap awaited exactly once.
+    assert bootstrap_mock.await_count == 1
+    # reslot ran BEFORE bootstrap.
+    assert call_order == ["reslot", "bootstrap"]
+
+    # _finalize_status flipped to completed (or at least reached the
+    # bootstrap call site — final state should be 'completed').
+    assert api_setup._finalize_status.state == "completed"
+
+
+def test_finalize_bootstrap_failure_does_not_break_finalize_response(
+    client_with_phase7, test_engine, monkeypatch
+):
+    """D-01 best-effort — if bootstrap_suggestions_queue raises (e.g.
+    transient Plex outage), /api/setup/finalize still returns 200 with the
+    completed banner. The lifespan migration retries on next restart.
+    """
+    from unittest.mock import AsyncMock
+
+    from app.routers import api_setup
+    from app.services import suggestions_service
+    from app.services.settings_service import save_setting
+
+    with Session(test_engine) as session:
+        save_setting(session, "plex", "http://plex.local", "fake-token")
+        _seed_rated_tracks(session, 60)
+        _seed_setup_state(
+            session,
+            step="proposing",
+            draft_proposals_json=_make_proposal_set_json(3),
+            refinement_turn_count=2,
+        )
+
+    async def fake_create_playlist(plex_url, plex_token, name, rating_keys, vibe_id=None):
+        from app.models.vibe import ManagedPlaylist
+        new_key = f"playlist-{vibe_id or 0}"
+        with Session(test_engine) as session:
+            session.add(
+                ManagedPlaylist(
+                    kind="vibe",
+                    vibe_id=vibe_id,
+                    plex_rating_key=new_key,
+                    composer_name=name,
+                    track_count=len(rating_keys),
+                )
+            )
+            session.commit()
+        return new_key
+
+    monkeypatch.setattr(api_setup, "create_playlist", fake_create_playlist)
+    monkeypatch.setattr(
+        api_setup, "reslot_all_rated_tracks", AsyncMock(return_value=0)
+    )
+    monkeypatch.setattr(
+        suggestions_service,
+        "bootstrap_suggestions_queue",
+        AsyncMock(side_effect=RuntimeError("simulated outage")),
+    )
+
+    response = client_with_phase7.post("/api/setup/finalize")
+    assert response.status_code == 200
+
+    # Finalize completed despite bootstrap failure — D-01 best-effort.
+    assert api_setup._finalize_status.state == "completed"
+    # Banner copy reaches completed state.
+    assert "live in Plex" in response.text

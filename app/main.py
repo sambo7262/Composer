@@ -242,6 +242,12 @@ async def lifespan(app: FastAPI):
     # Phase 6.1 D-NEW-09: one-shot wipe of Phase 6 vibe state, gated by
     # MigrationLog(phase_id='6.1'). No-op on subsequent restarts.
     await run_phase_61_migration()
+    # Phase 7 D-02: one-shot Suggestions queue bootstrap, gated by
+    # MigrationLog(phase_id='7.0-suggestions-bootstrap'). No-op on
+    # subsequent restarts and on fresh installs that bootstrapped via the
+    # wizard finalize hook (D-01).
+    from app.services.suggestions_service import run_phase_07_suggestions_bootstrap
+    await run_phase_07_suggestions_bootstrap()
     # Phase 5: queue → dispatcher → scheduler order is mandatory.
     get_event_bus()
     await start_dispatcher()
