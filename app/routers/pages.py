@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from math import ceil
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlmodel import Session, select, func, col
+
+logger = logging.getLogger(__name__)
 
 from app.database import get_session
 from app.models.event_log import EventLog
@@ -63,7 +66,19 @@ async def home(request: Request, session: Session = Depends(get_session)):
         return RedirectResponse("/setup", status_code=302)
 
     # Phase 7 UI-01 — render the vibes home as the landing page.
-    return await read_vibes_home(request, session)
+    # WR-09 fix: never let a crash in read_vibes_home (e.g. corrupt Vibe row)
+    # blow up the root path. Fall back to welcome.html so the user can still
+    # navigate; the exception is logged for the operator.
+    try:
+        return await read_vibes_home(request, session)
+    except Exception:
+        logger.exception(
+            "home: read_vibes_home failed; falling back to welcome page",
+        )
+        return templates.TemplateResponse(
+            request,
+            "pages/welcome.html",
+        )
 
 
 @router.get("/vibes", response_class=HTMLResponse)
