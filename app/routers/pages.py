@@ -156,6 +156,97 @@ async def read_chat_retired() -> HTMLResponse:
     )
 
 
+@router.get("/debug", response_class=HTMLResponse)
+async def read_debug_index(request: Request):
+    """DEBUG-05 — index page linking to all debug surfaces.
+
+    Plain HTML, no JS-only content. Linked from the settings footer.
+    """
+    templates = get_templates()
+    return templates.TemplateResponse(
+        request,
+        "pages/debug_index.html",
+        {"active_page": "settings"},
+    )
+
+
+@router.get("/debug/suggestions", response_class=HTMLResponse)
+async def read_debug_suggestions(
+    request: Request, session: Session = Depends(get_session),
+):
+    """DEBUG-03 — Suggestions queue diagnostic surface.
+
+    Sections (in render order):
+      1. Cost breaker state (in-process singleton from llm_cost_breaker).
+      2. Current SuggestionsMirror queue (track + vibe + score + rationale).
+      3. Last 20 RefillTriggerLog rows (DESC triggered_at).
+      4. Last 20 LLMUsage rows where purpose LIKE 'suggestions_%'.
+      5. Last 20 NegativeSignal rows (DESC created_at).
+
+    Plain HTML; copy-friendly via <pre> + <code> + <table> blocks
+    (DEBUG-05 invariant). T-07-03-01..03 — every Track / Vibe / artist
+    / rationale field rendered with explicit `| e` for XSS escape.
+    """
+    from app.models.suggestions import (
+        NegativeSignal, RefillTriggerLog, SuggestionsMirror,
+    )
+    from app.models.llm_usage import LLMUsage
+    from app.services.llm_cost_breaker import get_state as breaker_state
+
+    templates = get_templates()
+
+    # 1. Current queue — ordered by position ascending (lower = top).
+    rows = session.exec(
+        select(SuggestionsMirror)
+        .order_by(col(SuggestionsMirror.position).asc())
+    ).all()
+    queue = []
+    for r in rows:
+        track = session.exec(select(Track).where(Track.id == r.track_id)).first()
+        vibe = None
+        if r.vibe_id is not None:
+            vibe = session.exec(
+                select(Vibe).where(Vibe.id == r.vibe_id)
+            ).first()
+        if track is not None:
+            queue.append({"row": r, "track": track, "vibe": vibe})
+
+    # 2. Last 20 refill triggers — DESC by triggered_at.
+    refill_log = session.exec(
+        select(RefillTriggerLog)
+        .order_by(col(RefillTriggerLog.triggered_at).desc())
+        .limit(20)
+    ).all()
+
+    # 3. Last 20 LLMUsage rows with suggestions_* purpose — DESC by called_at.
+    llm_calls = session.exec(
+        select(LLMUsage)
+        .where(col(LLMUsage.purpose).like("suggestions_%"))
+        .order_by(col(LLMUsage.called_at).desc())
+        .limit(20)
+    ).all()
+
+    # 4. Last 20 negative signals — DESC by created_at.
+    negative_signals = session.exec(
+        select(NegativeSignal)
+        .order_by(col(NegativeSignal.created_at).desc())
+        .limit(20)
+    ).all()
+
+    return templates.TemplateResponse(
+        request,
+        "pages/debug_suggestions.html",
+        {
+            "active_page": "settings",
+            "queue": queue,
+            "refill_log": refill_log,
+            "llm_calls": llm_calls,
+            "negative_signals": negative_signals,
+            "breaker": breaker_state(),
+        },
+    )
+
+
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, session: Session = Depends(get_session)):
     """Settings page with three service configuration cards.

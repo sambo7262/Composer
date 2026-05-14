@@ -250,11 +250,16 @@ class TestDebugSuggestions:
 
     def test_renders_recent_negativesignal_rows(self, client_full, test_engine):
         with Session(test_engine) as s:
+            # Seed tracks first so the FK on NegativeSignal.track_id resolves.
+            track_ids = []
             for i in range(5):
+                t = _seed_track(s, plex_rating_key=f"rk-{i}", title=f"T{i}")
+                track_ids.append(t.id)
+            for i, tid in enumerate(track_ids):
                 _seed_negative(
                     s,
-                    signal_type=f"hard_track" if i % 2 == 0 else "soft",
-                    track_id=i + 1,
+                    signal_type="hard_track" if i % 2 == 0 else "soft",
+                    track_id=tid,
                     artist=None,
                 )
         resp = client_full.get("/debug/suggestions")
