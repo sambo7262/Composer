@@ -102,11 +102,13 @@ def test_bottom_tab_bar_hidden_on_desktop():
     )
 
 
-def test_bottom_tab_bar_tap_targets_min_h_11():
-    body = _read("partials/bottom_tab_bar.html")
-    # One min-h-11 per tab anchor (4 tabs).
-    assert body.count("min-h-11") >= 4, (
-        "bottom_tab_bar.html must have min-h-11 on every tab anchor "
+def test_bottom_tab_bar_tap_targets_min_h_11(jinja_env):
+    # Render the template (the anchor uses a Jinja for-loop over 4 tabs, so
+    # the source has 1 occurrence of `min-h-11` but the rendered output has 4).
+    tpl = jinja_env.get_template("partials/bottom_tab_bar.html")
+    rendered = tpl.render(active_page="vibes")
+    assert rendered.count("min-h-11") >= 4, (
+        "bottom_tab_bar.html must render min-h-11 on every tab anchor "
         "(UI-04 / Pitfall 17 — 44px tap target)"
     )
 
@@ -135,8 +137,14 @@ def test_bottom_tab_bar_no_hover_only_state():
 
 def test_nav_html_removed_compose_link():
     body = _read("partials/nav.html")
-    assert "Compose" not in body, (
-        "nav.html must not reference 'Compose' (UI-06 — v1 chat retired)"
+    # "Compose" (label) and "Composer" (brand) differ by trailing 'r'. Only
+    # the bare label/link is forbidden — the "Composer" wordmark stays.
+    assert not re.search(r"\bCompose\b", body), (
+        "nav.html must not reference the 'Compose' label (UI-06 — v1 chat "
+        "retired). 'Composer' (brand) is allowed."
+    )
+    assert 'href="/chat"' not in body, (
+        "nav.html must not link to /chat (UI-06 — v1 chat retired)"
     )
     assert "Vibes" in body, "nav.html must add a 'Vibes' link"
     assert "Suggestions" in body, "nav.html must add a 'Suggestions' link"
