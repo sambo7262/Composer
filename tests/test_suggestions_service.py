@@ -285,31 +285,33 @@ class TestDrainTrackFromMirror:
 
 
 class TestMaybeScheduleRefill:
-    def test_writes_refill_pending_marker_when_below_target(self, db_phase7):
-        """deficit > 0 → INSERT OR IGNORE on EventLog(event_type=
-        'suggestions_refill_pending')."""
-        from app.services.suggestions_service import maybe_schedule_refill
-        from app.models.event_log import EventLog
+    """Plan 02 W4 revision: maybe_schedule_refill no longer writes an EventLog
+    marker; it directly awaits ``refill_suggestions_queue`` when deficit > 0
+    (and the cost breaker is closed). These tests assert the new contract.
+    """
 
-        # Empty mirror, target=30 → deficit=30.
-        deficit = _run_async(maybe_schedule_refill())
+    def test_awaits_refill_when_below_target(self, db_phase7):
+        from unittest.mock import AsyncMock
+        from app.services import suggestions_service
+
+        original = suggestions_service.refill_suggestions_queue
+        mock_refill = AsyncMock(return_value=None)
+        suggestions_service.refill_suggestions_queue = mock_refill
+        try:
+            deficit = _run_async(suggestions_service.maybe_schedule_refill())
+        finally:
+            suggestions_service.refill_suggestions_queue = original
         assert deficit == 30
-
-        rows = db_phase7.exec(
-            select(EventLog).where(
-                EventLog.event_type == "suggestions_refill_pending"
-            )
-        ).all()
-        assert len(rows) == 1
+        mock_refill.assert_awaited_once()
 
     def test_returns_zero_when_at_target(self, db_phase7):
-        """No EventLog row written when mirror size >= target."""
-        from app.services.suggestions_service import maybe_schedule_refill
-        from app.models.event_log import EventLog
+        """Plan 02 W4: when mirror size >= target, refill_suggestions_queue is
+        NOT awaited (deficit == 0 short-circuit)."""
+        from unittest.mock import AsyncMock
+        from app.services import suggestions_service
         from app.models.suggestions import SuggestionsMirror
         from app.models.track import Track
 
-        # Seed 30 mirror rows.
         for i in range(30):
             t = Track(plex_rating_key=str(100 + i), title=f"T{i}", artist="A")
             db_phase7.add(t)
@@ -325,21 +327,31 @@ class TestMaybeScheduleRefill:
             )
         db_phase7.commit()
 
-        deficit = _run_async(maybe_schedule_refill())
+        original = suggestions_service.refill_suggestions_queue
+        mock_refill = AsyncMock(return_value=None)
+        suggestions_service.refill_suggestions_queue = mock_refill
+        try:
+            deficit = _run_async(suggestions_service.maybe_schedule_refill())
+        finally:
+            suggestions_service.refill_suggestions_queue = original
         assert deficit == 0
-
-        rows = db_phase7.exec(
-            select(EventLog).where(
-                EventLog.event_type == "suggestions_refill_pending"
-            )
-        ).all()
-        assert len(rows) == 0
+        mock_refill.assert_not_called()
 
     def test_custom_target(self, db_phase7):
-        from app.services.suggestions_service import maybe_schedule_refill
+        from unittest.mock import AsyncMock
+        from app.services import suggestions_service
 
-        deficit = _run_async(maybe_schedule_refill(target=10))
+        original = suggestions_service.refill_suggestions_queue
+        mock_refill = AsyncMock(return_value=None)
+        suggestions_service.refill_suggestions_queue = mock_refill
+        try:
+            deficit = _run_async(
+                suggestions_service.maybe_schedule_refill(target=10)
+            )
+        finally:
+            suggestions_service.refill_suggestions_queue = original
         assert deficit == 10
+        mock_refill.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

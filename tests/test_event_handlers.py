@@ -481,13 +481,18 @@ class TestHandleTrackPlayedSuggestionsDrain:
     + last_viewed_at update.
     """
 
-    def test_drains_mirror_when_track_is_member(self, db_with_phase7):
+    def test_drains_mirror_when_track_is_member_revised(self, db_with_phase7):
+        """Plan 02 W4 revision: replace the EventLog-marker assertion with a
+        direct ``refill_suggestions_queue.assert_awaited_once()`` check. The
+        Phase 5 view_count++ and SuggestionsMirror drain assertions REMAIN.
+        """
         from datetime import datetime, timezone
+        from unittest.mock import AsyncMock
 
         from app.models.events import TrackPlayedEvent
-        from app.models.event_log import EventLog
         from app.models.suggestions import SuggestionsMirror
         from app.models.track import Track
+        from app.services import suggestions_service
         from app.services.event_handlers import handle_track_played
         from app.database import get_engine
 
@@ -517,7 +522,16 @@ class TestHandleTrackPlayedSuggestionsDrain:
             received_at=datetime.now(timezone.utc).isoformat(),
         )
 
-        _run_async(handle_track_played(evt))
+        # Plan 02 W4 — mock the in-line refill function so we assert it was
+        # awaited rather than reading the EventLog marker (which Plan 02
+        # dropped).
+        original = suggestions_service.refill_suggestions_queue
+        mock_refill = AsyncMock(return_value=None)
+        suggestions_service.refill_suggestions_queue = mock_refill
+        try:
+            _run_async(handle_track_played(evt))
+        finally:
+            suggestions_service.refill_suggestions_queue = original
 
         # (1) Phase 5 RATE-04 view_count + last_viewed_at still updated.
         with Session(get_engine()) as fresh:
@@ -535,27 +549,25 @@ class TestHandleTrackPlayedSuggestionsDrain:
             ).all()
             assert len(mirror_rows) == 0
 
-            # (3) Threshold-gate marker scheduled (mirror is now empty <
-            # target=30 → deficit=30).
-            refill_markers = fresh.exec(
-                select(EventLog).where(
-                    EventLog.event_type == "suggestions_refill_pending"
-                )
-            ).all()
-            assert len(refill_markers) == 1
+        # (3) Plan 02 — refill_suggestions_queue awaited (in-line replacement
+        # for the dropped EventLog marker).
+        mock_refill.assert_awaited_once()
 
-    def test_no_refill_when_track_not_in_mirror_and_target_already_met(
+    def test_no_op_when_track_not_in_mirror_revised(
         self, db_with_phase7
     ):
-        """When the played track is NOT in the mirror AND the mirror is
-        already at target, no refill marker is written (deficit=0).
+        """Plan 02 W4 revision: confirmed identity preserve. When the played
+        track is NOT in the mirror, ``refill_suggestions_queue`` must NOT be
+        awaited (the drain returned False → no in-line refill). view_count++
+        still happens.
         """
         from datetime import datetime, timezone
+        from unittest.mock import AsyncMock
 
         from app.models.events import TrackPlayedEvent
-        from app.models.event_log import EventLog
         from app.models.suggestions import SuggestionsMirror
         from app.models.track import Track
+        from app.services import suggestions_service
         from app.services.event_handlers import handle_track_played
         from app.database import get_engine
 
@@ -598,25 +610,24 @@ class TestHandleTrackPlayedSuggestionsDrain:
             received_at=datetime.now(timezone.utc).isoformat(),
         )
 
-        _run_async(handle_track_played(evt))
+        original = suggestions_service.refill_suggestions_queue
+        mock_refill = AsyncMock(return_value=None)
+        suggestions_service.refill_suggestions_queue = mock_refill
+        try:
+            _run_async(handle_track_played(evt))
+        finally:
+            suggestions_service.refill_suggestions_queue = original
 
         with Session(get_engine()) as fresh:
-            # Drain returned False — no mirror row matched ratingKey "99".
-            # The threshold gate is only triggered when `removed` is True
-            # (see event_handlers.handle_track_played); since drain returned
-            # False, maybe_schedule_refill is NOT called → no marker.
-            refill_markers = fresh.exec(
-                select(EventLog).where(
-                    EventLog.event_type == "suggestions_refill_pending"
-                )
-            ).all()
-            assert len(refill_markers) == 0
-
             # view_count still incremented.
             outsider = fresh.exec(
                 select(Track).where(Track.plex_rating_key == "99")
             ).first()
             assert outsider.view_count == 1
+
+        # Drain returned False → refill is NOT awaited. Plan 02 wired
+        # ``refill_suggestions_queue`` to fire only when drain returned True.
+        mock_refill.assert_not_called()
 
     def test_drain_failure_does_not_break_rating_update(self, db_with_phase7):
         """If drain_track_from_mirror raises, the Phase 5 view_count update
