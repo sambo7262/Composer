@@ -308,3 +308,67 @@ class TestRefillSuggestionsForVibeContract:
                 )
         finally:
             SQLModel.metadata.drop_all(test_engine)
+
+    def test_empty_shortlist_short_circuit_no_llm_call(self, test_engine):
+        """CR-02 regression — refill_suggestions_for_vibe MUST short-circuit
+        when the targeted vibe has no eligible candidates. The LLM client is
+        never invoked, the RefillTriggerLog records `error='empty_shortlist'`,
+        and the returned RefillResult has zero picks/cost.
+        """
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from app.models.settings import ServiceConfig  # noqa: F401
+        from app.models.track import SyncState, Track  # noqa: F401
+        from app.models.event_log import EventLog  # noqa: F401
+        from app.models.llm_usage import LLMUsage  # noqa: F401
+        from app.models.taste_profile import TasteProfile  # noqa: F401
+        from app.models.vibe import (  # noqa: F401
+            ManagedPlaylist, MigrationLog, SetupState, SlotInLog,
+            TrackVibe, Vibe,
+        )
+        from app.models.suggestions import (  # noqa: F401
+            NegativeSignal, RefillTriggerLog, SuggestionHistory, SuggestionsMirror,
+        )
+
+        SQLModel.metadata.create_all(test_engine)
+        try:
+            from app.services import suggestions_service
+
+            with Session(test_engine) as s:
+                vid = _seed_vibe(s, name="EmptyVibe")
+                # No tracks seeded — _build_shortlist_sync will return [].
+
+            # Anthropic client MUST NOT be called.
+            mock_get_client = MagicMock()
+            with patch.object(
+                suggestions_service, "_get_anthropic_client",
+                new=mock_get_client,
+            ):
+                loop = asyncio.new_event_loop()
+                try:
+                    result = loop.run_until_complete(
+                        suggestions_service.refill_suggestions_for_vibe(
+                            vid, target=15,
+                        )
+                    )
+                finally:
+                    loop.close()
+
+            mock_get_client.assert_not_called()
+            assert result.picks_inserted == 0
+            assert result.candidates_evaluated == 0
+            assert result.cost_estimate_usd == 0.0
+            assert result.breaker_tripped is False
+
+            with Session(test_engine) as s:
+                logs = s.exec(select(RefillTriggerLog)).all()
+                assert any(
+                    l.event_source == "vibe_coverage_cta"
+                    and l.target_vibe_id == vid
+                    and l.error == "empty_shortlist"
+                    and l.cost_estimate_usd == 0.0
+                    for l in logs
+                ), f"Expected empty_shortlist trigger log; got {[(l.event_source, l.error) for l in logs]}"
+        finally:
+            SQLModel.metadata.drop_all(test_engine)

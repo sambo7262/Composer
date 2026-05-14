@@ -1387,6 +1387,31 @@ async def refill_suggestions_for_vibe(
     shortlist = await asyncio.to_thread(
         _build_shortlist_sync, target, vibe_id,
     )
+
+    # CR-02 fix — empty-shortlist short-circuit. Mirrors the deficit==0 guard
+    # in refill_suggestions_queue: if the targeted vibe has no eligible
+    # 2σ-in-band unrated tracks, calling Anthropic with an empty candidate
+    # list would burn two daily-quota slots (initial + Pitfall 10 retry) for
+    # guaranteed-invalid output. Log a zero-cost trigger row and bail.
+    if not shortlist:
+        await asyncio.to_thread(
+            _insert_refill_trigger_log_sync,
+            "vibe_coverage_cta", 0, 0,
+            int((time.monotonic() - start) * 1000),
+            0.0, False, vibe_id, "empty_shortlist",
+        )
+        _status = SuggestionsServiceStatus(
+            state="idle",
+            last_bootstrap_at=_status.last_bootstrap_at,
+            last_drain_at=_status.last_drain_at,
+        )
+        return RefillResult(
+            candidates_evaluated=0, picks_returned=0,
+            picks_validated=0, picks_inserted=0,
+            latency_ms=int((time.monotonic() - start) * 1000),
+            cost_estimate_usd=0.0, cache_hit=False, cache_created=False,
+        )
+
     soft_negatives = await asyncio.to_thread(_read_soft_negatives_sync)
     system_prompt = build_suggestions_ranking_system_prompt()
     user_prompt = build_suggestions_ranking_user_prompt(shortlist, soft_negatives)
