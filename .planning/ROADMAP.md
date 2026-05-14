@@ -218,7 +218,7 @@ Plans:
 **Plans:** 3 plans
 Plans:
 - [x] 07-01-PLAN.md — Queue foundation: SuggestionsMirror model, bootstrap_suggestions_queue (dual-caller wizard finalize + lifespan migration), handle_track_played drain branch, extend AST PlexAPI test
-- [ ] 07-02-PLAN.md — LLM ranking pipeline + cost circuit breaker (same-commit per Pitfall 11) + skip-tracking (SuggestionHistory / NegativeSignal / RefillTriggerLog) + settings cost meter + SUGG-10 vibe coverage CTA
+- [x] 07-02-PLAN.md — LLM ranking pipeline + cost circuit breaker (same-commit per Pitfall 11) + skip-tracking (SuggestionHistory / NegativeSignal / RefillTriggerLog) + settings cost meter + SUGG-10 vibe coverage CTA
 - [ ] 07-03-PLAN.md — Mobile-first base shell (bottom tab bar, h-dvh, safe-area-inset, 44px targets) + /suggestions page + vibes home + v1 chat retirement + /debug index + /debug/suggestions
 **UI hint**: yes
 **Key Concerns** (pitfalls to bake in):
