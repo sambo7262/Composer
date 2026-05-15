@@ -722,3 +722,110 @@ class TestHandleTrackPlayedSuggestionsDrain:
             # Phase 5 update still committed — the drain hook is best-effort.
             assert updated.view_count == 1
             assert updated.last_viewed_at == "2026-05-13T13:00:00+00:00"
+
+
+class TestHandleTrackPlayedDiscoveryCounterIncrement:
+    """Phase 7.1 D-A3 — handle_track_played increments
+    plays_since_last_discovery on every play (best-effort hook).
+    """
+
+    def test_handle_track_played_increments_discovery_counter(
+        self, db_with_phase7,
+    ):
+        """Mock increment_plays_since_last_discovery; fire a TrackPlayed
+        event; assert the mock was awaited exactly once.
+        """
+        from datetime import datetime, timezone
+        from unittest.mock import AsyncMock
+
+        from app.models.events import TrackPlayedEvent
+        from app.models.track import Track
+        from app.services import suggestions_discovery
+        from app.services.event_handlers import handle_track_played
+
+        played = Track(
+            plex_rating_key="888",
+            title="Discovery Counter Test",
+            artist="Test Artist",
+        )
+        db_with_phase7.add(played)
+        db_with_phase7.commit()
+
+        evt = TrackPlayedEvent(
+            plex_rating_key="888",
+            last_viewed_at="2026-05-15T10:00:00+00:00",
+            source="webhook",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        original = suggestions_discovery.increment_plays_since_last_discovery
+        mock_inc = AsyncMock(return_value=1)
+        suggestions_discovery.increment_plays_since_last_discovery = mock_inc
+        try:
+            _run_async(handle_track_played(evt))
+        finally:
+            suggestions_discovery.increment_plays_since_last_discovery = original
+
+        mock_inc.assert_awaited_once()
+
+    def test_handle_track_played_discovery_counter_failure_does_not_break_handler(
+        self, db_with_phase7,
+    ):
+        """Patch increment_plays_since_last_discovery to raise. Fire the
+        event. Assert view_count still increments and the existing
+        drain/refill path still runs. Best-effort try/except invariant.
+        """
+        from datetime import datetime, timezone
+        from unittest.mock import AsyncMock
+
+        from app.database import get_engine
+        from app.models.events import TrackPlayedEvent
+        from app.models.track import Track
+        from app.services import suggestions_discovery, suggestions_service
+        from app.services.event_handlers import handle_track_played
+
+        played = Track(
+            plex_rating_key="889",
+            title="Discovery Counter Failure Test",
+            artist="Test Artist",
+        )
+        db_with_phase7.add(played)
+        db_with_phase7.commit()
+
+        evt = TrackPlayedEvent(
+            plex_rating_key="889",
+            last_viewed_at="2026-05-15T10:00:00+00:00",
+            source="webhook",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        original_inc = suggestions_discovery.increment_plays_since_last_discovery
+        original_drain = suggestions_service.drain_track_from_mirror
+        original_refill = suggestions_service.maybe_schedule_refill
+        mock_inc_fail = AsyncMock(side_effect=RuntimeError("boom"))
+        mock_drain = AsyncMock(return_value=False)
+        mock_refill = AsyncMock(return_value=0)
+        suggestions_discovery.increment_plays_since_last_discovery = mock_inc_fail
+        suggestions_service.drain_track_from_mirror = mock_drain
+        suggestions_service.maybe_schedule_refill = mock_refill
+        try:
+            _run_async(handle_track_played(evt))
+        finally:
+            suggestions_discovery.increment_plays_since_last_discovery = original_inc
+            suggestions_service.drain_track_from_mirror = original_drain
+            suggestions_service.maybe_schedule_refill = original_refill
+
+        # Phase 5 RATE-04 view_count++ + last_viewed_at still happen.
+        with Session(get_engine()) as fresh:
+            updated = fresh.exec(
+                select(Track).where(Track.plex_rating_key == "889")
+            ).first()
+            assert updated.view_count == 1
+            assert updated.last_viewed_at == "2026-05-15T10:00:00+00:00"
+
+        # Drain + refill hooks still ran (counter failure must not
+        # short-circuit them).
+        mock_drain.assert_awaited_once()
+        mock_refill.assert_awaited_once()
+        # Counter mock was called and raised.
+        mock_inc_fail.assert_awaited_once()
