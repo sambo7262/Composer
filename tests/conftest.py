@@ -73,3 +73,69 @@ def test_encryptor(tmp_data_dir) -> CredentialEncryptor:
     key_path = os.path.join(str(tmp_data_dir), ".encryption.key")
     key = get_or_create_key(key_path)
     return CredentialEncryptor(key)
+
+
+@pytest.fixture
+def db_with_phase7(test_engine):
+    """Phase 5 + 6 + 7 + 7.1 tables — promoted from tests/test_event_handlers.py
+    (W13). Used by test_event_handlers.py, test_suggestions_discovery.py,
+    and test_pages_settings.py.
+
+    Runs ``init_db()`` so the additive ``_migrate_add_columns`` ALTERs
+    (LLMUsage.error_text from Phase 7.1 + the existing setupstate / track
+    ones) execute against the fixture's engine.
+    """
+    from app.models.settings import ServiceConfig  # noqa: F401
+    from app.models.track import SyncState, Track  # noqa: F401
+    from app.models.event_log import EventLog  # noqa: F401
+    from app.models.llm_usage import LLMUsage  # noqa: F401
+    from app.models.taste_profile import TasteProfile  # noqa: F401
+    from app.models.vibe import (  # noqa: F401
+        DiscoveryState,  # Phase 7.1
+        ManagedPlaylist,
+        MigrationLog,
+        SetupState,
+        SlotInLog,
+        TrackVibe,
+        Vibe,
+    )
+    from app.models.suggestions import (  # noqa: F401
+        NegativeSignal,
+        RefillTriggerLog,
+        SuggestionHistory,
+        SuggestionsMirror,
+    )
+
+    # init_db() runs the additive _migrate_add_columns ALTERs (LLMUsage
+    # error_text from Phase 7.1 + the existing setupstate / track ones)
+    # so every fixture user gets the full current schema.
+    from app.database import init_db
+    init_db()
+    SQLModel.metadata.create_all(test_engine)
+    with Session(test_engine) as session:
+        yield session
+    SQLModel.metadata.drop_all(test_engine)
+
+
+@pytest.fixture
+def fresh_db(tmp_path, monkeypatch):
+    """Phase 5 lazy-engine pattern — fresh SQLite per test (W8 / W13).
+
+    Differs from db_with_phase7 by overriding COMPOSER_DB_PATH and
+    resetting the engine singleton; useful for tests that need to
+    verify the FULL init_db() create_all path on a virgin DB (e.g.
+    DiscoveryState table creation, init_db idempotency, ALTER TABLE
+    migrations).
+    """
+    from app import database as db_module
+    from app.database import get_engine, init_db
+
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("COMPOSER_DB_PATH", str(db_path))
+    # Reset the lazy engine singleton so init_db() picks up the new path.
+    db_module._engine = None
+    init_db()
+    engine = get_engine()
+    with Session(engine) as session:
+        yield session
+    db_module._engine = None

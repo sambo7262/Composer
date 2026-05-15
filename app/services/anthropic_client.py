@@ -56,6 +56,46 @@ PRICING_CACHE_READ_USD_PER_MTOK = 0.30
 PRICING_OUTPUT_USD_PER_MTOK = 15.0
 
 
+class MaxTokensTruncationError(Exception):
+    """Phase 7.1 SUGG-14 — raised when Anthropic returns
+    ``stop_reason='max_tokens'``.
+
+    Replaces the legacy warning-only behavior (which silently let the
+    truncated JSON propagate to ``BaseModel.model_validate_json`` and
+    surface as a generic ``ValidationError`` — indistinguishable from
+    a malformed prompt). Plan 02's ``discovery_call_weekly`` retry
+    loop catches THIS specifically, doubles ``max_tokens``, and
+    re-invokes; non-truncation errors propagate normally.
+
+    Carries ``truncated_text_length`` (the partial response that was
+    about to be parsed) and ``requested_max_tokens`` (the budget that
+    was insufficient) for diagnostic capture into the
+    ``LLMUsage.error_text`` column added in Plan 01.
+
+    Existing call sites (taste profile, vibe naming, etc.) will let
+    this propagate by default — the warning-only behavior was a
+    latent bug per quick task ``260514-e6w`` post-mortem; surfacing
+    the truncation explicitly is the correct fix everywhere, not just
+    in the discovery cron.
+    """
+
+    def __init__(
+        self,
+        purpose: str,
+        requested_max_tokens: int,
+        truncated_text_length: int,
+    ) -> None:
+        super().__init__(
+            f"Anthropic response truncated for purpose={purpose!r}: "
+            f"stop_reason='max_tokens' at {truncated_text_length} "
+            f"chars (requested max_tokens={requested_max_tokens}). "
+            f"Retry with a larger budget or simplify the prompt."
+        )
+        self.purpose = purpose
+        self.requested_max_tokens = requested_max_tokens
+        self.truncated_text_length = truncated_text_length
+
+
 class AnthropicClient:
     """Wraps AsyncAnthropic with prompt caching + structured output + per-call usage logging."""
 
@@ -170,16 +210,47 @@ class AnthropicClient:
                 input_tokens,
             )
 
-        # Phase 6.2 Plan 01 Task 1 — surface stop_reason='max_tokens' as a
-        # WARNING so /debug/vibes can flag Pass 2 truncations (Pitfall E /
-        # T-062-07). When real Pass 2 calls hit this we raise max_tokens to
-        # 6000-8000 per RESEARCH §1.6 follow-up.
+        # Phase 7.1 SUGG-14 — surface stop_reason='max_tokens' as a typed
+        # exception so callers (esp. the weekly discovery cron) can retry
+        # with a doubled budget. Replaces the warning-only branch from
+        # Phase 6.2 / quick task 260514-e6w post-mortem (the warning was
+        # silently letting truncated JSON propagate to model_validate_json
+        # which surfaced as a generic ValidationError — see
+        # MaxTokensTruncationError docstring).
         stop_reason = getattr(response, "stop_reason", None)
         if stop_reason == "max_tokens":
+            # Cost is already incurred — log the LLMUsage row first so the
+            # cost meter accounts for the truncated call, THEN raise so
+            # the caller can retry. We extract the partial text length for
+            # diagnostic capture; the partial JSON itself is discarded
+            # (the caller must retry with a larger budget for valid output).
+            await self._log_usage(
+                purpose=purpose,
+                model=self._model,
+                input_tokens=input_tokens,
+                cache_creation_tokens=cache_creation,
+                cache_read_tokens=cache_read,
+                output_tokens=output_tokens,
+            )
+            partial_text_block = next(
+                (b for b in response.content if getattr(b, "type", None) == "text"),
+                None,
+            )
+            partial_len = (
+                len(getattr(partial_text_block, "text", "") or "")
+                if partial_text_block is not None
+                else 0
+            )
             logger.warning(
-                "Anthropic response stop_reason=max_tokens for purpose=%s — "
-                "output truncated; consider raising max_tokens.",
-                purpose,
+                "Anthropic response stop_reason=max_tokens for purpose=%s "
+                "— raising MaxTokensTruncationError (partial text=%d chars, "
+                "requested max_tokens=%d).",
+                purpose, partial_len, max_tokens,
+            )
+            raise MaxTokensTruncationError(
+                purpose=purpose,
+                requested_max_tokens=max_tokens,
+                truncated_text_length=partial_len,
             )
 
         await self._log_usage(

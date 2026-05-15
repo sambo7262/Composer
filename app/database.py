@@ -143,6 +143,26 @@ def _migrate_add_columns(engine) -> None:
         # legacy DBs that were created on Plan 01-03 schema.
         pass
 
+    # Phase 7.1 (D-A3 / D-C3) — additive error_text column on LLMUsage
+    # for diagnostic capture on failed discovery calls (Plan 02 +
+    # Plan 03 consume). LLMUsage is small + append-only; the ALTER
+    # TABLE ADD COLUMN with no DEFAULT is safe + non-blocking on SQLite.
+    # Guarded by a column-existence check so the migration is
+    # idempotent when re-run on already-migrated DBs.
+    try:
+        cursor.execute("PRAGMA table_info(llmusage)")
+        llmusage_cols = {row[1] for row in cursor.fetchall()}
+        if "error_text" not in llmusage_cols:
+            cursor.execute(
+                "ALTER TABLE llmusage ADD COLUMN error_text TEXT"
+            )
+    except sqlite3.OperationalError:
+        # Table doesn't exist yet (very early init order); create_all
+        # will materialize it from the SQLModel definition above with
+        # the column already present. The ALTER is only for legacy
+        # Phase 5/6/7 DBs.
+        pass
+
     # Phase 6 Plan 04 (D-36) — ix_slotinlog_timestamp for the
     # "Last 20 slot-in decisions" diagnostic feed (ORDER BY timestamp DESC LIMIT 20).
     # SQLModel ships a column-level index=True via the model definition; this
@@ -186,7 +206,10 @@ def init_db() -> None:
     from app.models.taste_profile import TasteProfile  # noqa: F401
     # Phase 6 (D-28) — register vibe tables before create_all
     # Phase 6.1 (D-NEW-09) — register MigrationLog for the one-shot migration gate.
+    # Phase 7.1 (D-A3 / D-C2) — register DiscoveryState for the discovery
+    # counter + last-run timestamp.
     from app.models.vibe import (  # noqa: F401
+        DiscoveryState,  # Phase 7.1 (D-A3 / D-C2) discovery counter + last-run
         ManagedPlaylist,
         MigrationLog,
         SetupState,

@@ -432,31 +432,9 @@ class TestStaticAnalysis:
 
 # ===========================================================================
 # Phase 7 Plan 01 Task 2 — handle_track_played drain branch tests
+# (Phase 7.1 Plan 01 W13: db_with_phase7 promoted to tests/conftest.py; the
+#  local definition was removed so the conftest version is auto-discovered.)
 # ===========================================================================
-
-
-@pytest.fixture
-def db_with_phase7(test_engine):
-    """Phase 5 + 6 + 7 tables for the drain-branch tests."""
-    from app.models.settings import ServiceConfig  # noqa: F401
-    from app.models.track import SyncState, Track  # noqa: F401
-    from app.models.event_log import EventLog  # noqa: F401
-    from app.models.llm_usage import LLMUsage  # noqa: F401
-    from app.models.taste_profile import TasteProfile  # noqa: F401
-    from app.models.vibe import (  # noqa: F401
-        ManagedPlaylist,
-        MigrationLog,
-        SetupState,
-        SlotInLog,
-        TrackVibe,
-        Vibe,
-    )
-    from app.models.suggestions import SuggestionsMirror  # noqa: F401
-
-    SQLModel.metadata.create_all(test_engine)
-    with Session(test_engine) as session:
-        yield session
-    SQLModel.metadata.drop_all(test_engine)
 
 
 @pytest.fixture(autouse=True)
