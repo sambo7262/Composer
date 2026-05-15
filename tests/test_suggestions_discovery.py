@@ -286,6 +286,262 @@ class TestComputeAdaptivePickCount:
         assert compute_adaptive_pick_count(100) == 7
 
 
+# ---------------------------------------------------------------------------
+# Phase 7.1 Plan 02 Task 1 — D-A1 discovery-eligible filter + constants +
+# DiscoveryPicksResponse pydantic shape. W12 boundary test included.
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoveryEligible:
+    """D-A1 + W12 — discovery candidate pool filter (90-day unplayed window,
+    minus tracks already in mirror / hard negatives / 14-day SuggestionHistory).
+    """
+
+    def test_compute_discovery_eligible_returns_only_unplayed_or_old_tracks(
+        self, db_with_phase7,
+    ):
+        """Seed 4 tracks: A (NULL), B (now), C (now-91d), D (now-30d).
+        Only A and C are eligible.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from app.models.track import Track
+        from app.services.suggestions_discovery import (
+            compute_discovery_eligible,
+        )
+
+        now = datetime.now(timezone.utc)
+        db_with_phase7.add_all([
+            Track(plex_rating_key="A", title="A", artist="ArtA",
+                  last_viewed_at=None),
+            Track(plex_rating_key="B", title="B", artist="ArtB",
+                  last_viewed_at=now.isoformat()),
+            Track(plex_rating_key="C", title="C", artist="ArtC",
+                  last_viewed_at=(now - timedelta(days=91)).isoformat()),
+            Track(plex_rating_key="D", title="D", artist="ArtD",
+                  last_viewed_at=(now - timedelta(days=30)).isoformat()),
+        ])
+        db_with_phase7.commit()
+
+        eligible = _run_async(compute_discovery_eligible())
+        keys = {e["plex_rating_key"] for e in eligible}
+        assert keys == {"A", "C"}, (
+            f"Expected only A (NULL) and C (>90d), got {keys}"
+        )
+
+    def test_track_at_exactly_90_day_threshold_is_excluded(
+        self, db_with_phase7,
+    ):
+        """W12 boundary — t.last_viewed_at < :cutoff is STRICT less-than;
+        a track at the cutoff exactly is NOT included.
+        Documents the ISO 8601 lexicographic ordering reliance.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from app.models.track import Track
+        from app.services.suggestions_discovery import (
+            compute_discovery_eligible,
+        )
+
+        now = datetime.now(timezone.utc)
+        cutoff_iso = (now - timedelta(days=90)).isoformat()
+        db_with_phase7.add(Track(
+            plex_rating_key="boundary-track",
+            title="At Boundary",
+            artist="Test",
+            last_viewed_at=cutoff_iso,
+        ))
+        db_with_phase7.commit()
+
+        # Patch datetime.now inside the helper to a fixed instant so the
+        # 90-day cutoff exactly equals our seeded last_viewed_at — without
+        # this freeze, the function's own now() drifts past the seeded
+        # timestamp by the microseconds of test execution, and the row
+        # appears eligible (false positive for the boundary case).
+        from unittest.mock import patch
+
+        from app.services import suggestions_discovery as _sd
+        from datetime import datetime as _dt
+        class _FrozenNow(_dt):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz is None else now.astimezone(tz)
+        with patch.object(_sd, "datetime", _FrozenNow):
+            eligible = _run_async(compute_discovery_eligible())
+        keys = {e["plex_rating_key"] for e in eligible}
+        assert "boundary-track" not in keys, (
+            "Track at exactly 90-day cutoff should be excluded "
+            "(strict less-than boundary; W12 invariant)"
+        )
+
+    def test_compute_discovery_eligible_excludes_in_mirror(
+        self, db_with_phase7,
+    ):
+        """A track that satisfies the 90-day rule but is currently in
+        SuggestionsMirror is excluded.
+        """
+        from app.models.suggestions import SuggestionsMirror
+        from app.models.track import Track
+        from app.services.suggestions_discovery import (
+            compute_discovery_eligible,
+        )
+
+        t = Track(plex_rating_key="in-mirror", title="t", artist="a",
+                  last_viewed_at=None)
+        db_with_phase7.add(t)
+        db_with_phase7.commit()
+        db_with_phase7.refresh(t)
+        db_with_phase7.add(SuggestionsMirror(
+            track_id=t.id, position=0, added_at="2026-05-15T00:00:00+00:00",
+        ))
+        db_with_phase7.commit()
+
+        eligible = _run_async(compute_discovery_eligible())
+        keys = {e["plex_rating_key"] for e in eligible}
+        assert "in-mirror" not in keys
+
+    def test_compute_discovery_eligible_excludes_hard_negative_track(
+        self, db_with_phase7,
+    ):
+        """A track with NegativeSignal(signal_type='hard_track') is excluded."""
+        from app.models.suggestions import NegativeSignal
+        from app.models.track import Track
+        from app.services.suggestions_discovery import (
+            compute_discovery_eligible,
+        )
+
+        t = Track(plex_rating_key="hard-track", title="t", artist="a",
+                  last_viewed_at=None)
+        db_with_phase7.add(t)
+        db_with_phase7.commit()
+        db_with_phase7.refresh(t)
+        db_with_phase7.add(NegativeSignal(
+            track_id=t.id, signal_type="hard_track",
+            created_at="2026-05-15T00:00:00+00:00",
+        ))
+        db_with_phase7.commit()
+
+        eligible = _run_async(compute_discovery_eligible())
+        keys = {e["plex_rating_key"] for e in eligible}
+        assert "hard-track" not in keys
+
+    def test_compute_discovery_eligible_excludes_hard_negative_artist_with_recovery_pending(
+        self, db_with_phase7,
+    ):
+        """A track whose artist has NegativeSignal(signal_type='hard_artist',
+        recovery_pending=True) is excluded.
+        """
+        from app.models.suggestions import NegativeSignal
+        from app.models.track import Track
+        from app.services.suggestions_discovery import (
+            compute_discovery_eligible,
+        )
+
+        db_with_phase7.add(Track(
+            plex_rating_key="hard-artist-track",
+            title="t", artist="HardArtistName",
+            last_viewed_at=None,
+        ))
+        db_with_phase7.add(NegativeSignal(
+            artist="HardArtistName", signal_type="hard_artist",
+            recovery_pending=True,
+            created_at="2026-05-15T00:00:00+00:00",
+        ))
+        db_with_phase7.commit()
+
+        eligible = _run_async(compute_discovery_eligible())
+        keys = {e["plex_rating_key"] for e in eligible}
+        assert "hard-artist-track" not in keys
+
+    def test_compute_discovery_eligible_excludes_recent_suggestion_history(
+        self, db_with_phase7,
+    ):
+        """A track surfaced in SuggestionHistory within 14 days is excluded."""
+        from datetime import datetime, timedelta, timezone
+
+        from app.models.suggestions import SuggestionHistory
+        from app.models.track import Track
+        from app.services.suggestions_discovery import (
+            compute_discovery_eligible,
+        )
+
+        t = Track(plex_rating_key="recent-history",
+                  title="t", artist="a", last_viewed_at=None)
+        db_with_phase7.add(t)
+        db_with_phase7.commit()
+        db_with_phase7.refresh(t)
+        # Surfaced 3 days ago — inside the 14-day window.
+        recent_iso = (
+            datetime.now(timezone.utc) - timedelta(days=3)
+        ).isoformat()
+        db_with_phase7.add(SuggestionHistory(
+            track_id=t.id, surfaced_at=recent_iso, refill_id=1,
+        ))
+        db_with_phase7.commit()
+
+        eligible = _run_async(compute_discovery_eligible())
+        keys = {e["plex_rating_key"] for e in eligible}
+        assert "recent-history" not in keys
+
+
+class TestDiscoveryConstants:
+    """Phase 7.1 Plan 02 — module-level constants."""
+
+    def test_weekly_discovery_picks_range_constant(self):
+        from app.services.suggestions_discovery import (
+            WEEKLY_DISCOVERY_PICKS_RANGE,
+        )
+        assert WEEKLY_DISCOVERY_PICKS_RANGE == (3, 7)
+
+    def test_discovery_max_tokens_floor_constant(self):
+        from app.services.suggestions_discovery import (
+            DISCOVERY_MAX_TOKENS_FLOOR,
+        )
+        assert isinstance(DISCOVERY_MAX_TOKENS_FLOOR, int)
+        assert DISCOVERY_MAX_TOKENS_FLOOR >= 8000
+
+    def test_discovery_purpose_prefix(self):
+        from app.services.suggestions_discovery import DISCOVERY_PURPOSE
+        assert DISCOVERY_PURPOSE == "discovery_weekly"
+        assert DISCOVERY_PURPOSE.startswith("discovery_")
+
+
+class TestDiscoveryPicksResponseShape:
+    """Pydantic response model for the weekly LLM discovery call."""
+
+    def test_pydantic_parses_minimal_payload(self):
+        from app.services.suggestions_discovery import (
+            DiscoveryPicksResponse,
+        )
+
+        response = DiscoveryPicksResponse(
+            picks=[{"track_id": 1, "rationale": "test"}]
+        )
+        assert len(response.picks) == 1
+        assert response.picks[0].track_id == 1
+        assert response.picks[0].rationale == "test"
+
+    def test_pydantic_rejects_missing_rationale(self):
+        from pydantic import ValidationError
+
+        from app.services.suggestions_discovery import (
+            DiscoveryPicksResponse,
+        )
+
+        with pytest.raises(ValidationError):
+            DiscoveryPicksResponse(picks=[{"track_id": 1}])
+
+    def test_pydantic_rejects_missing_track_id(self):
+        from pydantic import ValidationError
+
+        from app.services.suggestions_discovery import (
+            DiscoveryPicksResponse,
+        )
+
+        with pytest.raises(ValidationError):
+            DiscoveryPicksResponse(picks=[{"rationale": "missing id"}])
+
+
 class TestSuggestionsDiscoveryAstShape:
     def test_no_session_outside_sync_helper_in_suggestions_discovery(self):
         """Phase 5 D-09 invariant — every ``Session(get_engine())`` call in
