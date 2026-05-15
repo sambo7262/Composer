@@ -548,11 +548,26 @@ class TestStartSchedulerCatchUpDiscovery:
         assert reads, (
             "catch-up gate did not call read_discovery_state — gate not wired"
         )
-        # The LAST session exit MUST precede the FIRST read_discovery_state
-        # call — the catch-up gate runs after the with-block closes.
-        assert max(session_exits) < min(reads), (
-            "W9 violation: read_discovery_state ran INSIDE the "
-            "with-Session block in start_scheduler"
+        # W9 invariant: the catch-up gate's read_discovery_state must NOT
+        # run inside the outer with-Session block in start_scheduler. The
+        # outer block opens the FIRST Session and closes it before any
+        # discovery work. Therefore at least one session_exit event must
+        # precede the first read_discovery_state event.
+        #
+        # We can't simply require max(session_exits) < min(reads) because
+        # the helper _read_discovery_state_sync (called via to_thread by
+        # read_discovery_state) opens its OWN inner session whose
+        # session_exit fires AFTER the read began — that's expected and
+        # doesn't violate W9 (the read isn't nested inside the outer
+        # session; the inner session is owned by the read).
+        first_read = min(reads)
+        exits_before_first_read = [
+            t for t in session_exits if t < first_read
+        ]
+        assert exits_before_first_read, (
+            "W9 violation: read_discovery_state was invoked BEFORE any "
+            "session in start_scheduler closed — the catch-up gate is "
+            "nested inside the outer with-Session block"
         )
 
 
