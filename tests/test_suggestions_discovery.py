@@ -542,6 +542,692 @@ class TestDiscoveryPicksResponseShape:
             DiscoveryPicksResponse(picks=[{"rationale": "missing id"}])
 
 
+# ---------------------------------------------------------------------------
+# Phase 7.1 Plan 02 Task 2 — discovery_call_weekly LLM handler tests.
+# 13 tests covering happy-path, no-candidates / no-taste skip, breaker-trip,
+# success-counter-reset, failure-no-reset, error_text capture, hallucinated-
+# ID filter, and Blocker #5 retry semantics (MaxTokensTruncationError only).
+# ---------------------------------------------------------------------------
+
+
+def _seed_discovery_environment(
+    db,
+    *,
+    num_candidates: int = 5,
+    plays_since_last_discovery: int = 15,
+    last_discovery_run_at=None,
+    seed_taste_profile: bool = True,
+):
+    """Helper to seed the DB for discovery_call_weekly tests.
+
+    Returns a dict with the seeded track ids in ``track_ids`` (in seed
+    order). Used by every TestDiscoveryCallWeekly test that needs a
+    candidate pool.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.taste_profile import TasteProfile
+    from app.models.track import Track
+    from app.models.vibe import DiscoveryState
+
+    now = datetime.now(timezone.utc)
+    seeded_track_ids: list = []
+    for i in range(num_candidates):
+        t = Track(
+            plex_rating_key=f"cand-{i}",
+            title=f"Candidate {i}",
+            artist=f"ArtistC{i}",
+            # Make it eligible: never played OR > 90d ago.
+            last_viewed_at=(now - timedelta(days=120)).isoformat() if i % 2
+                            else None,
+        )
+        db.add(t)
+    db.commit()
+    # Refresh to get ids.
+    from app.models.track import Track as _T
+    for i in range(num_candidates):
+        row = db.exec(
+            select(_T).where(_T.plex_rating_key == f"cand-{i}")
+        ).first()
+        if row is not None:
+            seeded_track_ids.append(row.id)
+
+    # Seed DiscoveryState.
+    db.add(DiscoveryState(
+        id=1,
+        plays_since_last_discovery=plays_since_last_discovery,
+        last_discovery_run_at=last_discovery_run_at,
+    ))
+    db.commit()
+
+    # Seed TasteProfile with a non-empty summary_text.
+    if seed_taste_profile:
+        db.add(TasteProfile(
+            id=1,
+            rated_track_count=50,
+            summary_text="The user enjoys energetic guitar-driven tracks.",
+            computed_at=now.isoformat(),
+        ))
+        db.commit()
+
+    return {"track_ids": seeded_track_ids}
+
+
+def _make_fake_anthropic_client(call_mock):
+    """Build a stub AnthropicClient class that returns an instance whose
+    ``call_with_structured_output`` is the provided AsyncMock.
+    """
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            self.call_with_structured_output = call_mock
+
+    return _FakeClient
+
+
+class TestDiscoveryCallWeekly:
+    """Phase 7.1 SUGG-13 — APScheduler-fired weekly LLM discovery call.
+
+    Mocks ``AnthropicClient``, the taste-profile helper, and the cost
+    breaker at the ``app.services.suggestions_discovery`` module attribute
+    layer (mirrors the test_suggestions_service.py monkeypatch pattern).
+    """
+
+    def test_discovery_call_weekly_skips_when_no_eligible_candidates(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """No eligible candidates → log warning, write LLMUsage with
+        purpose='discovery_weekly_skipped_no_candidates' and error_text,
+        exit cleanly. Counter NOT reset, last_discovery_run_at NOT stamped.
+        """
+        from app.models.llm_usage import LLMUsage
+        from app.models.vibe import DiscoveryState
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import discovery_call_weekly
+
+        # Pre-seed DiscoveryState so we can verify it's NOT reset.
+        db_with_phase7.add(DiscoveryState(
+            id=1, plays_since_last_discovery=15,
+            last_discovery_run_at=None,
+        ))
+        db_with_phase7.commit()
+
+        # No tracks seeded — eligible pool is empty.
+        # Mock cost breaker to pass (won't reach it though).
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        # Counter unchanged.
+        db_with_phase7.expire_all()
+        row = db_with_phase7.exec(
+            select(DiscoveryState).where(DiscoveryState.id == 1)
+        ).first()
+        assert row.plays_since_last_discovery == 15
+        assert row.last_discovery_run_at is None
+
+        # LLMUsage row for skip with error_text populated.
+        usage_rows = db_with_phase7.exec(
+            select(LLMUsage).where(
+                LLMUsage.purpose.like("discovery_weekly_%")
+            )
+        ).all()
+        assert len(usage_rows) >= 1
+        skip_rows = [
+            r for r in usage_rows if "no_candidates" in (r.purpose or "")
+        ]
+        assert len(skip_rows) == 1
+        assert skip_rows[0].error_text == "no eligible candidates"
+
+    def test_discovery_call_weekly_skips_when_no_taste_profile(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """No cached taste profile → log warning, exit cleanly, no LLM
+        invocation. ``LLMUsage.error_text="no cached taste profile"``.
+        """
+        from app.models.llm_usage import LLMUsage
+        from app.models.vibe import DiscoveryState
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import discovery_call_weekly
+
+        # Seed env BUT with seed_taste_profile=False.
+        _seed_discovery_environment(
+            db_with_phase7, num_candidates=5,
+            plays_since_last_discovery=15,
+            seed_taste_profile=False,
+        )
+
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        db_with_phase7.expire_all()
+        row = db_with_phase7.exec(
+            select(DiscoveryState).where(DiscoveryState.id == 1)
+        ).first()
+        assert row.plays_since_last_discovery == 15
+        assert row.last_discovery_run_at is None
+
+        usage_rows = db_with_phase7.exec(
+            select(LLMUsage).where(
+                LLMUsage.purpose.like("discovery_weekly_%")
+            )
+        ).all()
+        skip_rows = [
+            r for r in usage_rows
+            if "no_taste_profile" in (r.purpose or "")
+        ]
+        assert len(skip_rows) == 1
+        assert skip_rows[0].error_text == "no cached taste profile"
+
+    def test_discovery_call_weekly_invokes_llm_with_correct_purpose_and_max_tokens(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """plays_since_last_discovery=15 → 5 picks requested per D-A3.
+        LLM call kwargs: purpose='discovery_weekly',
+        max_tokens=DISCOVERY_MAX_TOKENS_FLOOR,
+        response_model=DiscoveryPicksResponse.
+        """
+        from unittest.mock import AsyncMock
+
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import (
+            DISCOVERY_MAX_TOKENS_FLOOR, DiscoveryPick,
+            DiscoveryPicksResponse, discovery_call_weekly,
+        )
+
+        env = _seed_discovery_environment(
+            db_with_phase7, num_candidates=50,
+            plays_since_last_discovery=15,
+        )
+
+        response = DiscoveryPicksResponse(picks=[
+            DiscoveryPick(track_id=env["track_ids"][0], rationale="ok"),
+            DiscoveryPick(track_id=env["track_ids"][1], rationale="ok"),
+            DiscoveryPick(track_id=env["track_ids"][2], rationale="ok"),
+            DiscoveryPick(track_id=env["track_ids"][3], rationale="ok"),
+            DiscoveryPick(track_id=env["track_ids"][4], rationale="ok"),
+        ])
+        call_mock = AsyncMock(return_value=response)
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        assert call_mock.await_count == 1
+        kwargs = call_mock.await_args.kwargs
+        assert kwargs["purpose"] == "discovery_weekly"
+        assert kwargs["max_tokens"] == DISCOVERY_MAX_TOKENS_FLOOR
+        assert kwargs["response_model"] is DiscoveryPicksResponse
+        # User prompt mentions "exactly 5" picks (15 plays → 5 picks).
+        assert "exactly 5" in kwargs["user_prompt"]
+
+    def test_discovery_call_weekly_writes_picks_to_mirror_with_rationale(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """5 valid picks → 5 SuggestionsMirror rows with LLM-authored rationale."""
+        from unittest.mock import AsyncMock
+
+        from app.models.suggestions import SuggestionsMirror
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import (
+            DiscoveryPick, DiscoveryPicksResponse, discovery_call_weekly,
+        )
+
+        env = _seed_discovery_environment(
+            db_with_phase7, num_candidates=10,
+            plays_since_last_discovery=15,
+        )
+        picks_data = [
+            DiscoveryPick(track_id=env["track_ids"][i],
+                          rationale=f"LLM rationale {i}")
+            for i in range(5)
+        ]
+        response = DiscoveryPicksResponse(picks=picks_data)
+        call_mock = AsyncMock(return_value=response)
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        mirror_rows = db_with_phase7.exec(select(SuggestionsMirror)).all()
+        assert len(mirror_rows) == 5
+        rationales = {r.rationale for r in mirror_rows}
+        assert rationales == {f"LLM rationale {i}" for i in range(5)}
+
+    def test_discovery_call_weekly_filters_hallucinated_track_ids(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """LLM returns picks where 2/5 track_ids are NOT in the pool.
+        Only the 3 valid picks are written; the 2 hallucinated IDs are
+        filtered; warning logged.
+        """
+        from unittest.mock import AsyncMock
+
+        from app.models.suggestions import SuggestionsMirror
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import (
+            DiscoveryPick, DiscoveryPicksResponse, discovery_call_weekly,
+        )
+
+        env = _seed_discovery_environment(
+            db_with_phase7, num_candidates=5,
+            plays_since_last_discovery=15,
+        )
+        # 3 valid + 2 hallucinated (impossibly high IDs).
+        response = DiscoveryPicksResponse(picks=[
+            DiscoveryPick(track_id=env["track_ids"][0], rationale="ok-0"),
+            DiscoveryPick(track_id=env["track_ids"][1], rationale="ok-1"),
+            DiscoveryPick(track_id=env["track_ids"][2], rationale="ok-2"),
+            DiscoveryPick(track_id=999_999, rationale="hallucinated-1"),
+            DiscoveryPick(track_id=999_998, rationale="hallucinated-2"),
+        ])
+        call_mock = AsyncMock(return_value=response)
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        mirror_rows = db_with_phase7.exec(select(SuggestionsMirror)).all()
+        assert len(mirror_rows) == 3
+        track_ids = {r.track_id for r in mirror_rows}
+        assert track_ids == set(env["track_ids"][:3])
+
+    def test_discovery_call_weekly_resets_counter_on_success(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """Pre-seed counter=15. On LLM success: counter == 0,
+        last_discovery_run_at is a recent ISO string.
+        """
+        from unittest.mock import AsyncMock
+
+        from app.models.vibe import DiscoveryState
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import (
+            DiscoveryPick, DiscoveryPicksResponse, discovery_call_weekly,
+        )
+
+        env = _seed_discovery_environment(
+            db_with_phase7, num_candidates=5,
+            plays_since_last_discovery=15,
+        )
+        response = DiscoveryPicksResponse(picks=[
+            DiscoveryPick(track_id=env["track_ids"][0], rationale="ok"),
+        ])
+        call_mock = AsyncMock(return_value=response)
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        db_with_phase7.expire_all()
+        row = db_with_phase7.exec(
+            select(DiscoveryState).where(DiscoveryState.id == 1)
+        ).first()
+        assert row.plays_since_last_discovery == 0
+        assert row.last_discovery_run_at is not None
+        assert row.last_discovery_run_at.startswith("20")
+
+    def test_discovery_call_weekly_does_not_reset_counter_on_failure(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """LLM raises → counter unchanged, last_discovery_run_at still NULL."""
+        from unittest.mock import AsyncMock
+
+        from app.models.vibe import DiscoveryState
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import discovery_call_weekly
+
+        _seed_discovery_environment(
+            db_with_phase7, num_candidates=5,
+            plays_since_last_discovery=15,
+        )
+        call_mock = AsyncMock(side_effect=RuntimeError("network down"))
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        db_with_phase7.expire_all()
+        row = db_with_phase7.exec(
+            select(DiscoveryState).where(DiscoveryState.id == 1)
+        ).first()
+        assert row.plays_since_last_discovery == 15
+        assert row.last_discovery_run_at is None
+
+    def test_discovery_call_weekly_writes_llmusage_error_row_on_failure(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """LLM raises RuntimeError → LLMUsage row with purpose
+        ending in '_error' AND error_text contains 'RuntimeError'+'network'.
+        DiscoveryServiceStatus.state=='error'.
+        """
+        from unittest.mock import AsyncMock
+
+        from app.models.llm_usage import LLMUsage
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import (
+            DiscoveryServiceStatus, discovery_call_weekly, get_state,
+        )
+
+        # Reset module-singleton state.
+        suggestions_discovery._status = DiscoveryServiceStatus()
+
+        _seed_discovery_environment(
+            db_with_phase7, num_candidates=5,
+            plays_since_last_discovery=15,
+        )
+        call_mock = AsyncMock(side_effect=RuntimeError("network down"))
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        usage_rows = db_with_phase7.exec(
+            select(LLMUsage).where(
+                LLMUsage.purpose.like("discovery_weekly_%error%")
+            )
+        ).all()
+        assert len(usage_rows) >= 1
+        text = usage_rows[0].error_text or ""
+        assert "RuntimeError" in text
+        assert "network" in text
+
+        st = get_state()
+        assert st.state == "error"
+        assert "RuntimeError" in (st.last_error or "")
+
+    def test_discovery_call_weekly_handles_cost_breaker_trip(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """check_or_raise raises CostBreakerTrippedError → no LLM call,
+        LLMUsage logged with error_text='breaker:...',
+        DiscoveryServiceStatus.state=='cost_locked', counter NOT reset.
+        """
+        from unittest.mock import AsyncMock
+
+        from app.models.llm_usage import LLMUsage
+        from app.models.vibe import DiscoveryState
+        from app.services import suggestions_discovery
+        from app.services.llm_cost_breaker import CostBreakerTrippedError
+        from app.services.suggestions_discovery import (
+            DiscoveryServiceStatus, discovery_call_weekly, get_state,
+        )
+
+        suggestions_discovery._status = DiscoveryServiceStatus()
+
+        _seed_discovery_environment(
+            db_with_phase7, num_candidates=5,
+            plays_since_last_discovery=15,
+        )
+        call_mock = AsyncMock(side_effect=RuntimeError("should not run"))
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+        async def _trip(*a, **kw):
+            raise CostBreakerTrippedError(
+                "daily_quota_50", "2026-05-16T00:00:00+00:00",
+            )
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _trip,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        assert call_mock.await_count == 0
+        usage_rows = db_with_phase7.exec(
+            select(LLMUsage).where(
+                LLMUsage.purpose.like("%cost_locked%")
+            )
+        ).all()
+        assert len(usage_rows) >= 1
+        assert "breaker" in (usage_rows[0].error_text or "")
+
+        st = get_state()
+        assert st.state == "cost_locked"
+
+        db_with_phase7.expire_all()
+        row = db_with_phase7.exec(
+            select(DiscoveryState).where(DiscoveryState.id == 1)
+        ).first()
+        assert row.plays_since_last_discovery == 15
+
+    def test_discovery_call_weekly_retries_once_on_max_tokens_truncation_error(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """Blocker #5 — MaxTokensTruncationError is the ONLY signal that
+        triggers the doubled-budget retry. Second call sees max_tokens * 2.
+        """
+        from unittest.mock import AsyncMock
+
+        from app.models.suggestions import SuggestionsMirror
+        from app.services import suggestions_discovery
+        from app.services.anthropic_client import MaxTokensTruncationError
+        from app.services.suggestions_discovery import (
+            DISCOVERY_MAX_TOKENS_FLOOR, DiscoveryPick,
+            DiscoveryPicksResponse, discovery_call_weekly,
+        )
+
+        env = _seed_discovery_environment(
+            db_with_phase7, num_candidates=5,
+            plays_since_last_discovery=15,
+        )
+        success_response = DiscoveryPicksResponse(picks=[
+            DiscoveryPick(track_id=env["track_ids"][0], rationale="ok"),
+        ])
+        call_mock = AsyncMock(side_effect=[
+            MaxTokensTruncationError(
+                purpose="discovery_weekly",
+                requested_max_tokens=DISCOVERY_MAX_TOKENS_FLOOR,
+                truncated_text_length=7900,
+            ),
+            success_response,
+        ])
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        assert call_mock.await_count == 2
+        first_kwargs = call_mock.await_args_list[0].kwargs
+        second_kwargs = call_mock.await_args_list[1].kwargs
+        assert first_kwargs["max_tokens"] == DISCOVERY_MAX_TOKENS_FLOOR
+        assert second_kwargs["max_tokens"] == DISCOVERY_MAX_TOKENS_FLOOR * 2
+
+        # Picks from the second (successful) call were written.
+        mirror_rows = db_with_phase7.exec(select(SuggestionsMirror)).all()
+        assert len(mirror_rows) == 1
+        assert mirror_rows[0].track_id == env["track_ids"][0]
+
+    def test_discovery_call_weekly_does_not_retry_on_generic_validation_error(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """Blocker #5 — generic pydantic.ValidationError must NOT trigger
+        the retry. Failure path runs.
+        """
+        from unittest.mock import AsyncMock
+
+        from pydantic import BaseModel, ValidationError
+
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import discovery_call_weekly
+
+        # Build a real ValidationError instance.
+        class _TmpModel(BaseModel):
+            x: int
+        try:
+            _TmpModel(x="not-an-int")  # type: ignore
+        except ValidationError as e:
+            ve = e
+
+        _seed_discovery_environment(
+            db_with_phase7, num_candidates=5,
+            plays_since_last_discovery=15,
+        )
+        call_mock = AsyncMock(side_effect=ve)
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        assert call_mock.await_count == 1, (
+            "Generic ValidationError must not trigger retry — only "
+            "MaxTokensTruncationError does (Blocker #5)"
+        )
+
+    def test_discovery_call_weekly_does_not_retry_on_generic_runtime_error(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """Blocker #5 — RuntimeError (network down, etc.) must NOT trigger
+        the retry. Exactly one LLM call.
+        """
+        from unittest.mock import AsyncMock
+
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import discovery_call_weekly
+
+        _seed_discovery_environment(
+            db_with_phase7, num_candidates=5,
+            plays_since_last_discovery=15,
+        )
+        call_mock = AsyncMock(side_effect=RuntimeError("network down"))
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        assert call_mock.await_count == 1, (
+            "RuntimeError must not trigger retry — only "
+            "MaxTokensTruncationError does (Blocker #5)"
+        )
+
+    def test_discovery_call_weekly_does_not_retry_twice_on_repeated_truncation(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """Two MaxTokensTruncationErrors in a row → exit to failure path
+        (no third attempt). Counter NOT reset; failure logged.
+        """
+        from unittest.mock import AsyncMock
+
+        from app.models.vibe import DiscoveryState
+        from app.services import suggestions_discovery
+        from app.services.anthropic_client import MaxTokensTruncationError
+        from app.services.suggestions_discovery import (
+            DISCOVERY_MAX_TOKENS_FLOOR, discovery_call_weekly,
+        )
+
+        _seed_discovery_environment(
+            db_with_phase7, num_candidates=5,
+            plays_since_last_discovery=15,
+        )
+        call_mock = AsyncMock(side_effect=[
+            MaxTokensTruncationError(
+                purpose="discovery_weekly",
+                requested_max_tokens=DISCOVERY_MAX_TOKENS_FLOOR,
+                truncated_text_length=7900,
+            ),
+            MaxTokensTruncationError(
+                purpose="discovery_weekly",
+                requested_max_tokens=DISCOVERY_MAX_TOKENS_FLOOR * 2,
+                truncated_text_length=15800,
+            ),
+        ])
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        assert call_mock.await_count == 2, (
+            "Loop must exit to failure path after 2 truncations — "
+            "no third attempt (D-C3: no infinite retry)"
+        )
+
+        # Counter unchanged.
+        db_with_phase7.expire_all()
+        row = db_with_phase7.exec(
+            select(DiscoveryState).where(DiscoveryState.id == 1)
+        ).first()
+        assert row.plays_since_last_discovery == 15
+
+
 class TestSuggestionsDiscoveryAstShape:
     def test_no_session_outside_sync_helper_in_suggestions_discovery(self):
         """Phase 5 D-09 invariant — every ``Session(get_engine())`` call in
