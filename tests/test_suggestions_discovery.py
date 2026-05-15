@@ -240,10 +240,15 @@ class TestDiscoveryServiceStatus:
         """Initial state='idle', last_increment_at=None. After a counter
         increment, last_increment_at is populated.
         """
+        from app.services import suggestions_discovery
         from app.services.suggestions_discovery import (
             DiscoveryServiceStatus, get_state,
             increment_plays_since_last_discovery,
         )
+
+        # Reset the module-level singleton so this test sees a fresh state
+        # regardless of earlier-test ordering (Phase 5 D-08 pattern).
+        suggestions_discovery._status = DiscoveryServiceStatus()
 
         st_before = get_state()
         assert isinstance(st_before, DiscoveryServiceStatus)
