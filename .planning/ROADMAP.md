@@ -243,11 +243,11 @@ Plans:
 
 **Depends on:** Phase 7 (SuggestionsMirror + handle_track_played drain + Composer · Suggestions playlist materialization), Phase 6.2 (TrackVibe.distance computed for every track)
 
-**Plans:** 1/3 plans executed
+**Plans:** 2/3 plans executed
 
 Plans:
 - [x] 07.1-01-PLAN.md — Foundation: DiscoveryState model + SQL refill primitive (refill_mirror_sql) + DELETE legacy refill_suggestions_queue / refill_suggestions_for_vibe / SUGGESTIONS_RANK_MAX_TOKENS + handle_track_played counter increment + REQUIREMENTS.md updates (SUGG-12, SUGG-13, SUGG-14)
-- [ ] 07.1-02-PLAN.md — Weekly discovery cron: compute_discovery_eligible (D-A1) + DiscoveryPicksResponse pydantic + discovery_call_weekly LLM handler with cost-breaker gate + max_tokens retry guard + APScheduler Sunday 03:00 UTC cron + startup catch-up gate (D-C2) + lifespan wiring
+- [x] 07.1-02-PLAN.md — Weekly discovery cron: compute_discovery_eligible (D-A1) + DiscoveryPicksResponse pydantic + discovery_call_weekly LLM handler with cost-breaker gate + max_tokens retry guard + APScheduler Sunday 03:00 UTC cron + startup catch-up gate (D-C2) + lifespan wiring
 - [ ] 07.1-03-PLAN.md — Cost breaker repurpose: rename DAILY_COST_BUDGET_USD → WEEKLY_DISCOVERY_BUDGET_USD (D-D3) + cost meter UI relabel DAILY → WEEKLY (rolling 7-day aggregation) + AST regression tests forbidding refill_suggestions_queue / SUGGESTIONS_RANK_MAX_TOKENS / max_tokens=2000 / async-context Session leakage
 
 **Success Criteria** (what must be TRUE):
