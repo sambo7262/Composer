@@ -243,11 +243,16 @@ Plans:
 
 **Depends on:** Phase 7 (SuggestionsMirror + handle_track_played drain + Composer · Suggestions playlist materialization), Phase 6.2 (TrackVibe.distance computed for every track)
 
-**Plans:** TBD (set after /gsd-plan-phase 7.1)
+**Plans:** 3 plans
+
+Plans:
+- [ ] 07.1-01-PLAN.md — Foundation: DiscoveryState model + SQL refill primitive (refill_mirror_sql) + DELETE legacy refill_suggestions_queue / refill_suggestions_for_vibe / SUGGESTIONS_RANK_MAX_TOKENS + handle_track_played counter increment + REQUIREMENTS.md updates (SUGG-12, SUGG-13, SUGG-14)
+- [ ] 07.1-02-PLAN.md — Weekly discovery cron: compute_discovery_eligible (D-A1) + DiscoveryPicksResponse pydantic + discovery_call_weekly LLM handler with cost-breaker gate + max_tokens retry guard + APScheduler Sunday 03:00 UTC cron + startup catch-up gate (D-C2) + lifespan wiring
+- [ ] 07.1-03-PLAN.md — Cost breaker repurpose: rename DAILY_COST_BUDGET_USD → WEEKLY_DISCOVERY_BUDGET_USD (D-D3) + cost meter UI relabel DAILY → WEEKLY (rolling 7-day aggregation) + AST regression tests forbidding refill_suggestions_queue / SUGGESTIONS_RANK_MAX_TOKENS / max_tokens=2000 / async-context Session leakage
 
 **Success Criteria** (what must be TRUE):
 1. Refill on every play uses ZERO LLM tokens (SQL query against `TrackVibe.distance` ordered ascending, filtered by recency)
-2. Weekly LLM discovery call fires on a configurable schedule (default Sunday 03:00 UTC), injecting ~5 tracks unplayed in 90+ days that fit the user's current taste profile
+2. Weekly LLM discovery call fires on a hardcoded schedule (Sunday 03:00 UTC; configurable cron deferred per CONTEXT.md D-C1), injecting 3–7 tracks unplayed in 90+ days that fit the user's current taste profile (count adapts to listening intensity)
 3. Daily LLM cost for steady-state listening (no rating changes, no library updates): $0.00
 4. Mirror is repopulated to target (default 30) within seconds of any drain
 5. Phase 7's per-event `refill_suggestions_queue` is removed or feature-flagged off by default; the LLM-led path lives only in the weekly discovery call

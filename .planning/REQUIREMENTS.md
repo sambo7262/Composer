@@ -131,6 +131,10 @@ Continuous "Composer · Suggestions" Plex playlist that drains as you listen and
 - [ ] **SUGG-09**: Skip-tracking: a track explicitly removed from Suggestions by the user (UI dismiss action) is marked as "hard negative" — track-level exclusion + ranking deboosts the artist
 - [ ] **SUGG-10**: Vibe coverage indicator on vibes home — shows track count per vibe; vibes with <N tracks (default 25) display a "Find candidates" CTA that runs targeted clustering against unrated tracks for that vibe and offers them as a focused micro-Suggestions list
 - [ ] **SUGG-11**: LLM cost circuit breaker — daily quota (50 ranking calls), burst limit (5 calls/60s), per-event debounce (no refill within 30s of last refill); circuit-broken state shown in UI as "Suggestions paused — cost limit hit"
+- [ ] **SUGG-04** (REWORKED — Phase 7.1): The original "LLM ranks shortlist on every refill" semantic is replaced. Refill on every play uses ZERO LLM tokens (SQL query against pre-computed `TrackVibe.distance`). The LLM only fires once per week to inject discovery picks (see SUGG-13).
+- [ ] **SUGG-12** (Phase 7.1): SQL hot-path refill — on every drain from `SuggestionsMirror`, repopulate to target via a parameterized query against `TrackVibe.distance`. Cross-vibe pool weighted by per-vibe library share (filter `Vibe.is_active = 1`); ordered by distance ascending with light randomization in the top ~100 per vibe. Zero LLM cost in the hot path.
+- [ ] **SUGG-13** (Phase 7.1): Weekly LLM "discovery" call — once per week (default Sunday 03:00 UTC, hardcoded; configurable cron deferred), select 3–7 owned tracks unplayed in 90+ days that fit the user's taste profile. Pick count adapts to listening intensity via a `plays_since_last_discovery` counter. Failure logs to LLMUsage and retries next week; the SQL hot path keeps the mirror full regardless.
+- [ ] **SUGG-14** (Phase 7.1): Defensive `max_tokens` sizing on every Anthropic call in the suggestions discovery path. AnthropicClient raises a typed `MaxTokensTruncationError` on `stop_reason == "max_tokens"`; the discovery handler catches it, doubles `max_tokens` once, and retries. AST regression test forbids `max_tokens=2000` literals from re-appearing in the suggestions module.
 
 ### Lidarr Discovery
 
@@ -277,6 +281,7 @@ Maps requirements to phases. Filled during roadmap creation; updated as phases c
 | VIBE-13, VIBE-14 (2 reqs) | Phase 6.2 | Pending (LLM-direct vibe assignment + two-pass boundary review) |
 | WIZ-08 (1 req) | Phase 6.2 | Pending (user-triggered wizard reset; preserves integration credentials) |
 | SUGG-01..11 (11 reqs) | Phase 7 | Pending |
+| SUGG-04 (REWORKED), SUGG-12, SUGG-13, SUGG-14 | Phase 7.1 | Pending |
 | UI-01..06 (6 reqs) | Phase 7 | Pending (vibes home + chat retirement + mobile shell) |
 | OPS-05 (1 req) | Phase 7 | Pending (LLM observability ships with first ranking call) |
 | DEBUG-03, DEBUG-05 (2 reqs) | Phase 7 | Pending (`/debug/suggestions` + `/debug` index linked from settings) |
