@@ -854,3 +854,168 @@ class TestRefillMirrorSql:
         # without inserting a log row).
         log_rows = db_phase7.exec(select(RefillTriggerLog)).all()
         assert len(log_rows) == 0
+
+
+class TestNoLegacyLlmRefillRefs:
+    """Phase 7.1 D-D1 — guarantee the Phase 7 LLM ranking refill path
+    cannot return.
+
+    These four tests are belt-and-suspenders against:
+
+    - someone re-adds the deleted whole-queue or per-vibe LLM refill
+      function thinking they're "improving" suggestions
+    - someone resurrects the hotfix-260514-e6w max_tokens constant
+      (now replaced by DISCOVERY_MAX_TOKENS_FLOOR in
+      suggestions_discovery.py) to silence a test failure
+    - someone adds a new Anthropic call in suggestions_service
+      instead of the suggestions_discovery module
+
+    AST (not grep) so docstrings, comments, and historical SUMMARY
+    references do not trip the assertions.
+    """
+
+    def _module_path(self) -> Path:
+        return (
+            Path(__file__).parent.parent
+            / "app"
+            / "services"
+            / "suggestions_service.py"
+        )
+
+    def _walk(self):
+        source = self._module_path().read_text()
+        return ast.parse(source)
+
+    def test_no_refill_suggestions_queue_reference_in_suggestions_service(
+        self,
+    ):
+        """No def, no Call, no Attribute access referencing
+        refill_suggestions_queue."""
+        tree = self._walk()
+        violations: list = []
+        for node in ast.walk(tree):
+            if isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef)
+            ) and node.name == "refill_suggestions_queue":
+                violations.append(
+                    f"def refill_suggestions_queue at line "
+                    f"{node.lineno}"
+                )
+            if isinstance(node, ast.Call) and isinstance(
+                node.func, ast.Name
+            ):
+                if node.func.id == "refill_suggestions_queue":
+                    violations.append(
+                        f"call refill_suggestions_queue() at line "
+                        f"{node.lineno}"
+                    )
+            if isinstance(node, ast.Attribute):
+                if node.attr == "refill_suggestions_queue":
+                    violations.append(
+                        f".refill_suggestions_queue access at line "
+                        f"{node.lineno}"
+                    )
+
+        assert violations == [], (
+            "Phase 7.1 D-D1 violation: refill_suggestions_queue must "
+            "stay deleted from app/services/suggestions_service.py:\n"
+            + "\n".join(violations)
+        )
+
+    def test_no_refill_suggestions_for_vibe_reference_in_suggestions_service(
+        self,
+    ):
+        """No def, no Call referencing refill_suggestions_for_vibe."""
+        tree = self._walk()
+        violations: list = []
+        for node in ast.walk(tree):
+            if isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef)
+            ) and node.name == "refill_suggestions_for_vibe":
+                violations.append(
+                    f"def refill_suggestions_for_vibe at line "
+                    f"{node.lineno}"
+                )
+            if isinstance(node, ast.Call) and isinstance(
+                node.func, ast.Name
+            ):
+                if node.func.id == "refill_suggestions_for_vibe":
+                    violations.append(
+                        f"call refill_suggestions_for_vibe() at line "
+                        f"{node.lineno}"
+                    )
+
+        assert violations == [], (
+            "Phase 7.1 D-D1 violation: refill_suggestions_for_vibe "
+            "must stay deleted from app/services/suggestions_service.py:\n"
+            + "\n".join(violations)
+        )
+
+    def test_no_suggestions_rank_max_tokens_constant_in_suggestions_service(
+        self,
+    ):
+        """No assignment, no reference to SUGGESTIONS_RANK_MAX_TOKENS."""
+        tree = self._walk()
+        violations: list = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Name)
+                        and target.id == "SUGGESTIONS_RANK_MAX_TOKENS"
+                    ):
+                        violations.append(
+                            f"SUGGESTIONS_RANK_MAX_TOKENS assignment "
+                            f"at line {node.lineno}"
+                        )
+            if (
+                isinstance(node, ast.Name)
+                and node.id == "SUGGESTIONS_RANK_MAX_TOKENS"
+            ):
+                violations.append(
+                    f"SUGGESTIONS_RANK_MAX_TOKENS reference at line "
+                    f"{node.lineno}"
+                )
+
+        assert violations == [], (
+            "Phase 7.1 D-D1 violation: SUGGESTIONS_RANK_MAX_TOKENS "
+            "constant must stay deleted (introduced by quick task "
+            "260514-e6w; replaced by DISCOVERY_MAX_TOKENS_FLOOR in "
+            "suggestions_discovery.py):\n"
+            + "\n".join(violations)
+        )
+
+    def test_no_anthropic_call_in_suggestions_service(self):
+        """Phase 7.1 architectural invariant: Anthropic calls live ONLY
+        in app/services/suggestions_discovery.py. The SQL hot path in
+        suggestions_service.py is free; if a call_with_structured_output
+        invocation reappears here, the per-event LLM cost regression
+        from quick task 260514-e6w is back.
+        """
+        tree = self._walk()
+        violations: list = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            attr_match = (
+                isinstance(func, ast.Attribute)
+                and func.attr == "call_with_structured_output"
+            )
+            name_match = (
+                isinstance(func, ast.Name)
+                and func.id == "call_with_structured_output"
+            )
+            if attr_match or name_match:
+                violations.append(
+                    f"call_with_structured_output(...) at line "
+                    f"{node.lineno}"
+                )
+
+        assert violations == [], (
+            "Phase 7.1 D-D1 violation: Anthropic call_with_structured_"
+            "output found in app/services/suggestions_service.py — "
+            "Option C architecture forbids per-event LLM calls in this "
+            "module:\n"
+            + "\n".join(violations)
+        )

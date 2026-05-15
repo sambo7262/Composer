@@ -287,8 +287,9 @@ async def settings_page(request: Request, session: Session = Depends(get_session
     ``Vibe.count() > 0`` — never offer destruction when there's nothing
     to destroy.
 
-    Phase 7 Plan 02 (OPS-05): also passes today's LLM spend + cache hit %
-    + breaker-paused state for the cost meter card.
+    Phase 7 Plan 02 (OPS-05) → Phase 7.1 D-D3: passes this week's LLM
+    spend (rolling 7-day window) + cache hit % + breaker-paused state for
+    the cost meter card.
     """
     templates = get_templates()
     plex_configured = is_service_configured(session, "plex")
@@ -310,26 +311,40 @@ async def settings_page(request: Request, session: Session = Depends(get_session
         vibe_count = vibe_count[0]
     vibe_count = int(vibe_count)
 
-    # Phase 7 Plan 02 (OPS-05) — Anthropic spend today + cache hit %.
-    from datetime import datetime as _dt, timezone as _tz
+    # Phase 7.1 D-D3 — Anthropic spend over a rolling 7-day window
+    # (replaces Phase 7 OPS-05 midnight-of-today gate). Steady-state
+    # listening costs $0/day (SQL refill is free); the only spend is one
+    # discovery_call_weekly per week. The window matches the LLM cadence
+    # so the cost meter is meaningful instead of always reading $0.
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
 
     from app.models.llm_usage import LLMUsage
     from app.services.llm_cost_breaker import (
-        DAILY_COST_BUDGET_USD,
         DAILY_QUOTA,
+        WEEKLY_DISCOVERY_BUDGET_USD,
         get_state as breaker_state,
     )
 
-    midnight_iso = _dt.now(_tz.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0,
+    seven_days_ago_iso = (
+        _dt.now(_tz.utc) - _td(days=7)
     ).isoformat()
-    today_rows = session.exec(
-        select(LLMUsage).where(LLMUsage.called_at >= midnight_iso)  # type: ignore[arg-type]
+    this_week_rows = session.exec(
+        select(LLMUsage).where(LLMUsage.called_at >= seven_days_ago_iso)  # type: ignore[arg-type]
     ).all()
-    today_calls = len(today_rows)
-    today_cost_usd = sum((r.cost_estimate_usd or 0.0) for r in today_rows)
-    total_cache_creation = sum(r.cache_creation_input_tokens or 0 for r in today_rows)
-    total_cache_read = sum(r.cache_read_input_tokens or 0 for r in today_rows)
+    this_week_calls = len(this_week_rows)
+    this_week_cost_usd = sum(
+        (r.cost_estimate_usd or 0.0) for r in this_week_rows
+    )
+    total_cache_creation = sum(
+        r.cache_creation_input_tokens or 0 for r in this_week_rows
+    )
+    total_cache_read = sum(
+        r.cache_read_input_tokens or 0 for r in this_week_rows
+    )
+    # Phase 7.1 — caching is moot at weekly cadence (every weekly call is
+    # a cold start; cache_hit_pct == 0 by design). We still compute the
+    # percentage so any future intra-week call (manual diagnostic, batch
+    # rescore) can surface caching health when applicable.
     cache_hit_pct = None
     if (total_cache_creation + total_cache_read) > 0:
         cache_hit_pct = int(round(
@@ -363,11 +378,13 @@ async def settings_page(request: Request, session: Session = Depends(get_session
             "lidarr_setting": lidarr_setting,
             "sync_interval": sync_interval,
             "vibe_count": vibe_count,
-            # OPS-05 cost meter context
-            "today_calls": today_calls,
-            "today_cost_usd": today_cost_usd,
-            "daily_quota": DAILY_QUOTA,
-            "daily_budget_usd": DAILY_COST_BUDGET_USD,
+            # Phase 7.1 D-D3 — cost meter context (DAILY → WEEKLY framing).
+            # OPS-05 carry-forward: same LLMUsage queries, just over a 7-day
+            # rolling window instead of midnight-of-today.
+            "this_week_calls": this_week_calls,
+            "this_week_cost_usd": this_week_cost_usd,
+            "daily_quota": DAILY_QUOTA,                  # per-day burst gate (unchanged)
+            "weekly_budget_usd": WEEKLY_DISCOVERY_BUDGET_USD,
             "cache_hit_pct": cache_hit_pct,
             "breaker_paused": breaker_paused,
             "breaker_reason": breaker_reason,

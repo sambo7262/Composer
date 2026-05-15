@@ -34,12 +34,18 @@ BURST_WINDOW_SECONDS = 60      # SUGG-11
 BURST_LIMIT = 5                # SUGG-11
 DEBOUNCE_SECONDS = 30          # D-03 (per CONTEXT.md "no refill within 30s")
 
-# WR-11 fix — SUGG-11 soft budget displayed by the cost meter card. Hard
-# enforcement is via DAILY_QUOTA (call count); this is the dollar-amount we
-# render on the Settings page so the operator sees spend vs. expectation.
-# Keeping it as a single named constant means a future budget bump is a
-# single-file change instead of editing a Jinja template literal.
-DAILY_COST_BUDGET_USD = 0.42
+# Phase 7.1 D-D3 — repurposed from the Phase 7 daily-budget dollar constant
+# ($0.42). Renamed AND resized for the weekly LLM discovery cadence. The
+# SQL hot path (Phase 7.1 Plan 01 — ``refill_mirror_sql``) is free; the
+# only LLM spend is one ``discovery_call_weekly`` call per week. $0.50/week
+# ≈ $2/month soft budget; defends against a future regression that puts
+# the LLM back in a hot per-event loop.
+#
+# The cost meter card on /settings renders this value as
+# "$X budgeted this week". Hard enforcement against runaway use is via
+# ``DAILY_QUOTA`` (50 calls/day) + ``BURST_LIMIT`` (5/60s) +
+# ``DEBOUNCE_SECONDS`` (30s between calls) — all unchanged.
+WEEKLY_DISCOVERY_BUDGET_USD = 0.50
 
 
 class CostBreakerTrippedError(Exception):

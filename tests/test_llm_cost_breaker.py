@@ -228,3 +228,39 @@ class TestUtcMidnightReset:
 
         # Today's counter is empty, so check_or_raise must NOT raise.
         _run_async(check_or_raise())
+
+
+class TestPhase71BudgetRename:
+    """Phase 7.1 D-D3 — the Phase 7 daily-budget dollar constant moves to
+    a weekly-budget constant; the old name must not be importable.
+
+    Hard-enforcement thresholds (DAILY_QUOTA / BURST_LIMIT / DEBOUNCE_SECONDS)
+    are preserved unchanged — they remain as belt-and-suspenders against any
+    regression that puts the LLM back into a per-event hot loop.
+    """
+
+    def test_weekly_discovery_budget_usd_constant_exists_and_value(self):
+        from app.services.llm_cost_breaker import WEEKLY_DISCOVERY_BUDGET_USD
+
+        assert WEEKLY_DISCOVERY_BUDGET_USD == 0.50
+        assert isinstance(WEEKLY_DISCOVERY_BUDGET_USD, float)
+
+    def test_old_daily_cost_budget_usd_removed(self):
+        import app.services.llm_cost_breaker as breaker
+
+        assert not hasattr(breaker, "DAILY_COST_BUDGET_USD"), (
+            "Phase 7.1 D-D3 — DAILY_COST_BUDGET_USD must be renamed "
+            "to WEEKLY_DISCOVERY_BUDGET_USD; the old name must not be "
+            "re-exported"
+        )
+
+    def test_breaker_thresholds_unchanged(self):
+        from app.services.llm_cost_breaker import (
+            BURST_LIMIT, BURST_WINDOW_SECONDS,
+            DAILY_QUOTA, DEBOUNCE_SECONDS,
+        )
+
+        assert DAILY_QUOTA == 50
+        assert BURST_LIMIT == 5
+        assert BURST_WINDOW_SECONDS == 60
+        assert DEBOUNCE_SECONDS == 30
