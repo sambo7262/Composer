@@ -26,15 +26,74 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.database import get_engine
 from app.models.vibe import DiscoveryState
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7.1 D-A1 / D-A3 / D-C1 / SUGG-14 — module-level constants.
+# ---------------------------------------------------------------------------
+
+# D-A1 — discovery-eligible window. A track is "unplayed enough to
+# rediscover" if it has never been played OR its last play is older than
+# this many days. 90 days matches typical rediscovery cadence per
+# 07.1-CONTEXT.md.
+DISCOVERY_UNPLAYED_DAYS = 90
+
+# D-A3 — adaptive pick count bounds. ``compute_adaptive_pick_count`` maps
+# ``plays_since_last_discovery`` to an int in this closed range. Tunable
+# post-deploy if heavy/light listening week heuristics need adjustment.
+WEEKLY_DISCOVERY_PICKS_RANGE = (3, 7)
+
+# SUGG-14 — defensive max_tokens floor for the weekly discovery LLM call.
+# Sized generously so structured DiscoveryPicksResponse JSON for 7 picks +
+# per-pick rationales never trips stop_reason=max_tokens at the floor. The
+# retry guard inside ``discovery_call_weekly`` catches the typed
+# ``MaxTokensTruncationError`` (added by Plan 01 STEP 4 to
+# ``anthropic_client.py``) and doubles this budget on observed truncation.
+# Plan 03 adds the AST regression test that forbids ``max_tokens=2000``
+# literals from re-entering this module (lesson folded in from quick task
+# ``260514-e6w``).
+DISCOVERY_MAX_TOKENS_FLOOR = 8000
+
+# D-A2 — anthropic purpose prefix for the discovery call. Distinct from
+# the (now-deleted) ``suggestions_`` family so cost-breaker accounting can
+# separate the two layers, and so the cost meter card can report
+# "discovery this week" specifically.
+DISCOVERY_PURPOSE = "discovery_weekly"
+
+
+# ---------------------------------------------------------------------------
+# SUGG-13 — Pydantic shapes for the weekly LLM discovery response.
+# ---------------------------------------------------------------------------
+
+
+class DiscoveryPick(BaseModel):
+    """One LLM-chosen discovery track. ``track_id`` is validated by
+    ``discovery_call_weekly`` against the candidate pool returned by
+    ``compute_discovery_eligible`` BEFORE writing to the mirror —
+    mirrors the v1-burned hallucinated-ID lesson (Pitfall 10).
+    """
+
+    track_id: int
+    rationale: str  # one-line "Why this track?" — surfaced in /suggestions UI
+
+
+class DiscoveryPicksResponse(BaseModel):
+    """Top-level LLM response shape. ``picks`` length is bounded by
+    ``compute_adaptive_pick_count`` (3-7 per D-A3); the LLM is instructed
+    to return exactly that many picks via the user prompt.
+    """
+
+    picks: list[DiscoveryPick]
 
 
 # ---------------------------------------------------------------------------
@@ -190,11 +249,91 @@ def compute_adaptive_pick_count(plays_since_last_discovery: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Plan 02 placeholders — implemented in 07.1-02-PLAN.md.
+# D-A1 — discovery-eligible candidate pool.
 # ---------------------------------------------------------------------------
-#
-# def compute_discovery_eligible() -> List[dict]:
-#     """D-A1 — owned tracks unplayed in 90+ days."""
-#
-# async def discovery_call_weekly() -> None:
-#     """D-C1 — APScheduler-fired Sunday 03:00 UTC LLM discovery call."""
+
+
+def _read_discovery_eligible_sync(
+    unplayed_days: int = DISCOVERY_UNPLAYED_DAYS,
+) -> list[dict]:
+    """D-A1 — owned tracks unplayed in ``unplayed_days`` (default 90)
+    days, MINUS tracks currently in :class:`SuggestionsMirror`, MINUS hard
+    negatives (track + artist with ``recovery_pending=True``), MINUS tracks
+    surfaced within the 14-day SuggestionHistory window.
+
+    Returns dicts with ``track_id``, ``plex_rating_key``, ``title``,
+    ``artist``, ``last_viewed_at`` — enough for the LLM user prompt + post-
+    call ID validation.
+
+    ISO 8601 ordering note (W12): the ``t.last_viewed_at < :cutoff``
+    parameterized comparison is correct ONLY because ISO 8601 timestamp
+    strings sort chronologically as strings (lexicographic order matches
+    calendar order for valid ISO 8601). The boundary is STRICT less-than,
+    so a track at exactly the cutoff is NOT included (verified by the
+    W12 boundary test ``test_track_at_exactly_90_day_threshold_is_excluded``).
+    If the DB ever stores non-ISO-8601 timestamps, this comparison silently
+    breaks — current invariants (``sync_service`` writes only via
+    ``datetime.now(timezone.utc).isoformat()``) prevent that.
+    """
+    from sqlalchemy import text
+
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=unplayed_days)).isoformat()
+    fourteen_days_ago = (now - timedelta(days=14)).isoformat()
+    with Session(get_engine()) as session:
+        rows = session.execute(
+            text(
+                """
+                SELECT t.id AS track_id, t.plex_rating_key, t.title,
+                       t.artist, t.last_viewed_at
+                FROM track t
+                WHERE (
+                    t.last_viewed_at IS NULL
+                    OR t.last_viewed_at < :cutoff
+                )
+                AND t.id NOT IN (
+                    SELECT track_id FROM suggestionsmirror
+                )
+                AND t.id NOT IN (
+                    SELECT track_id FROM negativesignal
+                    WHERE signal_type = 'hard_track'
+                      AND track_id IS NOT NULL
+                )
+                AND t.artist NOT IN (
+                    SELECT artist FROM negativesignal
+                    WHERE signal_type = 'hard_artist'
+                      AND recovery_pending = 1
+                      AND artist IS NOT NULL
+                )
+                AND t.id NOT IN (
+                    SELECT track_id FROM suggestionhistory
+                    WHERE surfaced_at >= :fourteen_days_ago
+                )
+                """
+            ),
+            {
+                "cutoff": cutoff,
+                "fourteen_days_ago": fourteen_days_ago,
+            },
+        ).all()
+        return [
+            {
+                "track_id": int(r[0]),
+                "plex_rating_key": r[1],
+                "title": r[2],
+                "artist": r[3],
+                "last_viewed_at": r[4],
+            }
+            for r in rows
+        ]
+
+
+async def compute_discovery_eligible(
+    unplayed_days: int = DISCOVERY_UNPLAYED_DAYS,
+) -> list[dict]:
+    """Async accessor for the D-A1 discovery candidate pool. Consumers
+    (``discovery_call_weekly``) feed this directly into the LLM user prompt.
+    """
+    return await asyncio.to_thread(
+        _read_discovery_eligible_sync, unplayed_days,
+    )
