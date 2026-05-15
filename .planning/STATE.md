@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: — Music Companion
 status: executing
-stopped_at: Phase 06.2 executed + verified (28/28 must-haves, 182 Phase 6.2 tests pass, 0 critical review findings). 2 hotfixes shipped during NAS UAT (260512-k3n adaptive-thinking translation + LLM progress card; 260512-kvs max_tokens bump 4000→8000 + $3 cap removal). NAS UAT 2026-05-12 confirmed propose flow produces 6 vibes from 593-track library and pushes them to Plex as `Composer · {name}`. Phase 6.2 complete.
-last_updated: "2026-05-12T20:03:08.736Z"
-last_activity: 2026-05-13 -- Phase 7 context gathered (4 gray areas resolved; ready for planning)
+stopped_at: Phase 7 context gathered via /gsd-discuss-phase. Four gray areas resolved (refill cadence + bootstrap, shortlist composition, queue UI + dismiss interaction, skip-tracking calibration); 13 implementation decisions captured in `07-CONTEXT.md`. Researcher and planner can proceed without re-asking the user. The system-prompt-caching fix (Anthropic >2048-token minimum that bit Phase 6.2) is folded into Phase 7 D-07 as the shared longer preamble — load-bearing for SC4 ("`cache_read_input_tokens` accumulating").
+last_updated: "2026-05-15T21:30:07.197Z"
+last_activity: 2026-05-15 -- Phase 07.1 execution started
 progress:
-  total_phases: 10
+  total_phases: 11
   completed_phases: 9
-  total_plans: 26
-  completed_plans: 24
-  percent: 92
+  total_plans: 30
+  completed_plans: 27
+  percent: 90
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-08)
 
 **Core value:** Your Plex stars are the truth. Composer turns them into living vibe playlists and a steady stream of personalized discoveries — without you having to describe a vibe each time.
-**Current focus:** Phase 7 — Suggestions Queue + v1 Chat Retirement
+**Current focus:** Phase 07.1 — suggestions-cost-architecture-sql-refill-weekly-discovery
 
 ## Current Position
 
-Phase: 07 (suggestions-queue-v1-chat-retirement) — CONTEXT GATHERED
-Plan: 0 of N (plans TBD — next step is `/gsd-plan-phase 7`)
-Status: Phase 7 discussion complete. CONTEXT.md captures 13 implementation decisions (D-01..D-13) across refill cadence + bootstrap, shortlist composition, queue UI, skip-tracking calibration. Carry-forward locks documented (cost circuit breaker FIRST commit, prompt cache ttl:1h explicit, Pydantic track-ID validation, mobile-first conventions, `/debug/suggestions` + `/debug` index). The system-prompt-caching fix (>2048 tokens) is folded into Phase 7 D-07 as load-bearing for SC4. Ready to spawn researcher + planner.
-Last activity: 2026-05-14 -- Completed quick task 260514-e6w: Phase 7 suggestions_rank max_tokens 2000→8000 (unblocks current testing; proper SQL+weekly-discovery architecture spec'd in `.planning/notes/phase-07-followup-cost-architecture.md`)
+Phase: 07.1 (suggestions-cost-architecture-sql-refill-weekly-discovery) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 07.1
+Last activity: 2026-05-15 -- Phase 07.1 execution started
 
 ### v2.0 Phase Snapshot
 

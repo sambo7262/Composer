@@ -1041,14 +1041,15 @@ async def find_vibe_candidates(
     if vibe is None:
         return HTMLResponse(status_code=404, content="Vibe not found")
 
-    # CR-03 fix — fire-and-forget. Targeted refill (W2 single-vibe partition);
-    # micro-batch size 15 per CONTEXT.md "Claude's Discretion" (smaller than
-    # the whole-queue 30). Returning immediately lets the HTMX swap render
-    # the progress card before the LLM round-trip completes.
+    # CR-03 fix — fire-and-forget. Phase 7.1 D-D1: the legacy LLM
+    # ``refill_suggestions_for_vibe`` was deleted along with the per-vibe
+    # partition. Under SQL refill (D-B1), allocation is proportional
+    # across all active vibes — the per-vibe CTA now just kicks the
+    # whole-queue SQL refill (free, instant). The progress card is
+    # preserved for UI parity even though the new path returns much
+    # faster than the old LLM call.
     asyncio.create_task(
-        suggestions_service.refill_suggestions_for_vibe(
-            vibe_id, target=15,
-        )
+        suggestions_service.refill_mirror_sql(target=15)
     )
 
     return get_templates().TemplateResponse(

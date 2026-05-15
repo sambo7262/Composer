@@ -255,12 +255,14 @@ async def handle_track_played(event: TrackPlayedEvent) -> None:
         # CDL hotfix (260514): drop the `if removed:` gate. The original gate
         # caused a bootstrap deadlock — on a fresh deploy SuggestionsMirror is
         # empty, drain returns False, so refill never fired and the
-        # Composer · Suggestions Plex playlist (created inside
-        # refill_suggestions_queue when mp.plex_rating_key == '') was never
-        # materialized. The deficit check inside maybe_schedule_refill
-        # (suggestions_service.py:362-364) preserves the steady-state
-        # "no churn" intent at the correct layer: deficit=0 → short-circuit;
-        # deficit>0 → refill fires.
+        # Composer · Suggestions Plex playlist (created inside the Phase 7
+        # LLM refill when mp.plex_rating_key == '') was never materialized.
+        # The deficit check inside maybe_schedule_refill preserves the
+        # steady-state "no churn" intent at the correct layer.
+        #
+        # Phase 7.1 (SUGG-12): maybe_schedule_refill now delegates to
+        # refill_mirror_sql — pure SQL, free, no LLM tokens consumed per
+        # play.
         await suggestions_service.drain_track_from_mirror(
             event.plex_rating_key
         )
@@ -269,6 +271,21 @@ async def handle_track_played(event: TrackPlayedEvent) -> None:
         logger.exception(
             "Suggestions drain/refill hook failed; "
             "TrackPlayed view_count update succeeded"
+        )
+
+    # Phase 7.1 D-A3 — increment the discovery counter on every play.
+    # Best-effort + lazy re-import on every call so tests can monkeypatch
+    # ``suggestions_discovery.increment_plays_since_last_discovery`` via
+    # attribute assignment. Failure here MUST NOT break the primary
+    # rating-update path or the suggestions drain/refill above.
+    try:
+        from app.services import suggestions_discovery
+
+        await suggestions_discovery.increment_plays_since_last_discovery()
+    except Exception:
+        logger.exception(
+            "Discovery counter increment failed; "
+            "primary TrackPlayed handlers succeeded"
         )
 
 

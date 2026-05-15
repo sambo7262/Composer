@@ -432,31 +432,9 @@ class TestStaticAnalysis:
 
 # ===========================================================================
 # Phase 7 Plan 01 Task 2 — handle_track_played drain branch tests
+# (Phase 7.1 Plan 01 W13: db_with_phase7 promoted to tests/conftest.py; the
+#  local definition was removed so the conftest version is auto-discovered.)
 # ===========================================================================
-
-
-@pytest.fixture
-def db_with_phase7(test_engine):
-    """Phase 5 + 6 + 7 tables for the drain-branch tests."""
-    from app.models.settings import ServiceConfig  # noqa: F401
-    from app.models.track import SyncState, Track  # noqa: F401
-    from app.models.event_log import EventLog  # noqa: F401
-    from app.models.llm_usage import LLMUsage  # noqa: F401
-    from app.models.taste_profile import TasteProfile  # noqa: F401
-    from app.models.vibe import (  # noqa: F401
-        ManagedPlaylist,
-        MigrationLog,
-        SetupState,
-        SlotInLog,
-        TrackVibe,
-        Vibe,
-    )
-    from app.models.suggestions import SuggestionsMirror  # noqa: F401
-
-    SQLModel.metadata.create_all(test_engine)
-    with Session(test_engine) as session:
-        yield session
-    SQLModel.metadata.drop_all(test_engine)
 
 
 @pytest.fixture(autouse=True)
@@ -483,7 +461,7 @@ class TestHandleTrackPlayedSuggestionsDrain:
 
     def test_drains_mirror_when_track_is_member_revised(self, db_with_phase7):
         """Plan 02 W4 revision: replace the EventLog-marker assertion with a
-        direct ``refill_suggestions_queue.assert_awaited_once()`` check. The
+        direct ``refill_mirror_sql.assert_awaited_once()`` check. The
         Phase 5 view_count++ and SuggestionsMirror drain assertions REMAIN.
         """
         from datetime import datetime, timezone
@@ -525,13 +503,13 @@ class TestHandleTrackPlayedSuggestionsDrain:
         # Plan 02 W4 — mock the in-line refill function so we assert it was
         # awaited rather than reading the EventLog marker (which Plan 02
         # dropped).
-        original = suggestions_service.refill_suggestions_queue
+        original = suggestions_service.refill_mirror_sql
         mock_refill = AsyncMock(return_value=None)
-        suggestions_service.refill_suggestions_queue = mock_refill
+        suggestions_service.refill_mirror_sql = mock_refill
         try:
             _run_async(handle_track_played(evt))
         finally:
-            suggestions_service.refill_suggestions_queue = original
+            suggestions_service.refill_mirror_sql = original
 
         # (1) Phase 5 RATE-04 view_count + last_viewed_at still updated.
         with Session(get_engine()) as fresh:
@@ -549,7 +527,7 @@ class TestHandleTrackPlayedSuggestionsDrain:
             ).all()
             assert len(mirror_rows) == 0
 
-        # (3) Plan 02 — refill_suggestions_queue awaited (in-line replacement
+        # (3) Plan 02 — refill_mirror_sql awaited (in-line replacement
         # for the dropped EventLog marker).
         mock_refill.assert_awaited_once()
 
@@ -560,7 +538,7 @@ class TestHandleTrackPlayedSuggestionsDrain:
         maybe_schedule_refill (the if-removed gate was dropped to fix the
         bootstrap deadlock). When the mirror is at target=30, the deficit guard
         inside maybe_schedule_refill (suggestions_service.py:362-364)
-        short-circuits before refill_suggestions_queue is reached — so the mock
+        short-circuits before refill_mirror_sql is reached — so the mock
         here is correctly NOT called. view_count++ still happens. This preserves
         the original "no churn in steady state" intent at the correct layer.
         """
@@ -613,13 +591,13 @@ class TestHandleTrackPlayedSuggestionsDrain:
             received_at=datetime.now(timezone.utc).isoformat(),
         )
 
-        original = suggestions_service.refill_suggestions_queue
+        original = suggestions_service.refill_mirror_sql
         mock_refill = AsyncMock(return_value=None)
-        suggestions_service.refill_suggestions_queue = mock_refill
+        suggestions_service.refill_mirror_sql = mock_refill
         try:
             _run_async(handle_track_played(evt))
         finally:
-            suggestions_service.refill_suggestions_queue = original
+            suggestions_service.refill_mirror_sql = original
 
         with Session(get_engine()) as fresh:
             # view_count still incremented.
@@ -629,7 +607,7 @@ class TestHandleTrackPlayedSuggestionsDrain:
             assert outsider.view_count == 1
 
         # Mirror at target → deficit=0 → maybe_schedule_refill short-circuits
-        # before reaching refill_suggestions_queue. The mock is never invoked.
+        # before reaching refill_mirror_sql. The mock is never invoked.
         # (Pre-CDL-hotfix this was guaranteed by `if removed:` in event_handlers;
         # post-hotfix it is guaranteed by the deficit guard one layer deeper.)
         mock_refill.assert_not_called()
@@ -671,20 +649,20 @@ class TestHandleTrackPlayedSuggestionsDrain:
 
         # Mock maybe_schedule_refill directly (the most direct assertion of
         # the bug fix — the gate is gone, so this MUST be awaited regardless
-        # of the drain return value). Also mock refill_suggestions_queue to
+        # of the drain return value). Also mock refill_mirror_sql to
         # prevent a real LLM/Plex call inside maybe_schedule_refill if the
         # mock is somehow bypassed.
         original_maybe = suggestions_service.maybe_schedule_refill
-        original_refill = suggestions_service.refill_suggestions_queue
+        original_refill = suggestions_service.refill_mirror_sql
         mock_maybe = AsyncMock(return_value=30)  # deficit=30 (empty mirror)
         mock_refill = AsyncMock(return_value=None)
         suggestions_service.maybe_schedule_refill = mock_maybe
-        suggestions_service.refill_suggestions_queue = mock_refill
+        suggestions_service.refill_mirror_sql = mock_refill
         try:
             _run_async(handle_track_played(evt))
         finally:
             suggestions_service.maybe_schedule_refill = original_maybe
-            suggestions_service.refill_suggestions_queue = original_refill
+            suggestions_service.refill_mirror_sql = original_refill
 
         # Phase 5 RATE-04 view_count++ still happens.
         with Session(get_engine()) as fresh:
@@ -744,3 +722,110 @@ class TestHandleTrackPlayedSuggestionsDrain:
             # Phase 5 update still committed — the drain hook is best-effort.
             assert updated.view_count == 1
             assert updated.last_viewed_at == "2026-05-13T13:00:00+00:00"
+
+
+class TestHandleTrackPlayedDiscoveryCounterIncrement:
+    """Phase 7.1 D-A3 — handle_track_played increments
+    plays_since_last_discovery on every play (best-effort hook).
+    """
+
+    def test_handle_track_played_increments_discovery_counter(
+        self, db_with_phase7,
+    ):
+        """Mock increment_plays_since_last_discovery; fire a TrackPlayed
+        event; assert the mock was awaited exactly once.
+        """
+        from datetime import datetime, timezone
+        from unittest.mock import AsyncMock
+
+        from app.models.events import TrackPlayedEvent
+        from app.models.track import Track
+        from app.services import suggestions_discovery
+        from app.services.event_handlers import handle_track_played
+
+        played = Track(
+            plex_rating_key="888",
+            title="Discovery Counter Test",
+            artist="Test Artist",
+        )
+        db_with_phase7.add(played)
+        db_with_phase7.commit()
+
+        evt = TrackPlayedEvent(
+            plex_rating_key="888",
+            last_viewed_at="2026-05-15T10:00:00+00:00",
+            source="webhook",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        original = suggestions_discovery.increment_plays_since_last_discovery
+        mock_inc = AsyncMock(return_value=1)
+        suggestions_discovery.increment_plays_since_last_discovery = mock_inc
+        try:
+            _run_async(handle_track_played(evt))
+        finally:
+            suggestions_discovery.increment_plays_since_last_discovery = original
+
+        mock_inc.assert_awaited_once()
+
+    def test_handle_track_played_discovery_counter_failure_does_not_break_handler(
+        self, db_with_phase7,
+    ):
+        """Patch increment_plays_since_last_discovery to raise. Fire the
+        event. Assert view_count still increments and the existing
+        drain/refill path still runs. Best-effort try/except invariant.
+        """
+        from datetime import datetime, timezone
+        from unittest.mock import AsyncMock
+
+        from app.database import get_engine
+        from app.models.events import TrackPlayedEvent
+        from app.models.track import Track
+        from app.services import suggestions_discovery, suggestions_service
+        from app.services.event_handlers import handle_track_played
+
+        played = Track(
+            plex_rating_key="889",
+            title="Discovery Counter Failure Test",
+            artist="Test Artist",
+        )
+        db_with_phase7.add(played)
+        db_with_phase7.commit()
+
+        evt = TrackPlayedEvent(
+            plex_rating_key="889",
+            last_viewed_at="2026-05-15T10:00:00+00:00",
+            source="webhook",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        original_inc = suggestions_discovery.increment_plays_since_last_discovery
+        original_drain = suggestions_service.drain_track_from_mirror
+        original_refill = suggestions_service.maybe_schedule_refill
+        mock_inc_fail = AsyncMock(side_effect=RuntimeError("boom"))
+        mock_drain = AsyncMock(return_value=False)
+        mock_refill = AsyncMock(return_value=0)
+        suggestions_discovery.increment_plays_since_last_discovery = mock_inc_fail
+        suggestions_service.drain_track_from_mirror = mock_drain
+        suggestions_service.maybe_schedule_refill = mock_refill
+        try:
+            _run_async(handle_track_played(evt))
+        finally:
+            suggestions_discovery.increment_plays_since_last_discovery = original_inc
+            suggestions_service.drain_track_from_mirror = original_drain
+            suggestions_service.maybe_schedule_refill = original_refill
+
+        # Phase 5 RATE-04 view_count++ + last_viewed_at still happen.
+        with Session(get_engine()) as fresh:
+            updated = fresh.exec(
+                select(Track).where(Track.plex_rating_key == "889")
+            ).first()
+            assert updated.view_count == 1
+            assert updated.last_viewed_at == "2026-05-15T10:00:00+00:00"
+
+        # Drain + refill hooks still ran (counter failure must not
+        # short-circuit them).
+        mock_drain.assert_awaited_once()
+        mock_refill.assert_awaited_once()
+        # Counter mock was called and raised.
+        mock_inc_fail.assert_awaited_once()

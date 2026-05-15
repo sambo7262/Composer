@@ -540,16 +540,22 @@ class TestAnthropicThinkingAndRobustExtraction:
         assert "vibe_assign_pass2" in msg, msg
 
     @patch("app.services.anthropic_client.AsyncAnthropic")
-    async def test_anthropic_client_logs_stop_reason_when_max_tokens(
+    async def test_anthropic_client_raises_on_stop_reason_max_tokens_phase71(
         self, mock_anthropic_cls, db_with_phase5, caplog
     ):
-        """stop_reason='max_tokens' → WARNING log entry mentions max_tokens + purpose.
+        """Phase 7.1 SUGG-14: stop_reason='max_tokens' → raises
+        MaxTokensTruncationError (replaces the warning-only branch).
 
-        Pre-emptive for T6 / Pitfall E. If real Pass 2 calls hit this we'll
-        see it surfaced in /debug/vibes via the LLM cost panel.
+        The warning is preserved as a diagnostic; the raise is the new
+        behavior. Plan 02's discovery cron catches this specifically and
+        retries with a doubled budget. Existing callers (taste-profile,
+        vibe-naming, vibe_assign_pass2) will see it propagate — that's
+        the correct behavior per quick task 260514-e6w post-mortem.
         """
         import logging
-        from app.services.anthropic_client import AnthropicClient
+        from app.services.anthropic_client import (
+            AnthropicClient, MaxTokensTruncationError,
+        )
 
         mock_client = MagicMock()
         mock_client.messages.create = AsyncMock(
@@ -562,12 +568,18 @@ class TestAnthropicThinkingAndRobustExtraction:
 
         client = AnthropicClient(api_key="test-key", model="claude-sonnet-4-6")
         with caplog.at_level(logging.WARNING, logger="app.services.anthropic_client"):
-            await client.call_with_structured_output(
-                system_prompt="x" * 5000,
-                user_prompt="hi",
-                response_model=Foo,
-                purpose="vibe_assign_pass2",
-            )
+            with pytest.raises(MaxTokensTruncationError) as excinfo:
+                await client.call_with_structured_output(
+                    system_prompt="x" * 5000,
+                    user_prompt="hi",
+                    response_model=Foo,
+                    purpose="vibe_assign_pass2",
+                )
+        # Exception carries diagnostic attributes for downstream capture.
+        assert excinfo.value.purpose == "vibe_assign_pass2"
+        # Default max_tokens for call_with_structured_output is 1024.
+        assert excinfo.value.requested_max_tokens == 1024
+        # Diagnostic WARNING about max_tokens + purpose still emitted.
         joined = " ".join(
             r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
         )
@@ -741,3 +753,142 @@ def test_response_content_indexed_text_access_eradicated():
         "is enabled. Use a robust iterator over response.content for "
         "type=='text' instead."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7.1 SUGG-14 — MaxTokensTruncationError replaces warning-only branch.
+# ---------------------------------------------------------------------------
+
+
+class TestMaxTokensTruncationError:
+    """Phase 7.1 SUGG-14 — typed exception replaces warning-only
+    stop_reason='max_tokens' branch. Plan 02's discovery_call_weekly
+    retry loop catches THIS specifically.
+    """
+
+    def test_exception_is_subclass_of_exception(self):
+        from app.services.anthropic_client import MaxTokensTruncationError
+        assert issubclass(MaxTokensTruncationError, Exception)
+
+    def test_exception_carries_diagnostic_attributes(self):
+        from app.services.anthropic_client import MaxTokensTruncationError
+        err = MaxTokensTruncationError(
+            purpose="discovery_weekly",
+            requested_max_tokens=8000,
+            truncated_text_length=7821,
+        )
+        assert err.purpose == "discovery_weekly"
+        assert err.requested_max_tokens == 8000
+        assert err.truncated_text_length == 7821
+        assert "max_tokens=8000" in str(err)
+
+    @pytest.mark.asyncio
+    async def test_raises_on_stop_reason_max_tokens(
+        self, db_with_phase5,
+    ):
+        """Integration test: mocked SDK response with
+        stop_reason='max_tokens' MUST raise MaxTokensTruncationError
+        and MUST log an LLMUsage row first (cost is already incurred).
+        """
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from app.models.llm_usage import LLMUsage
+        from app.services.anthropic_client import (
+            AnthropicClient, MaxTokensTruncationError,
+        )
+
+        class DummyResponse(BaseModel):
+            value: str
+
+        # Build a fake SDK response object.
+        fake_text_block = SimpleNamespace(
+            type="text",
+            text='{"value": "partial"',  # truncated JSON
+        )
+        fake_response = SimpleNamespace(
+            stop_reason="max_tokens",
+            content=[fake_text_block],
+            usage=SimpleNamespace(
+                input_tokens=100,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=0,
+                output_tokens=50,
+            ),
+        )
+
+        client = AnthropicClient(
+            api_key="test-key", model="claude-sonnet-4-6"
+        )
+        client._client.messages.create = AsyncMock(
+            return_value=fake_response
+        )
+
+        with pytest.raises(MaxTokensTruncationError) as excinfo:
+            await client.call_with_structured_output(
+                system_prompt="x" * 3000,
+                user_prompt="y",
+                response_model=DummyResponse,
+                max_tokens=500,
+                purpose="test_truncation",
+            )
+        assert excinfo.value.purpose == "test_truncation"
+        assert excinfo.value.requested_max_tokens == 500
+        assert excinfo.value.truncated_text_length > 0
+
+        # LLMUsage row was inserted BEFORE the raise (cost is already
+        # incurred — cost meter must account for the truncated call).
+        with Session(db_with_phase5) as session:
+            rows = session.exec(
+                select(LLMUsage).where(
+                    LLMUsage.purpose == "test_truncation"
+                )
+            ).all()
+            assert len(rows) == 1, (
+                "LLMUsage row must be inserted before raise "
+                "(cost already incurred)"
+            )
+
+    @pytest.mark.asyncio
+    async def test_does_not_raise_on_stop_reason_end_turn(
+        self, db_with_phase5,
+    ):
+        """Smoke: stop_reason='end_turn' → normal parse → no raise."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from app.services.anthropic_client import AnthropicClient
+
+        class DummyResponse(BaseModel):
+            value: str
+
+        fake_text_block = SimpleNamespace(
+            type="text",
+            text='{"value": "complete"}',
+        )
+        fake_response = SimpleNamespace(
+            stop_reason="end_turn",
+            content=[fake_text_block],
+            usage=SimpleNamespace(
+                input_tokens=100,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=0,
+                output_tokens=50,
+            ),
+        )
+
+        client = AnthropicClient(
+            api_key="test-key", model="claude-sonnet-4-6"
+        )
+        client._client.messages.create = AsyncMock(
+            return_value=fake_response
+        )
+
+        result = await client.call_with_structured_output(
+            system_prompt="x" * 3000,
+            user_prompt="y",
+            response_model=DummyResponse,
+            max_tokens=500,
+            purpose="test_normal",
+        )
+        assert result.value == "complete"

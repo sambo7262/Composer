@@ -203,3 +203,31 @@ class MigrationLog(SQLModel, table=True):
 
     phase_id: str = Field(primary_key=True)
     completed_at: Optional[str] = Field(default=None)
+
+
+class DiscoveryState(SQLModel, table=True):
+    """Phase 7.1 D-A3 / D-C2 single-row discovery counter + last-run timestamp.
+
+    Mirrors :class:`SetupState`'s single-row id=1 pattern. Holds two pieces of
+    state for the weekly LLM discovery layer:
+
+    - ``plays_since_last_discovery``: incremented on every
+      ``handle_track_played`` (Phase 7.1 Plan 01); reset to 0 on a successful
+      ``discovery_call_weekly`` run (Phase 7.1 Plan 02). Read by
+      ``compute_adaptive_pick_count`` to map listening intensity to the 3-7
+      adaptive pick range (D-A3).
+    - ``last_discovery_run_at``: ISO 8601 UTC string of the most recent
+      successful ``discovery_call_weekly`` execution. Read by the startup
+      catch-up gate in ``sync_scheduler.start_scheduler`` (Phase 7.1 Plan 02 /
+      D-C2): if ``now - last_discovery_run_at > 7 days`` (or NULL), fire one
+      discovery immediately on Composer startup. Resilient to NAS-asleep-on-Sunday.
+
+    Schema migration policy (OPS-01): additive table, registered in
+    :func:`app.database.init_db` BEFORE ``SQLModel.metadata.create_all`` runs.
+    No Alembic. Existing deployments (Phase 7 only) get the table created on
+    first restart after 7.1 deploys.
+    """
+
+    id: Optional[int] = Field(default=1, primary_key=True)
+    plays_since_last_discovery: int = Field(default=0)
+    last_discovery_run_at: Optional[str] = Field(default=None)
