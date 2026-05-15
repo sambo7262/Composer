@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -115,12 +116,58 @@ def schedule_soft_negative_sweep() -> None:
     )
 
 
+def schedule_discovery_call_weekly() -> None:
+    """Phase 7.1 D-C1 — register the weekly LLM discovery call cron.
+
+    Fires Sunday 03:00 UTC — off-peak for US timezones, aligned with
+    existing infrastructure (matches ``sync_service`` /
+    ``soft_negative_sweep`` cadence). Mirrors
+    :func:`schedule_soft_negative_sweep` byte-for-byte; only the cron
+    schedule + handler differ.
+
+    ``replace_existing=True`` mirrors :func:`schedule_sync` /
+    :func:`schedule_polling` / :func:`schedule_soft_negative_sweep` so the
+    job is idempotent across restarts AND across settings reloads.
+
+    The companion startup catch-up logic lives in :func:`start_scheduler`
+    below (D-C2 — fire one immediately if ``last_discovery_run_at`` is
+    NULL or > 7 days ago). The catch-up gate is placed AFTER the
+    existing ``with Session(engine) as session:`` block (W9) so it
+    never opens a nested Session.
+    """
+    # Lazy import keeps the import-graph small and avoids a circular
+    # dep with suggestions_discovery (which imports from
+    # taste_profile_service, anthropic_client, etc.).
+    from app.services.suggestions_discovery import discovery_call_weekly
+
+    scheduler = get_scheduler()
+    if scheduler.get_job("discovery_call_weekly"):
+        scheduler.remove_job("discovery_call_weekly")
+    scheduler.add_job(
+        discovery_call_weekly,
+        trigger=CronTrigger(
+            day_of_week="sun", hour=3, minute=0, timezone="UTC",
+        ),
+        id="discovery_call_weekly",
+        replace_existing=True,
+        name="Discovery call weekly (Sundays 03:00 UTC)",
+    )
+    logger.info(
+        "Scheduled discovery call weekly on Sundays at 03:00 UTC"
+    )
+
+
 async def start_scheduler() -> None:
     """Start the scheduler and configure sync based on saved settings.
 
     - Loads sync interval from Plex extra_config (default 24h)
     - Schedules recurring sync
     - Triggers immediate auto-sync if Plex is configured and no prior sync exists (D-03)
+    - Phase 7.1 D-C2 — schedules a 10s-delayed catch-up
+      ``discovery_call_weekly`` if ``DiscoveryState.last_discovery_run_at``
+      is NULL or > 7 days ago (W9 — gate placed OUTSIDE the with-Session
+      block so it does not open a nested session via
+      :func:`read_discovery_state`).
     """
     scheduler = get_scheduler()
     scheduler.start()
@@ -165,6 +212,59 @@ async def start_scheduler() -> None:
         schedule_sync(interval_hours)
         # Polling stays opt-in even on error path.
         logger.exception("Error loading sync settings, using default %dh interval", interval_hours)
+
+    # ====================================================================
+    # Phase 7.1 D-C2 (W9) — discovery startup catch-up gate.
+    # PLACED OUTSIDE the with-Session block above so read_discovery_state()
+    # (which opens its own Session via _read_discovery_state_sync) does
+    # not create a nested-session pattern. Resilient to
+    # NAS-asleep-on-Sunday — first restart after the missed cron picks
+    # up immediately.
+    # ====================================================================
+    try:
+        from app.services import suggestions_discovery as _sd
+
+        state_row = await _sd.read_discovery_state()
+        last_run = state_row.last_discovery_run_at
+        needs_catch_up = False
+        if last_run is None:
+            needs_catch_up = True
+        else:
+            try:
+                last_run_dt = datetime.fromisoformat(last_run)
+                if last_run_dt.tzinfo is None:
+                    last_run_dt = last_run_dt.replace(tzinfo=timezone.utc)
+                age = datetime.now(timezone.utc) - last_run_dt
+                needs_catch_up = age >= timedelta(days=7)
+            except ValueError:
+                # Malformed timestamp → treat as needing catch-up.
+                needs_catch_up = True
+
+        if needs_catch_up:
+            logger.info(
+                "Last discovery run is NULL or > 7 days old — "
+                "scheduling catch-up discovery_call_weekly in 10s"
+            )
+
+            async def _delayed_catch_up_discovery():
+                await asyncio.sleep(10)
+                # Re-resolve the handler at call time so tests that
+                # monkeypatch ``suggestions_discovery.discovery_call_weekly``
+                # work end-to-end. Lazy import for the import-graph
+                # reasons noted on schedule_discovery_call_weekly.
+                from app.services import (
+                    suggestions_discovery as _sd_inner,
+                )
+                await _sd_inner.discovery_call_weekly()
+
+            asyncio.create_task(_delayed_catch_up_discovery())
+    except Exception:
+        # Best-effort — failure to read DiscoveryState must not
+        # break the scheduler startup path.
+        logger.exception(
+            "Failed to evaluate discovery catch-up gate; "
+            "scheduler startup continues"
+        )
 
 
 async def stop_scheduler() -> None:
