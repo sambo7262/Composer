@@ -1269,3 +1269,166 @@ class TestSuggestionsDiscoveryAstShape:
             "app/services/suggestions_discovery.py:\n"
             + "\n".join(violations)
         )
+
+
+class TestSuggestionsDiscoveryMaxTokensGuard:
+    """Phase 7.1 SUGG-14 — defensive max_tokens sizing on the weekly
+    discovery LLM call.
+
+    The truncation pitfall from quick task 260514-e6w must not recur in
+    the new module. The hotfix introduced this AST pattern for
+    ``app/services/suggestions_service.py``; we re-apply it to the new
+    ``app/services/suggestions_discovery.py`` module which is the only
+    place an Anthropic call now lives outside legacy / debug code.
+    """
+
+    def _module_path(self) -> Path:
+        return (
+            Path(__file__).parent.parent
+            / "app"
+            / "services"
+            / "suggestions_discovery.py"
+        )
+
+    def test_no_hardcoded_max_tokens_2000_in_suggestions_discovery(self):
+        """No literal ``max_tokens=2000`` may appear as a keyword arg.
+
+        AST (not grep) so docstrings / comments mentioning the value
+        historically do not trip the assertion.
+        """
+        source = self._module_path().read_text()
+        tree = ast.parse(source)
+
+        violations: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg != "max_tokens":
+                    continue
+                if (
+                    isinstance(kw.value, ast.Constant)
+                    and kw.value.value == 2000
+                ):
+                    violations.append(
+                        f"max_tokens=2000 literal at line "
+                        f"{kw.value.lineno}"
+                    )
+
+        assert violations == [], (
+            "SUGG-14 violation: forbidden max_tokens=2000 literal "
+            "found in app/services/suggestions_discovery.py "
+            "(lesson from quick task 260514-e6w):\n"
+            + "\n".join(violations)
+        )
+
+    def test_no_max_tokens_below_floor_in_suggestions_discovery(self):
+        """Any int literal max_tokens MUST be >= DISCOVERY_MAX_TOKENS_FLOOR.
+
+        Catches accidental downsizing to 4000 / 6000 etc. Symbolic
+        references (max_tokens=DISCOVERY_MAX_TOKENS_FLOOR or
+        max_tokens=current_max_tokens) are NOT flagged — AST cannot
+        evaluate symbolic values without execution; symbolic references
+        are the preferred pattern anyway.
+        """
+        from app.services.suggestions_discovery import (
+            DISCOVERY_MAX_TOKENS_FLOOR,
+        )
+
+        source = self._module_path().read_text()
+        tree = ast.parse(source)
+
+        violations: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg != "max_tokens":
+                    continue
+                if (
+                    isinstance(kw.value, ast.Constant)
+                    and isinstance(kw.value.value, int)
+                    and kw.value.value < DISCOVERY_MAX_TOKENS_FLOOR
+                ):
+                    violations.append(
+                        f"max_tokens={kw.value.value} literal at line "
+                        f"{kw.value.lineno} is below "
+                        f"DISCOVERY_MAX_TOKENS_FLOOR "
+                        f"({DISCOVERY_MAX_TOKENS_FLOOR})"
+                    )
+
+        assert violations == [], (
+            "SUGG-14 violation: max_tokens literal below floor in "
+            "app/services/suggestions_discovery.py:\n"
+            + "\n".join(violations)
+        )
+
+    def test_all_sql_helpers_called_via_to_thread(self):
+        """Phase 5 D-09 — every direct call to a ``_*_sync`` helper inside
+        an ``async def`` function must be the ``func`` argument of an
+        ``asyncio.to_thread(...)`` (or bare ``to_thread(...)``) call.
+
+        Catches the regression where someone writes
+        ``await _read_X_sync()`` inside an async handler — which would
+        block the event loop because ``_read_X_sync`` is a sync function.
+        """
+        source = self._module_path().read_text()
+        tree = ast.parse(source)
+
+        # Collect all async functions in the module.
+        async_funcs = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.AsyncFunctionDef)
+        ]
+
+        violations: list[str] = []
+        for fn in async_funcs:
+            for child in ast.walk(fn):
+                if not isinstance(child, ast.Call):
+                    continue
+                # We only care about direct calls to a name ending
+                # in ``_sync``.
+                func = child.func
+                called_name = None
+                if isinstance(func, ast.Name):
+                    called_name = func.id
+                elif isinstance(func, ast.Attribute):
+                    called_name = func.attr
+                if called_name is None or not called_name.endswith("_sync"):
+                    continue
+
+                # The call is allowed if it is the FIRST positional
+                # argument of an asyncio.to_thread(...) (or to_thread)
+                # call — i.e. the parent Call whose .args[0] is this
+                # node, with parent.func being to_thread.
+                parent_is_to_thread = False
+                for parent in ast.walk(tree):
+                    if not isinstance(parent, ast.Call):
+                        continue
+                    if not parent.args:
+                        continue
+                    parent_func = parent.func
+                    is_to_thread = (
+                        (isinstance(parent_func, ast.Attribute)
+                         and parent_func.attr == "to_thread")
+                        or (isinstance(parent_func, ast.Name)
+                            and parent_func.id == "to_thread")
+                    )
+                    if not is_to_thread:
+                        continue
+                    if parent.args[0] is func:
+                        parent_is_to_thread = True
+                        break
+                if not parent_is_to_thread:
+                    violations.append(
+                        f"_*_sync helper {called_name!r} called "
+                        f"directly inside async function "
+                        f"{fn.name!r} at line {child.lineno} — "
+                        f"must be wrapped in asyncio.to_thread(...)"
+                    )
+
+        assert violations == [], (
+            "Phase 5 D-09 violation in "
+            "app/services/suggestions_discovery.py:\n"
+            + "\n".join(violations)
+        )
