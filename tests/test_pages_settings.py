@@ -67,6 +67,8 @@ def _seed_llmusage(session, called_at_iso, cache_creation=0, cache_read=0,
 
 class TestSettingsCostMeter:
     def test_renders_cost_meter(self, client_settings, test_engine):
+        # Phase 7.1 D-D3 — MIGRATED: DAILY → WEEKLY heading text. Behavior
+        # otherwise unchanged (3 calls seeded within the new 7-day window).
         now = datetime.now(timezone.utc).isoformat()
         with Session(test_engine) as s:
             for _ in range(3):
@@ -74,24 +76,37 @@ class TestSettingsCostMeter:
         resp = client_settings.get("/settings")
         assert resp.status_code == 200
         body = resp.text
-        assert "Anthropic spend today" in body
+        assert "Anthropic spend this week" in body
         assert "3 call" in body  # "3 calls"
         assert "$0.0" in body or "$0.01" in body
         assert "cache hit" in body.lower() or "Cache hit" in body
 
-    def test_uses_today_utc_only(self, client_settings, test_engine):
+    def test_uses_rolling_seven_day_window(self, client_settings, test_engine):
+        """Phase 7.1 D-D3 — MIGRATED + RENAMED from test_uses_today_utc_only.
+
+        Seeds three rows at 1h ago, 6d ago, 8d ago. The 6d-ago row is now
+        INCLUDED in the new rolling 7-day window (it was excluded under the
+        old midnight-of-today gate). The 8d-ago row is still excluded.
+
+        Note (W12): LLMUsage.called_at is stored as ISO 8601 UTC. The
+        ``>= seven_days_ago_iso`` comparison in pages.py::read_settings
+        depends on lexicographic ordering matching chronological ordering;
+        this holds for fixed-width ISO 8601 timestamps with UTC offset.
+        """
         now = datetime.now(timezone.utc)
-        yesterday = (now - timedelta(days=1)).isoformat()
-        today = now.isoformat()
+        one_hour_ago = (now - timedelta(hours=1)).isoformat()
+        six_days_ago = (now - timedelta(days=6)).isoformat()
+        eight_days_ago = (now - timedelta(days=8)).isoformat()
         with Session(test_engine) as s:
-            _seed_llmusage(s, yesterday, cost=0.05)
-            _seed_llmusage(s, today, cost=0.01)
+            _seed_llmusage(s, one_hour_ago, cost=0.01)
+            _seed_llmusage(s, six_days_ago, cost=0.02)
+            _seed_llmusage(s, eight_days_ago, cost=0.99)
         resp = client_settings.get("/settings")
         body = resp.text
-        # Today shows count=1 (yesterday excluded).
-        assert "1 call" in body
-        # Yesterday's $0.05 must NOT appear in the today total.
-        assert "$0.05" not in body or "0.06" not in body
+        # Two rows fall inside the 7-day window (1h ago + 6d ago).
+        assert "2 call" in body
+        # The 8-day-old row's $0.99 cost must NOT appear in the total.
+        assert "$0.99" not in body
 
     def test_cache_hit_pct_displayed(self, client_settings, test_engine):
         now = datetime.now(timezone.utc).isoformat()
@@ -124,3 +139,28 @@ class TestSettingsCostMeter:
         assert "0 call" in body
         # cache hit pct shows "—" or absent percentage when no rows.
         assert "$0.00" in body
+
+    def test_renders_weekly_budget_value_not_daily(self, client_settings):
+        """Phase 7.1 D-D3 — the rendered budget moves from $0.42/day
+        to $0.50/week. The old daily value must not appear."""
+        resp = client_settings.get("/settings")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "$0.50" in body
+        assert "$0.42" not in body
+
+    def test_renders_weekly_label_not_daily(self, client_settings):
+        """Phase 7.1 D-D3 — heading moves DAILY → WEEKLY."""
+        resp = client_settings.get("/settings")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Anthropic spend this week" in body
+        assert "Anthropic spend today" not in body
+
+    def test_caching_warning_replaced_with_neutral_copy(self, client_settings):
+        """Phase 7.1 D-D3 — the legacy 'system prompt may be below
+        2048 tokens' warning is misleading at weekly cadence (cold
+        start by design); it must be replaced with neutral copy."""
+        resp = client_settings.get("/settings")
+        assert resp.status_code == 200
+        assert "system prompt may be below 2048 tokens" not in resp.text
