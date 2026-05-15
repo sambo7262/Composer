@@ -461,7 +461,7 @@ class TestHandleTrackPlayedSuggestionsDrain:
 
     def test_drains_mirror_when_track_is_member_revised(self, db_with_phase7):
         """Plan 02 W4 revision: replace the EventLog-marker assertion with a
-        direct ``refill_suggestions_queue.assert_awaited_once()`` check. The
+        direct ``refill_mirror_sql.assert_awaited_once()`` check. The
         Phase 5 view_count++ and SuggestionsMirror drain assertions REMAIN.
         """
         from datetime import datetime, timezone
@@ -503,13 +503,13 @@ class TestHandleTrackPlayedSuggestionsDrain:
         # Plan 02 W4 — mock the in-line refill function so we assert it was
         # awaited rather than reading the EventLog marker (which Plan 02
         # dropped).
-        original = suggestions_service.refill_suggestions_queue
+        original = suggestions_service.refill_mirror_sql
         mock_refill = AsyncMock(return_value=None)
-        suggestions_service.refill_suggestions_queue = mock_refill
+        suggestions_service.refill_mirror_sql = mock_refill
         try:
             _run_async(handle_track_played(evt))
         finally:
-            suggestions_service.refill_suggestions_queue = original
+            suggestions_service.refill_mirror_sql = original
 
         # (1) Phase 5 RATE-04 view_count + last_viewed_at still updated.
         with Session(get_engine()) as fresh:
@@ -527,7 +527,7 @@ class TestHandleTrackPlayedSuggestionsDrain:
             ).all()
             assert len(mirror_rows) == 0
 
-        # (3) Plan 02 — refill_suggestions_queue awaited (in-line replacement
+        # (3) Plan 02 — refill_mirror_sql awaited (in-line replacement
         # for the dropped EventLog marker).
         mock_refill.assert_awaited_once()
 
@@ -538,7 +538,7 @@ class TestHandleTrackPlayedSuggestionsDrain:
         maybe_schedule_refill (the if-removed gate was dropped to fix the
         bootstrap deadlock). When the mirror is at target=30, the deficit guard
         inside maybe_schedule_refill (suggestions_service.py:362-364)
-        short-circuits before refill_suggestions_queue is reached — so the mock
+        short-circuits before refill_mirror_sql is reached — so the mock
         here is correctly NOT called. view_count++ still happens. This preserves
         the original "no churn in steady state" intent at the correct layer.
         """
@@ -591,13 +591,13 @@ class TestHandleTrackPlayedSuggestionsDrain:
             received_at=datetime.now(timezone.utc).isoformat(),
         )
 
-        original = suggestions_service.refill_suggestions_queue
+        original = suggestions_service.refill_mirror_sql
         mock_refill = AsyncMock(return_value=None)
-        suggestions_service.refill_suggestions_queue = mock_refill
+        suggestions_service.refill_mirror_sql = mock_refill
         try:
             _run_async(handle_track_played(evt))
         finally:
-            suggestions_service.refill_suggestions_queue = original
+            suggestions_service.refill_mirror_sql = original
 
         with Session(get_engine()) as fresh:
             # view_count still incremented.
@@ -607,7 +607,7 @@ class TestHandleTrackPlayedSuggestionsDrain:
             assert outsider.view_count == 1
 
         # Mirror at target → deficit=0 → maybe_schedule_refill short-circuits
-        # before reaching refill_suggestions_queue. The mock is never invoked.
+        # before reaching refill_mirror_sql. The mock is never invoked.
         # (Pre-CDL-hotfix this was guaranteed by `if removed:` in event_handlers;
         # post-hotfix it is guaranteed by the deficit guard one layer deeper.)
         mock_refill.assert_not_called()
@@ -649,20 +649,20 @@ class TestHandleTrackPlayedSuggestionsDrain:
 
         # Mock maybe_schedule_refill directly (the most direct assertion of
         # the bug fix — the gate is gone, so this MUST be awaited regardless
-        # of the drain return value). Also mock refill_suggestions_queue to
+        # of the drain return value). Also mock refill_mirror_sql to
         # prevent a real LLM/Plex call inside maybe_schedule_refill if the
         # mock is somehow bypassed.
         original_maybe = suggestions_service.maybe_schedule_refill
-        original_refill = suggestions_service.refill_suggestions_queue
+        original_refill = suggestions_service.refill_mirror_sql
         mock_maybe = AsyncMock(return_value=30)  # deficit=30 (empty mirror)
         mock_refill = AsyncMock(return_value=None)
         suggestions_service.maybe_schedule_refill = mock_maybe
-        suggestions_service.refill_suggestions_queue = mock_refill
+        suggestions_service.refill_mirror_sql = mock_refill
         try:
             _run_async(handle_track_played(evt))
         finally:
             suggestions_service.maybe_schedule_refill = original_maybe
-            suggestions_service.refill_suggestions_queue = original_refill
+            suggestions_service.refill_mirror_sql = original_refill
 
         # Phase 5 RATE-04 view_count++ still happens.
         with Session(get_engine()) as fresh:

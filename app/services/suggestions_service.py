@@ -14,13 +14,29 @@ Public API:
     playlist and update the row (CR-01).
   - drain_track_from_mirror(rating_key) — remove the track from
     SuggestionsMirror IF it is currently a member. Returns True if removed.
-  - maybe_schedule_refill(target=30) — if mirror size < target, directly
-    await :func:`refill_suggestions_queue` (Plan 02 W4 replaced Plan 01's
-    EventLog-marker pattern with an in-line LLM-ranking refill). Returns
-    the deficit (target - current_size); 0 means no refill needed.
+  - maybe_schedule_refill(target=30) — Phase 7.1 SUGG-12: if mirror size <
+    target, directly await :func:`refill_mirror_sql` (free SQL hot path —
+    no LLM, no cost breaker). Returns the deficit (target - current_size);
+    0 means no refill needed. Symbol name preserved for monkeypatch
+    stability in test_event_handlers.py.
+  - refill_mirror_sql(target=30) — Phase 7.1 SUGG-12: SQL-driven refill
+    against ``TrackVibe.distance`` (Phase 6.2 pre-computed). Replaces the
+    deleted Phase 7 LLM-ranking refill. Free, instant, zero LLM tokens
+    consumed on every play.
   - run_phase_07_suggestions_bootstrap() — lifespan migration entry point;
     gated by MigrationLog(phase_id='7.0-suggestions-bootstrap').
   - get_state() — return the module-level SuggestionsServiceStatus dataclass.
+
+Phase 7.1 (D-D1) DELETED the entire legacy LLM-ranking section: the
+whole-queue and per-vibe Anthropic-call entry points, the 8000-token
+ranking constant introduced by 260514-e6w, the LLM ranking pydantic
+shapes, the audio-feature shortlist builder, the system / user prompt
+builders, the per-vibe distance helper, the soft-negative reader, the
+LLM cost-breaker integration, and the Composer context blurb. Callers
+in ``app/routers/api_vibes.py`` were retargeted to ``refill_mirror_sql``
+directly. See
+``.planning/phases/07.1-suggestions-cost-architecture-sql-refill-weekly-discovery/07.1-CONTEXT.md``
+D-D1 for the full deletion list and rationale.
 
 ALL PlexAPI work (when Plan 02 wires it in) routes through
 ``plex_playlist_service`` (which itself wraps in ``asyncio.to_thread`` per
@@ -33,12 +49,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
-from pydantic import BaseModel, Field as PydField
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlmodel import Session, select
 
@@ -55,13 +70,12 @@ PHASE_07_MIGRATION_ID = "7.0-suggestions-bootstrap"
 # this and runs the real plex_playlist_service.create_playlist call with the
 # first batch of suggestions.
 DEFERRED_PLEX_RATING_KEY_SENTINEL = ""
-# Phase 7 hotfix 260514-e6w: structured SuggestionRankingResponse JSON for
-# deficit=30 picks + shortlist context exceeds the prior 2000 budget and
-# triggers stop_reason=max_tokens → truncated JSON → pydantic validation
-# failure → refill aborts. Bumped to 8000 (same class as hotfix 260512-kvs
-# Phase 6.2 PASS2). Proper architectural fix lives in
-# .planning/notes/phase-07-followup-cost-architecture.md (Phase 7.1).
-SUGGESTIONS_RANK_MAX_TOKENS = 8000
+
+# Phase 7.1 SUGG-12 / D-B2 — top-N closest-to-centroid TrackVibe rows per
+# vibe; the SQL ranking pool for refill_mirror_sql. Light randomization
+# within this pool gives variety without destroying taste-fit. Tunable
+# post-deploy.
+TOP_N_PER_VIBE = 100
 
 
 @dataclass
@@ -356,28 +370,22 @@ async def drain_track_from_mirror(rating_key: str) -> bool:
 async def maybe_schedule_refill(
     target: int = SUGGESTIONS_TARGET_SIZE,
 ) -> int:
-    """D-03 threshold gate — when SuggestionsMirror.size < target, directly
-    await ``refill_suggestions_queue`` (Plan 02 W4: replaces the EventLog
-    marker pattern from Plan 01 with an in-line LLM-ranking refill). Returns
-    the deficit at gate-check time (0 means no refill triggered).
+    """D-03 / Phase 7.1 SUGG-12 — threshold gate. When SuggestionsMirror.size
+    < target, await :func:`refill_mirror_sql` (free SQL hot path; no LLM,
+    no cost breaker check needed). Returns the deficit at gate-check time.
 
-    The cost breaker is consulted inside ``refill_suggestions_queue`` — if it
-    trips, refill returns a ``RefillResult(breaker_tripped=True)`` and sets
-    ``_status.state='cost_locked'``. We still return the deficit unchanged so
-    callers can surface "Suggestions paused" UI state.
+    Symbol name preserved for monkeypatch stability: existing tests in
+    test_event_handlers.py monkeypatch this attribute by name (~6 sites).
+    Renaming would force test churn for no behavioral benefit.
     """
     current = await asyncio.to_thread(_count_mirror_rows_sync)
     deficit = max(0, target - current)
     if deficit > 0:
-        # Plan 02 W4: in-line refill instead of EventLog marker. Best-effort:
-        # exceptions are caught inside refill_suggestions_queue (breaker-
-        # tripped is recorded on the result; we never raise from this path so
-        # the caller's threshold gate remains a pure read-of-deficit semantic).
         try:
-            await refill_suggestions_queue(target=target)
+            await refill_mirror_sql(target=target)
         except Exception:
             logger.exception(
-                "refill_suggestions_queue raised during maybe_schedule_refill "
+                "refill_mirror_sql raised during maybe_schedule_refill "
                 "(deficit=%d); event_handlers caller will continue.",
                 deficit,
             )
@@ -427,337 +435,26 @@ async def run_phase_07_suggestions_bootstrap() -> None:
     logger.info("Phase 7 suggestions bootstrap migration complete.")
 
 
+
 # ============================================================================
-# Phase 7 Plan 02 — LLM-ranking refill pipeline, skip-tracking, cost breaker.
+# Phase 7.1 SUGG-12 — SQL-driven refill (replaces the deleted Phase 7
+# LLM-ranking entry point). Free, instant, zero LLM tokens. See:
+#   .planning/notes/phase-07-followup-cost-architecture.md (Option C)
+#   .planning/phases/07.1-suggestions-cost-architecture-sql-refill-weekly-discovery/
+#     07.1-CONTEXT.md (D-B1 / D-B2 / D-D1)
 # ============================================================================
-
-# ---------------------------------------------------------------------------
-# Pydantic shapes (LLM contract + result types)
-# ---------------------------------------------------------------------------
-
-
-class SuggestionRankingPick(BaseModel):
-    """One LLM-ranked pick. Integer index into the shortlist (Pitfall 10);
-    server maps back to ``track_id``. ``rationale`` is required non-empty
-    (Pydantic enforces ``str`` — empty fails validation per the
-    ``min_length=1`` constraint).
-    """
-
-    candidate_index: int
-    rationale: str = PydField(min_length=1)
-
-
-class SuggestionRankingResponse(BaseModel):
-    """LLM-returned ranked picks. Slim contract — only ``picks`` allowed."""
-
-    picks: List[SuggestionRankingPick]
 
 
 class RefillResult(BaseModel):
-    """Outcome of one refill cycle."""
+    """Phase 7.1 — outcome of one refill cycle. SQL refill always reports
+    ``breaker_tripped=False`` (no LLM, no cost meter to gate).
+    """
 
-    candidates_evaluated: int = 0
-    picks_returned: int = 0
-    picks_validated: int = 0
-    picks_inserted: int = 0
+    picks_made: int = 0
+    shortlist_size: int = 0
     latency_ms: int = 0
-    cost_estimate_usd: float = 0.0
-    cache_hit: bool = False
-    cache_created: bool = False
+    cost_usd: float = 0.0
     breaker_tripped: bool = False
-
-
-# ---------------------------------------------------------------------------
-# Sync DB helpers
-# ---------------------------------------------------------------------------
-
-
-def _read_active_vibes_sync() -> List[dict]:
-    """Return active Vibe rows with centroid + spread as dicts (avoid lazy
-    refresh outside the session)."""
-    from app.models.vibe import Vibe
-
-    with Session(get_engine()) as session:
-        rows = session.exec(
-            select(Vibe).where(Vibe.is_active == True)  # noqa: E712
-        ).all()
-        return [
-            {
-                "id": r.id,
-                "name": r.name,
-                "description": r.description or "",
-                "centroid_energy": r.centroid_energy,
-                "centroid_tempo": r.centroid_tempo,
-                "centroid_danceability": r.centroid_danceability,
-                "centroid_valence": r.centroid_valence,
-                "spread_energy": r.spread_energy,
-                "spread_tempo": r.spread_tempo,
-                "spread_danceability": r.spread_danceability,
-                "spread_valence": r.spread_valence,
-            }
-            for r in rows
-        ]
-
-
-def _read_eligible_tracks_sync() -> List[dict]:
-    """Return unrated tracks with full audio features, MINUS the 14-day
-    SuggestionHistory window, MINUS hard-negative artists, MINUS
-    hard_track ids, MINUS tracks currently in SuggestionsMirror. Returns
-    dicts (detached from session).
-    """
-    from app.models.suggestions import (
-        NegativeSignal, SuggestionHistory, SuggestionsMirror,
-    )
-    from app.models.track import Track
-
-    fourteen_days_ago = (
-        datetime.now(timezone.utc) - timedelta(days=14)
-    ).isoformat()
-
-    with Session(get_engine()) as session:
-        # Excluded track ids (hard_track + 14-day suggestion history +
-        # currently-in-mirror).
-        hard_track_ids = {
-            r.track_id
-            for r in session.exec(
-                select(NegativeSignal).where(
-                    NegativeSignal.signal_type == "hard_track"
-                )
-            ).all()
-            if r.track_id is not None
-        }
-        recent_history_ids = {
-            r.track_id
-            for r in session.exec(
-                select(SuggestionHistory).where(
-                    SuggestionHistory.surfaced_at >= fourteen_days_ago
-                )
-            ).all()
-        }
-        in_mirror_ids = {
-            r.track_id
-            for r in session.exec(select(SuggestionsMirror)).all()
-        }
-        # Excluded artists (hard_artist with recovery_pending=True).
-        hard_artists = {
-            r.artist
-            for r in session.exec(
-                select(NegativeSignal).where(
-                    NegativeSignal.signal_type == "hard_artist"
-                ).where(NegativeSignal.recovery_pending == True)  # noqa: E712
-            ).all()
-            if r.artist
-        }
-        excluded = hard_track_ids | recent_history_ids | in_mirror_ids
-
-        rows = session.exec(
-            select(Track).where(
-                Track.energy.is_not(None)  # type: ignore[union-attr]
-            ).where(
-                Track.tempo.is_not(None)  # type: ignore[union-attr]
-            ).where(
-                Track.danceability.is_not(None)  # type: ignore[union-attr]
-            ).where(
-                Track.valence.is_not(None)  # type: ignore[union-attr]
-            )
-        ).all()
-        out: List[dict] = []
-        for t in rows:
-            if t.user_rating is not None and t.user_rating > 0:
-                continue
-            if t.id in excluded:
-                continue
-            if t.artist in hard_artists:
-                continue
-            out.append({
-                "track_id": t.id,
-                "plex_rating_key": t.plex_rating_key,
-                "title": t.title,
-                "artist": t.artist,
-                "genre": t.genre or "",
-                "energy": t.energy,
-                "tempo": t.tempo,
-                "danceability": t.danceability,
-                "valence": t.valence,
-            })
-        return out
-
-
-# Z-score normalization floor mirrors vibe_clusterer._STD_FLOOR pattern.
-_STD_FLOOR = 1e-6
-
-
-def _normalized_distance(
-    track: dict, vibe: dict,
-) -> Optional[float]:
-    """Z-score normalized 4D Euclidean distance from track features to vibe
-    centroid, using the vibe's per-dimension spread as the standard deviation.
-
-    Returns None if any centroid/spread dimension is None (Vibe not yet
-    populated by Phase 6.2 — caller should treat as unreachable)."""
-    if any(
-        vibe[k] is None
-        for k in (
-            "centroid_energy", "centroid_tempo",
-            "centroid_danceability", "centroid_valence",
-            "spread_energy", "spread_tempo",
-            "spread_danceability", "spread_valence",
-        )
-    ):
-        return None
-    de = (track["energy"] - vibe["centroid_energy"]) / max(
-        vibe["spread_energy"], _STD_FLOOR
-    )
-    dt = (track["tempo"] - vibe["centroid_tempo"]) / max(
-        vibe["spread_tempo"], _STD_FLOOR
-    )
-    dd = (track["danceability"] - vibe["centroid_danceability"]) / max(
-        vibe["spread_danceability"], _STD_FLOOR
-    )
-    dv = (track["valence"] - vibe["centroid_valence"]) / max(
-        vibe["spread_valence"], _STD_FLOOR
-    )
-    return (de * de + dt * dt + dd * dd + dv * dv) ** 0.5
-
-
-def _build_shortlist_sync(
-    target_size: int = 50,
-    target_vibe_id: Optional[int] = None,
-) -> List[dict]:
-    """D-05 / D-06 — build the candidate shortlist for LLM ranking.
-
-    Pipeline:
-    1. Load eligible tracks (unrated, analyzed, NOT in 14-day history, NOT
-       hard-negative artist).
-    2. Load active vibes.
-    3. For each track, compute z-score-normalized distance to every vibe
-       centroid. Pick the closest vibe as ``assigned_vibe_id``. Keep the
-       track only if the closest distance is < 2σ (i.e. within ~2 z-score
-       units in 4D — the "2σ pre-filter" of D-06).
-    4. If ``target_vibe_id`` is set (W2 single-vibe partition):
-         filter to tracks whose ``assigned_vibe_id == target_vibe_id``;
-         sort ascending by distance; take the top ``target_size``.
-       Otherwise (whole-queue refill, default):
-         partition by ``assigned_vibe_id``; take ~``target_size/k`` from each
-         bucket (D-05 balanced).
-
-    Each returned row carries: ``track_id``, ``plex_rating_key``, ``title``,
-    ``artist``, ``genre``, ``energy``, ``tempo``, ``danceability``,
-    ``valence``, ``assigned_vibe_id``, ``closest_vibe_distance``.
-    """
-    eligible = _read_eligible_tracks_sync()
-    vibes = _read_active_vibes_sync()
-    if not eligible or not vibes:
-        return []
-
-    # 2σ threshold (z-score units, 4D); per D-06.
-    SIGMA_THRESHOLD = 2.0
-
-    annotated: List[dict] = []
-    for t in eligible:
-        best_vibe_id = None
-        best_dist = None
-        for v in vibes:
-            d = _normalized_distance(t, v)
-            if d is None:
-                continue
-            if best_dist is None or d < best_dist:
-                best_dist = d
-                best_vibe_id = v["id"]
-        if best_dist is None or best_dist >= SIGMA_THRESHOLD:
-            continue
-        annotated.append({
-            **t,
-            "assigned_vibe_id": best_vibe_id,
-            "closest_vibe_distance": best_dist,
-        })
-
-    if target_vibe_id is not None:
-        # W2 — single-vibe partition.
-        only = [r for r in annotated if r["assigned_vibe_id"] == target_vibe_id]
-        only.sort(key=lambda r: r["closest_vibe_distance"])
-        return only[:target_size]
-
-    # D-05 balanced across vibes — ~target_size/k from each bucket.
-    by_vibe: dict = {}
-    for r in annotated:
-        by_vibe.setdefault(r["assigned_vibe_id"], []).append(r)
-    for v_id, bucket in by_vibe.items():
-        bucket.sort(key=lambda r: r["closest_vibe_distance"])
-    k = max(1, len(by_vibe))
-    per_bucket = max(1, target_size // k)
-    out: List[dict] = []
-    for v_id in by_vibe:
-        out.extend(by_vibe[v_id][:per_bucket])
-    return out[:target_size + k]
-
-
-def _read_soft_negatives_sync() -> List[dict]:
-    """Return soft-negative entries with title + artist context for the LLM
-    user-prompt addendum (D-12).
-    """
-    from app.models.suggestions import NegativeSignal
-    from app.models.track import Track
-
-    with Session(get_engine()) as session:
-        rows = session.exec(
-            select(NegativeSignal).where(
-                NegativeSignal.signal_type == "soft"
-            )
-        ).all()
-        out: List[dict] = []
-        for r in rows:
-            title = None
-            artist = None
-            if r.track_id is not None:
-                t = session.exec(
-                    select(Track).where(Track.id == r.track_id)
-                ).first()
-                if t is not None:
-                    title = t.title
-                    artist = t.artist
-            out.append({
-                "track_id": r.track_id,
-                "title": title or "(unknown)",
-                "artist": artist or r.artist or "(unknown)",
-            })
-        return out
-
-
-def _read_latest_llm_usage_sync(purpose: str):
-    """Read the most-recent LLMUsage row for the purpose, returning detached
-    plain dict-like (we expose only the fields we need)."""
-    from app.models.llm_usage import LLMUsage
-
-    @dataclass
-    class _Usage:
-        cache_creation_input_tokens: int
-        cache_read_input_tokens: int
-        cost_estimate_usd: float
-
-    with Session(get_engine()) as session:
-        row = session.exec(
-            select(LLMUsage).where(LLMUsage.purpose == purpose).order_by(
-                LLMUsage.id.desc()  # type: ignore[union-attr]
-            )
-        ).first()
-        if row is None:
-            return None
-        return _Usage(
-            cache_creation_input_tokens=row.cache_creation_input_tokens or 0,
-            cache_read_input_tokens=row.cache_read_input_tokens or 0,
-            cost_estimate_usd=row.cost_estimate_usd or 0.0,
-        )
-
-
-def _count_llm_usage_by_purpose_sync(purpose: str) -> int:
-    from app.models.llm_usage import LLMUsage
-
-    with Session(get_engine()) as session:
-        rows = session.exec(
-            select(LLMUsage).where(LLMUsage.purpose == purpose)
-        ).all()
-        return len(rows)
 
 
 def _insert_refill_trigger_log_sync(
@@ -770,10 +467,9 @@ def _insert_refill_trigger_log_sync(
     target_vibe_id: Optional[int] = None,
     error: Optional[str] = None,
 ) -> int:
-    """Append one RefillTriggerLog row and return its id. Called from three
-    sites in ``refill_suggestions_queue`` (deficit==0 short-circuit,
-    breaker-tripped path, success path) and from
-    ``refill_suggestions_for_vibe`` (W2).
+    """Append one RefillTriggerLog row and return its id. Phase 7.1: used
+    by ``refill_mirror_sql`` for empty-pool / no-active-vibes paths where
+    ``_write_sql_refill_results_sync`` is not invoked.
     """
     from app.models.suggestions import RefillTriggerLog
 
@@ -795,93 +491,6 @@ def _insert_refill_trigger_log_sync(
         return row.id  # type: ignore[return-value]
 
 
-def _next_mirror_position_sync() -> int:
-    """Next 0-based position for SuggestionsMirror inserts (append-at-tail)."""
-    from app.models.suggestions import SuggestionsMirror
-
-    with Session(get_engine()) as session:
-        row = session.execute(
-            text("SELECT COALESCE(MAX(position), -1) + 1 FROM suggestionsmirror")
-        ).first()
-        return int((row[0] if row else 0) or 0)
-
-
-def _write_refill_results_sync(
-    picks: List[SuggestionRankingPick],
-    shortlist: List[dict],
-    event_source: str = "track_played",
-    target_vibe_id: Optional[int] = None,
-    latency_ms: int = 0,
-    cost_usd: float = 0.0,
-) -> int:
-    """Persist refill outcome inside one Session:
-
-    1. Insert one RefillTriggerLog row → ``refill_id``.
-    2. Insert one SuggestionsMirror row per pick (INSERT OR IGNORE on
-       UNIQUE(track_id)).
-    3. Insert one SuggestionHistory row per pick (refill_id matches).
-
-    Returns the refill_id.
-    """
-    from app.models.suggestions import (
-        RefillTriggerLog, SuggestionHistory, SuggestionsMirror,
-    )
-
-    now_iso = datetime.now(timezone.utc).isoformat()
-    with Session(get_engine()) as session:
-        log = RefillTriggerLog(
-            triggered_at=now_iso,
-            event_source=event_source,
-            target_vibe_id=target_vibe_id,
-            candidates_evaluated=len(shortlist),
-            picks_made=len(picks),
-            latency_ms=latency_ms,
-            cost_estimate_usd=cost_usd,
-            breaker_tripped=False,
-        )
-        session.add(log)
-        session.commit()
-        session.refresh(log)
-        refill_id = log.id
-
-        # Next mirror position.
-        max_pos = session.execute(
-            text("SELECT COALESCE(MAX(position), -1) FROM suggestionsmirror")
-        ).first()
-        next_pos = int((max_pos[0] if max_pos else -1) or -1) + 1
-
-        for p in picks:
-            row = shortlist[p.candidate_index]
-            # INSERT OR IGNORE on UNIQUE(track_id) — if the track is already
-            # in the mirror, skip (race with drain).
-            session.execute(
-                text(
-                    """
-                    INSERT OR IGNORE INTO suggestionsmirror
-                        (track_id, position, added_at, rationale,
-                         vibe_id, score)
-                    VALUES (:tid, :pos, :added, :rat, :vid, :score)
-                    """
-                ),
-                {
-                    "tid": row["track_id"],
-                    "pos": next_pos,
-                    "added": now_iso,
-                    "rat": p.rationale,
-                    "vid": row.get("assigned_vibe_id"),
-                    "score": row.get("closest_vibe_distance"),
-                },
-            )
-            next_pos += 1
-            session.add(SuggestionHistory(
-                track_id=row["track_id"],
-                surfaced_at=now_iso,
-                refill_id=refill_id,
-            ))
-        session.commit()
-        return refill_id  # type: ignore[return-value]
-
-
 def _read_plex_creds_sync() -> Tuple[str, str]:
     """Read decrypted Plex URL + token. Returns ('', '') if not configured —
     callers should skip Plex push in that case (smoke-test compatibility)."""
@@ -897,17 +506,13 @@ def _read_plex_creds_sync() -> Tuple[str, str]:
         return (ps.url or "", tok)
 
 
-# ---------------------------------------------------------------------------
-# Prompt builders + Anthropic client factory
-# ---------------------------------------------------------------------------
-
-
 def _get_anthropic_client_sync():
     """Lazy-construct AnthropicClient from settings_service decrypted api_key.
 
-    Mirrors taste_profile_service pattern: raises ValueError if not
-    configured (a missing api_key during refill is operator error and should
-    surface). Suffixed ``_sync`` to satisfy the Phase 5 D-09 AST invariant
+    Phase 7.1: kept for Plan 02 (discovery LLM call body) — Plan 01's SQL
+    refill never invokes this. Tests can monkeypatch the public
+    ``_get_anthropic_client`` attribute below to inject a mock client.
+    Suffixed ``_sync`` to satisfy the Phase 5 D-09 AST invariant
     (Session(get_engine()) blocks live in ``_*_sync`` helpers).
     """
     from app.services.anthropic_client import get_anthropic_client_v2
@@ -924,470 +529,317 @@ def _get_anthropic_client():
     return _get_anthropic_client_sync()
 
 
-def _composer_context_blurb() -> str:
-    """Long, byte-identical Composer context tail (~1500-2500 tokens) that
-    pads the shared system prompt above the 2048-token Sonnet 4.6 cache
-    breakpoint. Identical across all ``suggestions_rank`` calls within the
-    1h TTL — exactly what makes the cache engage (Pitfall 9 / D-07).
+def _read_vibe_pool_weights_sync() -> List[Tuple[int, float]]:
+    """D-B1 — return [(vibe_id, library_share), ...] proportional to
+    TrackVibe member count per ACTIVE vibe (Vibe.is_active = 1). If 40%
+    of TrackVibe rows live in vibe X, ~12 of 30 picks come from X.
+    Reflects overall taste shape; does NOT detect "current vibe" from a
+    play event (avoids the multi-vibe-membership problem).
 
-    Pattern lifted from taste_profile_service._build_system_prompt's tail
-    block.
+    Phase 7.1 Blocker #7 — archived vibes (is_active=False) MUST be
+    excluded so a deactivated vibe's tracks never get re-surfaced. The
+    WHERE v.is_active = 1 clause is symmetric with
+    ``_read_top_n_for_vibe_sync`` so the two helpers cannot disagree
+    about vibe eligibility.
     """
-    return (
-        "## Composer context (cacheable; identical across calls within 1h TTL)\n"
-        "Composer is a self-hosted music companion that turns Plex star ratings "
-        "into living vibe playlists and a continuous Suggestions queue. Composer "
-        "reads Plex userRating values (0-10 scale internally; 0-5 stars in the "
-        "UI with half-star resolution) and treats them as the user's "
-        "authoritative taste signal. Composer NEVER writes ratings back to Plex. "
-        "Composer maintains 'vibes' (clusters of audio-feature-similar tracks) "
-        "and a continuous Suggestions queue. The user listens via Plexamp on "
-        "iOS or Plex Web. Slotting works on audio features computed by "
-        "Essentia: energy from spectral RMS, tempo via beat tracking, "
-        "danceability via spectral complexity, valence as a weighted "
-        "combination of mode/danceability/brightness/pitch_salience. "
-        "Suggestions ranking uses Anthropic Sonnet 4.6 with prompt caching for "
-        "cost. The taste profile centroid is the mean over rated tracks' 4-D "
-        "audio features. The user's full library lives on a Synology NAS, "
-        "synced from Plex via the library_sync APScheduler job. New tracks "
-        "arrive from Lidarr, are imported into Plex, and Composer auto-"
-        "analyzes them via Essentia. Vibes are persistent — never recomputed "
-        "automatically; user-triggered only. The user can rename, merge, or "
-        "split vibes during the setup wizard. Composer is a single FastAPI "
-        "process with a single SQLite file; no separate worker, no Redis, no "
-        "Celery. Anthropic prompt caching uses ttl=1h explicitly because the "
-        "default regressed to 5min in March 2026. The Sonnet 4.6 cache "
-        "breakpoint is 2048 tokens minimum. Plex webhooks at "
-        "/api/webhooks/plex deliver media.rate, media.scrobble, and "
-        "library.new events; an APScheduler polling job catches whatever the "
-        "webhook missed. The event bus is a single asyncio.Queue with a "
-        "single dispatcher task for SQLite write serialization. Dedupe is "
-        "sha256(event_type|ratingKey|user_rating|5s_bucket) with INSERT OR "
-        "IGNORE on a UNIQUE constraint. The first-run auto-backfill populates "
-        "user_rating + last_viewed_at + view_count from Plex on initial Phase "
-        "5 deploy onto an existing v1 library. The Manual Resync button at "
-        "/api/rating-sync/start shares the same singleton state machine as "
-        "the auto-trigger. The Composer Suggestions queue holds 30 tracks by "
-        "default and refills via threshold-only refill (when the queue drops "
-        "below the target, a refill is triggered; D-03 invariant: no refill "
-        "on every scrobble, only when the queue depletes). Each suggestion "
-        "carries a one-line 'Why this track?' rationale that the user can "
-        "expand inline. Dismissing a track is a two-tap action (expand row "
-        "→ tap Dismiss). The dismiss action writes a hard-negative track "
-        "signal AND a hard-negative artist signal; the artist deboost clears "
-        "when the user rates 3+ stars on any track by that artist. A "
-        "soft-negative signal is written for tracks that the user played "
-        "from Suggestions but did not rate within 14 days — those are passed "
-        "into the LLM user-prompt addendum as 'do not prioritize'. The "
-        "shortlist for the LLM ranking call is built by: (a) selecting "
-        "unrated tracks with all four audio features computed, (b) excluding "
-        "tracks surfaced within the last 14 days, (c) excluding tracks by "
-        "hard-negative artists, (d) pre-filtering to tracks within 2σ of at "
-        "least one vibe centroid, (e) distributing balanced across vibes "
-        "(~50/k candidates per vibe for k vibes). The user has multiple "
-        "vibes carved out from their rated tracks via the wizard's "
-        "clustering proposal flow. Each vibe is a 4-D centroid in audio "
-        "feature space (energy, tempo, danceability, valence) plus a "
-        "human-given name and description. The wizard runs once on first "
-        "setup; the user can re-cluster from settings later if their taste "
-        "drifts. The full Composer architecture leans on the arr stack: "
-        "Plex for media playback, Lidarr for new-artist discovery, Sonarr "
-        "for the TV side (out of Composer's scope), Radarr similarly. "
-        "Composer ships as a single Docker container that runs alongside "
-        "the arr stack on a NAS. The user configures three external "
-        "services in Composer's wizard: Plex (URL + token), Anthropic "
-        "(API key), and Lidarr (URL + API key — optional, only needed when "
-        "the user wants to add new artists from suggestions). Composer "
-        "does NOT touch existing user-created Plex playlists (hands-off "
-        "rule); it only mutates playlists with the 'Composer · ' prefix "
-        "AND a matching ManagedPlaylist DB row — both markers required "
-        "(dual-marker invariant). Composer's UI is mobile-first: bottom "
-        "tab bar, h-dvh root, safe-area-inset-bottom, ≥44px touch targets, "
-        "no hover-only states. The Suggestions list uses a compact "
-        "vertical-list layout — 48px album art + title + artist + tiny "
-        "vibe chip per row; ~6 rows visible on iPhone portrait. The "
-        "rationale appears inline below the row when the user taps it "
-        "(Alpine.js x-show toggle, no separate page). The full Composer "
-        "stack: Python 3.12 + FastAPI 0.135 + SQLModel + SQLite + Jinja2 "
-        "+ HTMX + Alpine.js + Tailwind v4 CSS + Anthropic SDK + PlexAPI + "
-        "Spotipy + pyarr + APScheduler. The development cadence emphasizes "
-        "TDD: every behavior change has a failing test before the GREEN "
-        "implementation. The phase numbering corresponds to a planning "
-        "document at .planning/ROADMAP.md that the user iterates on as "
-        "Composer evolves. Phase 7 (this phase) ships the Suggestions "
-        "queue + retires the v1 mood-chat UI. Phase 8 will ship Lidarr-"
-        "driven artist discovery. Phase 9 will revisit taste-profile "
-        "richness once real listening data accumulates. The Suggestions "
-        "ranking call you are participating in is one of two main LLM "
-        "purposes in Composer: 'taste_profile_summary' and 'suggestions_rank'. "
-        "Both share the same shared-system-prompt cache namespace so that "
-        "the Composer-context blurb (this very paragraph and the surrounding "
-        "context) is cached once and reused. The cache is keyed on the "
-        "exact byte sequence of the system message — any deviation (a fresh "
-        "deploy, a refactor that changes wording, a new field added) resets "
-        "the cache cost. Composer's threat model treats the LLM as an "
-        "untrusted boundary: every track id returned by the LLM is "
-        "validated against the local Track table before insertion (Pitfall "
-        "10), and integer indices into the candidate shortlist are used "
-        "instead of raw track ids to keep the LLM's job simple and the "
-        "validation cheap. The cost circuit breaker enforces three "
-        "thresholds against today's accumulated LLMUsage: a daily quota "
-        "of 50 calls per UTC day, a burst limit of 5 calls per rolling 60-"
-        "second window, and a per-event debounce of 30 seconds. Any "
-        "threshold trip raises CostBreakerTrippedError before any further "
-        "LLM call, surfaces 'Suggestions paused — cost limit hit' on the "
-        "settings page, and writes a RefillTriggerLog row tagged "
-        "breaker_tripped=True. The /debug/suggestions page (shipping in "
-        "Plan 03 of this phase) renders the last 20 RefillTriggerLog rows "
-        "with their event_source, candidates_evaluated, picks_made, "
-        "latency_ms, cost_estimate_usd, and breaker_tripped status. "
-        "Composer's authentication posture is single-user / Tailscale-only; "
-        "there is no per-user authn or authz. The user controls who can "
-        "reach the FastAPI process at the network layer (Tailscale ACL or "
-        "a reverse proxy on a private network). All Composer interactions "
-        "with Plex use the user's plex_token (decrypted from settings on "
-        "demand), and all Anthropic calls use the user's API key. Both "
-        "credentials are encrypted at rest via the Composer encryption key "
-        "stored on the data volume; they are decrypted only when needed and "
-        "never logged. The token is sanitized out of any error message that "
-        "bubbles up to logs (sanitize_token helper at the plex_playlist_"
-        "service boundary). When recommending tracks, lean on the user's "
-        "vibe definitions: a track that lands neatly inside one of the "
-        "user's vibes is generally a better suggestion than a track that "
-        "lands ambiguously between vibes, because the user has explicitly "
-        "endorsed the vibe shape. When the candidate's audio features hint "
-        "at a vibe (energy/tempo/danceability/valence within ~1σ of the "
-        "centroid), the rationale should mention which vibe the candidate "
-        "fits and why. When the candidate's metadata (artist or genre) "
-        "matches one of the user's top artists or top genres, the rationale "
-        "can lead with that connection — it is concrete and verifiable. "
-        "Avoid generic phrases like 'great track' or 'fits your taste'; "
-        "the user wants to know why THIS track was picked instead of any "
-        "of the dozens of others on the shortlist. The rationale appears "
-        "verbatim in the UI as 'Why this track?' so it must read like a "
-        "thoughtful note from a friend who knows the user's library, not "
-        "a marketing blurb. Avoid hedging language like 'might be' or "
-        "'could be a good fit'; commit to a take. The user can always "
-        "dismiss a suggestion with two taps, and dismissals are how the "
-        "system learns. Soft negatives (heard but never rated within 14 "
-        "days) are a weaker signal than hard negatives (explicit dismiss); "
-        "honor both but let the user override if their taste shifted. "
-        "When the soft-negative addendum lists a track, do not pick "
-        "candidates by the same artist UNLESS the candidate is materially "
-        "different in audio features or genre — explain the difference in "
-        "the rationale.\n"
-    )
+    with Session(get_engine()) as session:
+        row_pairs = session.execute(
+            text(
+                """
+                SELECT v.id AS vibe_id, COUNT(tv.track_id) AS member_count
+                FROM vibe v
+                LEFT JOIN trackvibe tv ON tv.vibe_id = v.id
+                WHERE v.is_active = 1
+                GROUP BY v.id
+                """
+            )
+        ).all()
+        total = sum(r[1] or 0 for r in row_pairs) or 1
+        return [
+            (int(r[0]), (r[1] or 0) / total) for r in row_pairs
+        ]
 
 
-def build_suggestions_ranking_system_prompt() -> str:
-    """Plan 02 — shared longer preamble (D-07) for the suggestions ranking
-    call. Composition:
+def _read_top_n_for_vibe_sync(
+    vibe_id: int, n: int = TOP_N_PER_VIBE,
+) -> List[dict]:
+    """D-B2 — return the N closest-to-centroid TrackVibe rows for the
+    given vibe, ordered ASC by distance, joined with track metadata.
+    Excludes tracks already in the mirror, ``hard_track`` / ``hard_artist``
+    excluded artists/tracks, and tracks surfaced within the 14-day
+    SuggestionHistory window.
 
-    - Section A: enumerate active vibes (name + description).
-    - Section B: taste profile summary text (TasteProfile.summary_text).
-    - Section C: top artists / top genres (from vibe_clusterer aggregate).
-    - Section D: long Composer-context tail (byte-identical across calls).
-
-    Target: >= 8000 chars (~ >2048 tokens — proxy used by Phase 6.2 tests).
-    Asserts at first call to surface misconfig early.
+    Phase 7.1 Blocker #7 — also excludes ALL members if the vibe itself
+    is archived (Vibe.is_active = 0). The JOIN + WHERE v.is_active = 1
+    clause is symmetric with ``_read_vibe_pool_weights_sync`` so the two
+    helpers cannot disagree about vibe eligibility.
     """
-    from app.services.taste_profile_service import get_current_profile
-    from app.services.vibe_clusterer import _aggregate_rated_set_sync
+    fourteen_days_ago = (
+        datetime.now(timezone.utc) - timedelta(days=14)
+    ).isoformat()
+    with Session(get_engine()) as session:
+        rows = session.execute(
+            text(
+                """
+                SELECT t.id AS track_id, t.plex_rating_key, t.title,
+                       t.artist, tv.distance, tv.vibe_id
+                FROM trackvibe tv
+                JOIN track t ON t.id = tv.track_id
+                JOIN vibe v ON v.id = tv.vibe_id
+                WHERE tv.vibe_id = :vid
+                  AND v.is_active = 1
+                  AND t.id NOT IN (
+                      SELECT track_id FROM suggestionsmirror
+                  )
+                  AND t.id NOT IN (
+                      SELECT track_id FROM negativesignal
+                      WHERE signal_type = 'hard_track'
+                        AND track_id IS NOT NULL
+                  )
+                  AND t.artist NOT IN (
+                      SELECT artist FROM negativesignal
+                      WHERE signal_type = 'hard_artist'
+                        AND recovery_pending = 1
+                        AND artist IS NOT NULL
+                  )
+                  AND t.id NOT IN (
+                      SELECT track_id FROM suggestionhistory
+                      WHERE surfaced_at >= :fourteen_days_ago
+                  )
+                ORDER BY tv.distance ASC
+                LIMIT :n
+                """
+            ),
+            {
+                "vid": vibe_id,
+                "n": n,
+                "fourteen_days_ago": fourteen_days_ago,
+            },
+        ).all()
+        return [
+            {
+                "track_id": int(r[0]),
+                "plex_rating_key": r[1],
+                "title": r[2],
+                "artist": r[3],
+                "distance": float(r[4] or 0.0),
+                "vibe_id": int(r[5]),
+            }
+            for r in rows
+        ]
 
-    vibes = _read_active_vibes_sync()
-    parts: List[str] = [
-        "You are Composer's suggestions ranker. The user has defined the "
-        "following persistent vibe playlists from their rated music. Use "
-        "them as the lens through which you read the candidate tracks below.",
-        "",
-        "## Vibes",
-    ]
-    if vibes:
-        for v in vibes:
-            parts.append(f"- {v['name']}: {v['description']}")
-    else:
-        parts.append("- (no vibes defined yet — rank by general taste fit)")
-    parts.append("")
 
-    # Section B — taste profile summary.
-    tp = None
-    try:
-        tp = get_current_profile()
-    except Exception:
-        tp = None
-    parts.append("## Taste profile summary")
-    if tp is not None and tp.summary_text:
-        parts.append(tp.summary_text)
-    else:
-        parts.append("(no taste profile summary yet)")
-    parts.append("")
+def _write_sql_refill_results_sync(
+    picks: List[dict],
+    event_source: str = "sql_refill",
+    latency_ms: int = 0,
+) -> int:
+    """Phase 7.1 — persist refill outcome inside one Session. Takes the
+    new pick shape (dict with ``track_id``, ``distance``, ``vibe_id``,
+    ``plex_rating_key``) directly. Persists:
 
-    # Section C — top artists / genres.
-    try:
-        agg = _aggregate_rated_set_sync()
-    except Exception:
-        agg = {"top_artists": [], "top_genres": []}
-    parts.append("## Top rated artists")
-    for a in (agg.get("top_artists") or [])[:10]:
-        parts.append(f"- {a['artist']} ({a['count']} rated)")
-    parts.append("")
-    parts.append("## Top rated genres")
-    for g in (agg.get("top_genres") or [])[:10]:
-        parts.append(f"- {g['genre']} ({g['count']})")
-    parts.append("")
+    1. RefillTriggerLog row → ``refill_id`` (cost_estimate_usd=0.0,
+       breaker_tripped=False; the SQL refill path never invokes the LLM
+       or the cost breaker).
+    2. SuggestionsMirror row per pick (INSERT OR IGNORE on UNIQUE
+       track_id; race-safe with drain).
+    3. SuggestionHistory row per pick (refill_id matches; powers the
+       14-day exclusion window in subsequent refills).
 
-    parts.append("## Task")
-    parts.append(
-        "Given a numbered list of candidate tracks (provided in the user "
-        "message), return ranked picks as JSON: "
-        '{"picks": [{"candidate_index": N, "rationale": "one-line why"}]}. '
-        "candidate_index MUST be an integer in [0, N-1]. rationale MUST be "
-        "non-empty (one sentence is ideal). Up to 50 picks per response, "
-        "ordered best-fit first. Use the user's vibes and taste profile to "
-        "interpret 'best-fit'. Be specific in the rationale — reference an "
-        "artist, a vibe, an audio-feature observation — not generic phrases."
+    ``rationale`` is set to a deterministic SQL-derived string
+    ("Closest match for {vibe_name} (distance {d:.3f})") since there is
+    no LLM to author one. Plan 02's discovery picks will overwrite this
+    field with an LLM-authored rationale when applicable.
+    """
+    from app.models.suggestions import (
+        RefillTriggerLog, SuggestionHistory,
     )
-    parts.append("")
-    parts.append(_composer_context_blurb())
+    from app.models.vibe import Vibe
 
-    prompt = "\n".join(parts)
-    # Defensive assertion: surface misconfig early before the Anthropic call.
-    assert len(prompt) >= 8000, (
-        f"suggestions ranking system prompt is {len(prompt)} chars "
-        "(< 8000 — below Sonnet 4.6 cache threshold proxy)"
-    )
-    return prompt
-
-
-def build_suggestions_ranking_user_prompt(
-    shortlist: List[dict],
-    soft_negatives: List[dict],
-) -> str:
-    """Per-call user prompt (uncached) with the integer-indexed candidates."""
-    lines: List[str] = [
-        f"There are {len(shortlist)} candidate tracks. Rank them.",
-        "",
-        "## Candidates",
-    ]
-    # Cache vibe name lookups.
-    vibes = {v["id"]: v["name"] for v in _read_active_vibes_sync()}
-    for idx, row in enumerate(shortlist):
-        vname = vibes.get(row.get("assigned_vibe_id"), "?")
-        lines.append(
-            f"[{idx}]: {row['title']} — {row['artist']} "
-            f"({row.get('genre') or 'unknown genre'}, "
-            f"energy={row['energy']:.2f}, tempo={row['tempo']:.0f}, "
-            f"danceability={row['danceability']:.2f}, "
-            f"valence={row['valence']:.2f}) [vibe_hint: {vname}]"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with Session(get_engine()) as session:
+        log = RefillTriggerLog(
+            triggered_at=now_iso,
+            event_source=event_source,
+            target_vibe_id=None,
+            candidates_evaluated=len(picks),
+            picks_made=len(picks),
+            latency_ms=latency_ms,
+            cost_estimate_usd=0.0,
+            breaker_tripped=False,
         )
-    if soft_negatives:
-        lines.append("")
-        lines.append("## DO NOT PRIORITIZE")
-        lines.append(
-            "The user heard the following tracks from Suggestions but did "
-            "not rate them in 14 days — likely soft negatives. Do not pick "
-            "candidates that sound similar to these:"
-        )
-        for sn in soft_negatives:
-            lines.append(f"- {sn['title']} — {sn['artist']} (heard, not rated)")
-    return "\n".join(lines)
+        session.add(log)
+        session.commit()
+        session.refresh(log)
+        refill_id = log.id
+
+        vibe_names: dict = {
+            int(v.id): v.name
+            for v in session.exec(select(Vibe)).all()
+            if v.id is not None
+        }
+
+        max_pos = session.execute(
+            text("SELECT COALESCE(MAX(position), -1) FROM suggestionsmirror")
+        ).first()
+        next_pos = int((max_pos[0] if max_pos else -1) or -1) + 1
+
+        for pick in picks:
+            vname = vibe_names.get(pick["vibe_id"], "vibe")
+            rationale = (
+                f"Closest match for {vname} "
+                f"(distance {pick['distance']:.3f})"
+            )
+            session.execute(
+                text(
+                    """
+                    INSERT OR IGNORE INTO suggestionsmirror
+                        (track_id, position, added_at, rationale,
+                         vibe_id, score)
+                    VALUES (:tid, :pos, :added, :rat, :vid, :score)
+                    """
+                ),
+                {
+                    "tid": pick["track_id"],
+                    "pos": next_pos,
+                    "added": now_iso,
+                    "rat": rationale,
+                    "vid": pick["vibe_id"],
+                    "score": pick["distance"],
+                },
+            )
+            next_pos += 1
+            session.add(SuggestionHistory(
+                track_id=pick["track_id"],
+                surfaced_at=now_iso,
+                refill_id=refill_id,
+            ))
+        session.commit()
+        return int(refill_id)  # type: ignore[return-value]
 
 
-def _validate_picks(
-    picks: List[SuggestionRankingPick],
-    shortlist_size: int,
-) -> Tuple[List[SuggestionRankingPick], List[int]]:
-    """Pitfall 10 — partition picks into (valid, list-of-invalid-indices).
-
-    A pick is invalid if ``candidate_index < 0`` or
-    ``candidate_index >= shortlist_size``.
-    """
-    valid: List[SuggestionRankingPick] = []
-    invalid: List[int] = []
-    for p in picks:
-        if 0 <= p.candidate_index < shortlist_size:
-            valid.append(p)
-        else:
-            invalid.append(p.candidate_index)
-    return valid, invalid
-
-
-# ---------------------------------------------------------------------------
-# Refill entry points
-# ---------------------------------------------------------------------------
-
-
-async def refill_suggestions_queue(
+async def refill_mirror_sql(
     target: int = SUGGESTIONS_TARGET_SIZE,
 ) -> RefillResult:
-    """Plan 02 — the LLM-ranking refill pipeline (SUGG-04..07, OPS-05).
+    """Phase 7.1 SUGG-12 — SQL-driven mirror refill. Replaces the deleted
+    Phase 7 LLM-ranking entry point. Free, instant, no LLM tokens consumed.
 
-    Steps:
-    1. Compute deficit (target - current mirror size).
-    2. Cost breaker (``check_or_raise``) — Pitfall 11 BEFORE any LLM activity.
-    3. Build shortlist (D-05/D-06).
-    4. Collect soft-negatives (D-12).
-    5. Build system + user prompts.
-    6. Call AnthropicClient with ``purpose='suggestions_rank'``, ``thinking='off'``.
-    7. Pitfall 10 validate; retry once on failure with corrective addendum.
-    8. Trim to deficit + dedupe candidate_index.
-    9. Write SuggestionsMirror + SuggestionHistory + RefillTriggerLog rows.
-    10. Push to Plex via ``update_playlist_items`` (additive).
-    11. Compute cache-hit telemetry from the just-written LLMUsage row.
+    Algorithm (D-B1 + D-B2):
+      1. Compute current deficit (target - SuggestionsMirror.count()).
+         If deficit ≤ 0: no-op, return RefillResult(picks_made=0).
+      2. Read library-share weights per ACTIVE vibe (D-B1; archived
+         vibes excluded).
+      3. Allocate the deficit across vibes proportionally; round up so
+         the sum reaches deficit (largest-fractional-remainder rounding).
+      4. For each vibe with allocation > 0: fetch the top-N closest
+         tracks (D-B2; archived vibes return []), then random.sample
+         (allocated_for_vibe) from that pool. Variety without destroying
+         taste-fit.
+      5. Persist picks via ``_write_sql_refill_results_sync``.
+      6. Mirror the canonical Plex push branch from the deleted Phase 7
+         LLM-ranking entry point: read ManagedPlaylist(kind='suggestions');
+         if missing, log + skip; if plex_rating_key=='' (sentinel) call
+         ``_materialize_suggestions_plex_playlist(plex_url, plex_token,
+         rating_keys)``; else call ``update_playlist_items(plex_url,
+         plex_token, mp.plex_rating_key, rating_keys)``.
+
+    Returns a ``RefillResult`` with ``breaker_tripped=False`` always —
+    SQL refill never trips a breaker (there is no LLM cost to gate).
     """
-    from app.services.llm_cost_breaker import (
-        CostBreakerTrippedError, check_or_raise,
-    )
+    import random
+    import time as _time
 
     global _status
-    start = time.monotonic()
+    start = _time.monotonic()
 
-    # 1. Compute deficit.
     current = await asyncio.to_thread(_count_mirror_rows_sync)
     deficit = max(0, target - current)
-    if deficit == 0:
+    if deficit <= 0:
+        return RefillResult(
+            picks_made=0,
+            shortlist_size=0,
+            latency_ms=0,
+            cost_usd=0.0,
+            breaker_tripped=False,
+        )
+
+    weights = await asyncio.to_thread(_read_vibe_pool_weights_sync)
+    if not weights:
+        # No active vibes → nothing to refill from. Log a trigger row
+        # for observability (zero picks).
         await asyncio.to_thread(
             _insert_refill_trigger_log_sync,
-            "track_played", 0, 0,
-            int((time.monotonic() - start) * 1000),
-            0.0, False,
+            "sql_refill", 0, 0,
+            int((_time.monotonic() - start) * 1000),
+            0.0, False, None, None,
         )
         return RefillResult(
-            candidates_evaluated=0, picks_returned=0,
-            picks_validated=0, picks_inserted=0,
-            latency_ms=int((time.monotonic() - start) * 1000),
-            cost_estimate_usd=0.0, cache_hit=False, cache_created=False,
+            picks_made=0,
+            shortlist_size=0,
+            latency_ms=int((_time.monotonic() - start) * 1000),
+            cost_usd=0.0,
+            breaker_tripped=False,
         )
 
-    # 2. Cost breaker (Pitfall 11 — BEFORE any LLM activity).
-    try:
-        await check_or_raise(purpose_prefix="suggestions_")
-    except CostBreakerTrippedError as exc:
-        _status = SuggestionsServiceStatus(
-            state="cost_locked",
-            last_bootstrap_at=_status.last_bootstrap_at,
-            last_drain_at=_status.last_drain_at,
-            last_error=f"cost_breaker_tripped:{exc.reason}",
-        )
-        await asyncio.to_thread(
-            _insert_refill_trigger_log_sync,
-            "track_played", 0, 0,
-            int((time.monotonic() - start) * 1000),
-            0.0, True, None, f"breaker:{exc.reason}",
-        )
-        return RefillResult(
-            candidates_evaluated=0, picks_returned=0,
-            picks_validated=0, picks_inserted=0,
-            latency_ms=int((time.monotonic() - start) * 1000),
-            cost_estimate_usd=0.0, cache_hit=False, cache_created=False,
-            breaker_tripped=True,
-        )
+    # Allocate deficit across vibes proportional to library share.
+    # Largest-fractional-remainder rounding so allocation sums to deficit.
+    raw = [(vid, share * deficit) for vid, share in weights]
+    floored = [(vid, int(amount), amount - int(amount)) for vid, amount in raw]
+    allocated = sum(f for _, f, _ in floored)
+    remainder = deficit - allocated
+    # Sort by descending fractional remainder; bump those vibes by 1.
+    floored.sort(key=lambda x: x[2], reverse=True)
+    allocations: dict = {}
+    for i, (vid, base, _frac) in enumerate(floored):
+        extra = 1 if i < remainder else 0
+        allocations[vid] = base + extra
 
-    _status = SuggestionsServiceStatus(
-        state="refilling",
-        last_bootstrap_at=_status.last_bootstrap_at,
-        last_drain_at=_status.last_drain_at,
-    )
-
-    # 3. Shortlist.
-    shortlist = await asyncio.to_thread(_build_shortlist_sync, 50, None)
-
-    # 4. Soft-negatives.
-    soft_negatives = await asyncio.to_thread(_read_soft_negatives_sync)
-
-    # 5. Prompts.
-    system_prompt = build_suggestions_ranking_system_prompt()
-    user_prompt = build_suggestions_ranking_user_prompt(shortlist, soft_negatives)
-
-    # 6. LLM call.
-    client = _get_anthropic_client()
-    response: SuggestionRankingResponse = await client.call_with_structured_output(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        response_model=SuggestionRankingResponse,
-        max_tokens=SUGGESTIONS_RANK_MAX_TOKENS,
-        purpose="suggestions_rank",
-        thinking="off",
-    )
-
-    # 6b. W1 — runtime warning on FIRST observed call when cache creation didn't engage.
-    total_so_far = await asyncio.to_thread(
-        _count_llm_usage_by_purpose_sync, "suggestions_rank"
-    )
-    if total_so_far == 1:
-        first_row = await asyncio.to_thread(
-            _read_latest_llm_usage_sync, "suggestions_rank"
-        )
-        if first_row is not None and first_row.cache_creation_input_tokens == 0:
-            logger.warning(
-                "suggestions ranking cache creation not engaged "
-                "(system prompt may be below 2048 tokens; first "
-                "'suggestions_rank' call returned "
-                "cache_creation_input_tokens=0)"
-            )
-
-    # 7. Validate (Pitfall 10) + retry once if needed.
-    valid_picks, invalid_indices = _validate_picks(
-        response.picks, len(shortlist),
-    )
-    if invalid_indices and len(valid_picks) < deficit:
-        retry_user_prompt = user_prompt + (
-            f"\n\n## VALIDATION FAILURE\n"
-            f"The previous response returned invalid candidate_index values: "
-            f"{invalid_indices}. Valid range is 0..{max(0, len(shortlist) - 1)}. "
-            f"Provide a fresh ranked list — integer indices only, within range."
-        )
-        response = await client.call_with_structured_output(
-            system_prompt=system_prompt,
-            user_prompt=retry_user_prompt,
-            response_model=SuggestionRankingResponse,
-            max_tokens=SUGGESTIONS_RANK_MAX_TOKENS,
-            purpose="suggestions_rank",
-            thinking="off",
-        )
-        valid_picks, _ = _validate_picks(response.picks, len(shortlist))
-
-    # 8. Trim to deficit + dedupe candidate_index.
-    seen = set()
-    kept: List[SuggestionRankingPick] = []
-    for p in valid_picks:
-        if p.candidate_index in seen:
+    # Per-vibe top-N + random sample of allocation.
+    picks: List[dict] = []
+    for vid, n_picks in allocations.items():
+        if n_picks <= 0:
             continue
-        seen.add(p.candidate_index)
-        kept.append(p)
-        if len(kept) >= deficit:
-            break
+        pool = await asyncio.to_thread(
+            _read_top_n_for_vibe_sync, vid, TOP_N_PER_VIBE,
+        )
+        if not pool:
+            continue
+        sample_size = min(n_picks, len(pool))
+        chosen = random.sample(pool, sample_size)
+        picks.extend(chosen)
 
-    # 9 + 10. Persist + Plex push.
-    latency_ms = int((time.monotonic() - start) * 1000)
-    last_usage = await asyncio.to_thread(
-        _read_latest_llm_usage_sync, "suggestions_rank"
-    )
-    cost_usd = last_usage.cost_estimate_usd if last_usage else 0.0
-    cache_created = bool(
-        last_usage and last_usage.cache_creation_input_tokens > 0
-    )
-    cache_hit = bool(
-        last_usage and last_usage.cache_read_input_tokens > 0
-    )
+    # Persist picks + RefillTriggerLog row.
+    latency_ms = int((_time.monotonic() - start) * 1000)
+    if picks:
+        await asyncio.to_thread(
+            _write_sql_refill_results_sync,
+            picks, "sql_refill", latency_ms,
+        )
+    else:
+        # No candidates available across all vibes — log a no-op trigger.
+        await asyncio.to_thread(
+            _insert_refill_trigger_log_sync,
+            "sql_refill", 0, 0, latency_ms,
+            0.0, False, None, None,
+        )
 
-    await asyncio.to_thread(
-        _write_refill_results_sync,
-        kept, shortlist, "track_played", None,
-        latency_ms, cost_usd,
-    )
-
-    if kept:
-        rating_keys = [shortlist[p.candidate_index]["plex_rating_key"] for p in kept]
+    # ========================================================================
+    # Plex push — MIRROR the canonical branch from the deleted Phase 7
+    # LLM-ranking refill (Phase 7.1 D-D1). Three positional args to
+    # ``_materialize_suggestions_plex_playlist``; await it directly (already
+    # async).
+    # ========================================================================
+    if picks:
+        rating_keys = [p["plex_rating_key"] for p in picks]
         mp = await asyncio.to_thread(_find_suggestions_managed_playlist_sync)
         if mp is None:
             logger.warning(
-                "refill_suggestions_queue: no ManagedPlaylist(kind=suggestions) "
+                "refill_mirror_sql: no ManagedPlaylist(kind=suggestions) "
                 "row found; bootstrap was likely skipped. Skipping Plex push."
             )
         elif not mp.plex_rating_key:
-            # CR-01 fix — first non-empty refill: materialize the deferred
-            # Plex playlist and update the sentinel row in-place.
+            # First non-empty refill: materialize the deferred Plex
+            # playlist and update the sentinel row in-place.
             plex_url, plex_token = await asyncio.to_thread(_read_plex_creds_sync)
             await _materialize_suggestions_plex_playlist(
                 plex_url, plex_token, rating_keys,
@@ -1400,7 +852,7 @@ async def refill_suggestions_queue(
                 )
             except Exception:
                 logger.exception(
-                    "Plex update_playlist_items failed during refill; "
+                    "refill_mirror_sql: Plex update_playlist_items failed; "
                     "mirror state is the truth — Plex will reconcile on "
                     "next refill."
                 )
@@ -1412,196 +864,13 @@ async def refill_suggestions_queue(
     )
 
     return RefillResult(
-        candidates_evaluated=len(shortlist),
-        picks_returned=len(response.picks),
-        picks_validated=len(valid_picks),
-        picks_inserted=len(kept),
+        picks_made=len(picks),
+        shortlist_size=sum(allocations.values()),
         latency_ms=latency_ms,
-        cost_estimate_usd=cost_usd,
-        cache_hit=cache_hit,
-        cache_created=cache_created,
+        cost_usd=0.0,
+        breaker_tripped=False,
     )
 
-
-async def refill_suggestions_for_vibe(
-    vibe_id: int, target: int = 15,
-) -> RefillResult:
-    """SUGG-10 — targeted refill for ONE vibe. Goes through the SAME cost
-    breaker AND the SAME LLM-call shape as ``refill_suggestions_queue`` —
-    just with a single-vibe shortlist partition (W2) and the
-    ``event_source='vibe_coverage_cta'`` RefillTriggerLog tag.
-    """
-    from app.services.llm_cost_breaker import (
-        CostBreakerTrippedError, check_or_raise,
-    )
-
-    global _status
-    start = time.monotonic()
-
-    # 1. Cost breaker FIRST.
-    try:
-        await check_or_raise(purpose_prefix="suggestions_")
-    except CostBreakerTrippedError as exc:
-        _status = SuggestionsServiceStatus(
-            state="cost_locked",
-            last_bootstrap_at=_status.last_bootstrap_at,
-            last_drain_at=_status.last_drain_at,
-            last_error=f"cost_breaker_tripped:{exc.reason}",
-        )
-        await asyncio.to_thread(
-            _insert_refill_trigger_log_sync,
-            "vibe_coverage_cta", 0, 0,
-            int((time.monotonic() - start) * 1000),
-            0.0, True, vibe_id, f"breaker:{exc.reason}",
-        )
-        return RefillResult(
-            candidates_evaluated=0, picks_returned=0,
-            picks_validated=0, picks_inserted=0,
-            latency_ms=int((time.monotonic() - start) * 1000),
-            cost_estimate_usd=0.0, cache_hit=False, cache_created=False,
-            breaker_tripped=True,
-        )
-
-    _status = SuggestionsServiceStatus(
-        state="refilling",
-        last_bootstrap_at=_status.last_bootstrap_at,
-        last_drain_at=_status.last_drain_at,
-    )
-
-    # 2. Single-vibe shortlist (W2).
-    shortlist = await asyncio.to_thread(
-        _build_shortlist_sync, target, vibe_id,
-    )
-
-    # CR-02 fix — empty-shortlist short-circuit. Mirrors the deficit==0 guard
-    # in refill_suggestions_queue: if the targeted vibe has no eligible
-    # 2σ-in-band unrated tracks, calling Anthropic with an empty candidate
-    # list would burn two daily-quota slots (initial + Pitfall 10 retry) for
-    # guaranteed-invalid output. Log a zero-cost trigger row and bail.
-    if not shortlist:
-        await asyncio.to_thread(
-            _insert_refill_trigger_log_sync,
-            "vibe_coverage_cta", 0, 0,
-            int((time.monotonic() - start) * 1000),
-            0.0, False, vibe_id, "empty_shortlist",
-        )
-        _status = SuggestionsServiceStatus(
-            state="idle",
-            last_bootstrap_at=_status.last_bootstrap_at,
-            last_drain_at=_status.last_drain_at,
-        )
-        return RefillResult(
-            candidates_evaluated=0, picks_returned=0,
-            picks_validated=0, picks_inserted=0,
-            latency_ms=int((time.monotonic() - start) * 1000),
-            cost_estimate_usd=0.0, cache_hit=False, cache_created=False,
-        )
-
-    soft_negatives = await asyncio.to_thread(_read_soft_negatives_sync)
-    system_prompt = build_suggestions_ranking_system_prompt()
-    user_prompt = build_suggestions_ranking_user_prompt(shortlist, soft_negatives)
-
-    client = _get_anthropic_client()
-    response: SuggestionRankingResponse = await client.call_with_structured_output(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        response_model=SuggestionRankingResponse,
-        max_tokens=SUGGESTIONS_RANK_MAX_TOKENS,
-        purpose="suggestions_rank",
-        thinking="off",
-    )
-
-    valid_picks, invalid_indices = _validate_picks(
-        response.picks, len(shortlist),
-    )
-    if invalid_indices and len(valid_picks) < target:
-        retry_user_prompt = user_prompt + (
-            f"\n\n## VALIDATION FAILURE\n"
-            f"Invalid candidate_index values: {invalid_indices}. "
-            f"Valid range is 0..{max(0, len(shortlist) - 1)}."
-        )
-        response = await client.call_with_structured_output(
-            system_prompt=system_prompt,
-            user_prompt=retry_user_prompt,
-            response_model=SuggestionRankingResponse,
-            max_tokens=SUGGESTIONS_RANK_MAX_TOKENS,
-            purpose="suggestions_rank",
-            thinking="off",
-        )
-        valid_picks, _ = _validate_picks(response.picks, len(shortlist))
-
-    seen = set()
-    kept: List[SuggestionRankingPick] = []
-    for p in valid_picks:
-        if p.candidate_index in seen:
-            continue
-        seen.add(p.candidate_index)
-        kept.append(p)
-        if len(kept) >= target:
-            break
-
-    latency_ms = int((time.monotonic() - start) * 1000)
-    last_usage = await asyncio.to_thread(
-        _read_latest_llm_usage_sync, "suggestions_rank"
-    )
-    cost_usd = last_usage.cost_estimate_usd if last_usage else 0.0
-    cache_created = bool(
-        last_usage and last_usage.cache_creation_input_tokens > 0
-    )
-    cache_hit = bool(
-        last_usage and last_usage.cache_read_input_tokens > 0
-    )
-
-    await asyncio.to_thread(
-        _write_refill_results_sync,
-        kept, shortlist, "vibe_coverage_cta", vibe_id,
-        latency_ms, cost_usd,
-    )
-
-    if kept:
-        rating_keys = [shortlist[p.candidate_index]["plex_rating_key"] for p in kept]
-        mp = await asyncio.to_thread(_find_suggestions_managed_playlist_sync)
-        if mp is None:
-            logger.warning(
-                "refill_suggestions_for_vibe: no ManagedPlaylist(kind="
-                "suggestions) row found; bootstrap was likely skipped. "
-                "Skipping Plex push."
-            )
-        elif not mp.plex_rating_key:
-            # CR-01 fix — first non-empty refill (via the vibe CTA path):
-            # materialize the deferred Plex playlist.
-            plex_url, plex_token = await asyncio.to_thread(_read_plex_creds_sync)
-            await _materialize_suggestions_plex_playlist(
-                plex_url, plex_token, rating_keys,
-            )
-        else:
-            plex_url, plex_token = await asyncio.to_thread(_read_plex_creds_sync)
-            try:
-                await update_playlist_items(
-                    plex_url, plex_token, mp.plex_rating_key, rating_keys,
-                )
-            except Exception:
-                logger.exception(
-                    "Plex update_playlist_items failed during targeted "
-                    "vibe refill; mirror state is the truth."
-                )
-
-    _status = SuggestionsServiceStatus(
-        state="idle",
-        last_bootstrap_at=_status.last_bootstrap_at,
-        last_drain_at=_status.last_drain_at,
-    )
-
-    return RefillResult(
-        candidates_evaluated=len(shortlist),
-        picks_returned=len(response.picks),
-        picks_validated=len(valid_picks),
-        picks_inserted=len(kept),
-        latency_ms=latency_ms,
-        cost_estimate_usd=cost_usd,
-        cache_hit=cache_hit,
-        cache_created=cache_created,
-    )
 
 
 # ---------------------------------------------------------------------------

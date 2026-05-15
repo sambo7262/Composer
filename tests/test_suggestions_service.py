@@ -505,17 +505,14 @@ def _seed_plex_creds(session) -> None:
     """Helper: seed Plex ServiceConfig + encrypted token so
     _read_plex_creds_sync returns non-empty creds.
     """
-    from app.models.settings import ServiceConfig
-    from app.services.settings_service import set_credential
+    from app.services.settings_service import save_setting
 
-    session.add(ServiceConfig(
+    save_setting(
+        session=session,
         service_name="plex",
         url="http://localhost:32400",
-        is_configured=True,
-        extra_config={},
-    ))
-    session.commit()
-    set_credential(session, "plex", "test-token")
+        credential="test-token",
+    )
 
 
 class TestRefillMirrorSql:
