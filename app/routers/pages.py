@@ -249,10 +249,17 @@ async def read_debug_suggestions(
         .limit(20)
     ).all()
 
-    # 3. Last 20 LLMUsage rows with suggestions_* purpose — DESC by called_at.
+    # 3. Last 20 LLMUsage rows with suggestions_* OR discovery_* purpose
+    #    — DESC by called_at. Phase 7.1 (SUGG-13) added the weekly discovery
+    #    LLM call under purpose='discovery_weekly' — surface it here too so
+    #    the Suggestions debug page covers both refill-side (suggestions_*)
+    #    and discovery-side (discovery_*) Anthropic activity.
     llm_calls = session.exec(
         select(LLMUsage)
-        .where(col(LLMUsage.purpose).like("suggestions_%"))
+        .where(
+            col(LLMUsage.purpose).like("suggestions_%")
+            | col(LLMUsage.purpose).like("discovery_%")
+        )
         .order_by(col(LLMUsage.called_at).desc())
         .limit(20)
     ).all()
