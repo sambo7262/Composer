@@ -249,6 +249,10 @@ async def handle_track_played(event: TrackPlayedEvent) -> None:
     # path is temporarily wedged. Re-import on every call so tests can
     # monkeypatch ``suggestions_service.drain_track_from_mirror`` via
     # attribute assignment.
+    logger.info(
+        "[PLEX-PUSH-DEBUG] handle_track_played fired: rating_key=%s last_viewed=%s",
+        event.plex_rating_key, event.last_viewed_at,
+    )
     try:
         from app.services import suggestions_service
 
@@ -263,10 +267,18 @@ async def handle_track_played(event: TrackPlayedEvent) -> None:
         # Phase 7.1 (SUGG-12): maybe_schedule_refill now delegates to
         # refill_mirror_sql — pure SQL, free, no LLM tokens consumed per
         # play.
-        await suggestions_service.drain_track_from_mirror(
+        removed = await suggestions_service.drain_track_from_mirror(
             event.plex_rating_key
         )
-        await suggestions_service.maybe_schedule_refill()
+        logger.info(
+            "[PLEX-PUSH-DEBUG] drain_track_from_mirror returned removed=%s",
+            removed,
+        )
+        deficit = await suggestions_service.maybe_schedule_refill()
+        logger.info(
+            "[PLEX-PUSH-DEBUG] maybe_schedule_refill returned deficit=%s",
+            deficit,
+        )
     except Exception:
         logger.exception(
             "Suggestions drain/refill hook failed; "

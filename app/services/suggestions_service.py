@@ -754,7 +754,15 @@ async def refill_mirror_sql(
 
     current = await asyncio.to_thread(_count_mirror_rows_sync)
     deficit = max(0, target - current)
+    logger.info(
+        "[PLEX-PUSH-DEBUG] refill_mirror_sql entered: current=%d target=%d deficit=%d",
+        current, target, deficit,
+    )
     if deficit <= 0:
+        logger.info(
+            "[PLEX-PUSH-DEBUG] refill_mirror_sql early-return: deficit<=0 (current=%d target=%d)",
+            current, target,
+        )
         return RefillResult(
             picks_made=0,
             shortlist_size=0,
@@ -764,6 +772,10 @@ async def refill_mirror_sql(
         )
 
     weights = await asyncio.to_thread(_read_vibe_pool_weights_sync)
+    logger.info(
+        "[PLEX-PUSH-DEBUG] refill_mirror_sql weights_count=%d",
+        len(weights) if weights else 0,
+    )
     if not weights:
         # No active vibes → nothing to refill from. Log a trigger row
         # for observability (zero picks).
@@ -829,33 +841,74 @@ async def refill_mirror_sql(
     # ``_materialize_suggestions_plex_playlist``; await it directly (already
     # async).
     # ========================================================================
+    logger.info(
+        "[PLEX-PUSH-DEBUG] picks_built=%d (about to evaluate `if picks:` push gate)",
+        len(picks),
+    )
     if picks:
         rating_keys = [p["plex_rating_key"] for p in picks]
+        logger.info(
+            "[PLEX-PUSH-DEBUG] push branch entered: rating_keys=%s",
+            rating_keys,
+        )
         mp = await asyncio.to_thread(_find_suggestions_managed_playlist_sync)
+        logger.info(
+            "[PLEX-PUSH-DEBUG] mp_lookup: mp_is_none=%s plex_rating_key=%r kind=%r",
+            mp is None,
+            getattr(mp, "plex_rating_key", None),
+            getattr(mp, "kind", None),
+        )
         if mp is None:
             logger.warning(
                 "refill_mirror_sql: no ManagedPlaylist(kind=suggestions) "
                 "row found; bootstrap was likely skipped. Skipping Plex push."
             )
         elif not mp.plex_rating_key:
+            logger.info(
+                "[PLEX-PUSH-DEBUG] branch=materialize (mp.plex_rating_key falsy)"
+            )
             # First non-empty refill: materialize the deferred Plex
             # playlist and update the sentinel row in-place.
             plex_url, plex_token = await asyncio.to_thread(_read_plex_creds_sync)
             await _materialize_suggestions_plex_playlist(
                 plex_url, plex_token, rating_keys,
             )
+            logger.info(
+                "[PLEX-PUSH-DEBUG] _materialize_suggestions_plex_playlist returned"
+            )
         else:
+            logger.info(
+                "[PLEX-PUSH-DEBUG] branch=update calling update_playlist_items rating_key=%s n_keys=%d",
+                mp.plex_rating_key, len(rating_keys),
+            )
             plex_url, plex_token = await asyncio.to_thread(_read_plex_creds_sync)
+            logger.info(
+                "[PLEX-PUSH-DEBUG] plex_creds_read plex_url_set=%s plex_token_set=%s",
+                bool(plex_url), bool(plex_token),
+            )
             try:
-                await update_playlist_items(
+                result = await update_playlist_items(
                     plex_url, plex_token, mp.plex_rating_key, rating_keys,
                 )
-            except Exception:
+                logger.info(
+                    "[PLEX-PUSH-DEBUG] update_playlist_items SUCCESS: added=%d unchanged=%d silently_dropped=%d retried=%d",
+                    len(result.added), len(result.unchanged),
+                    len(result.silently_dropped), len(result.retried),
+                )
+            except Exception as exc:
+                logger.info(
+                    "[PLEX-PUSH-DEBUG] update_playlist_items RAISED: %s: %s",
+                    type(exc).__name__, str(exc),
+                )
                 logger.exception(
                     "refill_mirror_sql: Plex update_playlist_items failed; "
                     "mirror state is the truth — Plex will reconcile on "
                     "next refill."
                 )
+    else:
+        logger.info(
+            "[PLEX-PUSH-DEBUG] push gate SKIPPED: picks list is empty"
+        )
 
     _status = SuggestionsServiceStatus(
         state="idle",
