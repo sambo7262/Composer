@@ -16,6 +16,15 @@ hot-path refill — see ``refill_mirror_sql``). This module owns:
   ``DISCOVERY_MAX_TOKENS_FLOOR`` constant + retry guard catching
   ``MaxTokensTruncationError`` (added in Plan 01 to anthropic_client).
 
+- GAP-01 (Plan 04) adds: ``DISCOVERY_CANDIDATE_LIMIT`` (= 200) — hard
+  LIMIT inside ``_read_discovery_eligible_sync`` ORDER BY oldest-unplayed-
+  first; ``DISCOVERY_PROMPT_TOKEN_CEILING`` (= 150_000) +
+  ``DISCOVERY_CHARS_PER_TOKEN_RATIO`` (= 3.5) — per-prompt token
+  estimator in ``discovery_call_weekly`` that trims the candidate list
+  further if the chars/ratio estimate exceeds the ceiling. Together
+  these defend against Claude's 200K input context limit on cold-start
+  catch-up against a ~10K track library.
+
 Phase 5 D-08 module-singleton + state pattern + Phase 5 D-09 sync-helper
 invariant both apply. The AST test
 ``test_no_session_outside_sync_helper_in_suggestions_discovery`` enforces
@@ -82,6 +91,32 @@ DISCOVERY_MAX_TOKENS_FLOOR = 8000
 # separate the two layers, and so the cost meter card can report
 # "discovery this week" specifically.
 DISCOVERY_PURPOSE = "discovery_weekly"
+
+# ---------------------------------------------------------------------------
+# GAP-01 (Plan 04) — defensive INPUT-side candidate cap. Phase 7.1 NAS UAT
+# 2026-05-16 surfaced a cold-start case where ~10.5K eligible tracks blew
+# past Claude's 200K input context limit (202027 tokens vs. 200000 max — see
+# 07.1-VERIFICATION.md gaps frontmatter). DISCOVERY_CANDIDATE_LIMIT is the
+# hard LIMIT used by ``_read_discovery_eligible_sync`` ORDER BY oldest-
+# unplayed first; the symmetric output-side floor lives in
+# ``DISCOVERY_MAX_TOKENS_FLOOR`` above. Both ship together.
+DISCOVERY_CANDIDATE_LIMIT = 200
+
+# GAP-01 — per-prompt token ceiling. Belt-and-suspenders with
+# DISCOVERY_CANDIDATE_LIMIT above: the LIMIT caps row count, the ceiling
+# caps prompt size in case a future change adds richer per-track metadata
+# to the user prompt. 150_000 leaves 50K headroom below Claude's 200K
+# input context limit (sonnet-4-6) — large enough to absorb growth of
+# the system prompt + taste summary without re-tuning.
+DISCOVERY_PROMPT_TOKEN_CEILING = 150_000
+
+# Conservative chars-per-token estimator. Anthropic tokenizer averages
+# ~3.5-4 chars/token for English + structured data; 3.5 is the
+# defensive low end (over-estimates token count, more aggressive
+# trimming). Used by the in-loop estimator in ``discovery_call_weekly``.
+# Exact tokenization is not available client-side without a separate
+# round-trip; the estimator is conservative-by-design.
+DISCOVERY_CHARS_PER_TOKEN_RATIO = 3.5
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +303,7 @@ def compute_adaptive_pick_count(plays_since_last_discovery: int) -> int:
 
 def _read_discovery_eligible_sync(
     unplayed_days: int = DISCOVERY_UNPLAYED_DAYS,
+    limit: int = DISCOVERY_CANDIDATE_LIMIT,
 ) -> list[dict]:
     """D-A1 — owned tracks unplayed in ``unplayed_days`` (default 90)
     days, MINUS tracks currently in :class:`SuggestionsMirror`, MINUS hard
@@ -287,6 +323,18 @@ def _read_discovery_eligible_sync(
     If the DB ever stores non-ISO-8601 timestamps, this comparison silently
     breaks — current invariants (``sync_service`` writes only via
     ``datetime.now(timezone.utc).isoformat()``) prevent that.
+
+    GAP-01 cap (Plan 04): ORDER BY ``CASE WHEN t.last_viewed_at IS NULL
+    THEN 0 ELSE 1 END`` (NULL rows first, since 0 < 1), THEN
+    ``t.last_viewed_at ASC`` (oldest-played first), THEN ``t.id ASC``
+    (deterministic tie-break for fixture-based tests). ``LIMIT :limit``
+    caps the worst-case candidate pool at :data:`DISCOVERY_CANDIDATE_LIMIT`
+    (= 200) rows by default — defends against cold-start prompt-size
+    blowup against Claude's 200K input context. The CASE-WHEN pattern is
+    the portable SQLite alternative to the ``NULLS FIRST`` keyword (not
+    supported across SQLite versions). Tests can drive boundary behavior
+    by passing a smaller ``limit`` without monkeypatching the module
+    constant.
     """
     from sqlalchemy import text
 
@@ -322,11 +370,17 @@ def _read_discovery_eligible_sync(
                     SELECT track_id FROM suggestionhistory
                     WHERE surfaced_at >= :fourteen_days_ago
                 )
+                ORDER BY
+                    CASE WHEN t.last_viewed_at IS NULL THEN 0 ELSE 1 END,
+                    t.last_viewed_at ASC,
+                    t.id ASC
+                LIMIT :limit
                 """
             ),
             {
                 "cutoff": cutoff,
                 "fourteen_days_ago": fourteen_days_ago,
+                "limit": limit,
             },
         ).all()
         return [
@@ -343,12 +397,21 @@ def _read_discovery_eligible_sync(
 
 async def compute_discovery_eligible(
     unplayed_days: int = DISCOVERY_UNPLAYED_DAYS,
+    limit: int = DISCOVERY_CANDIDATE_LIMIT,
 ) -> list[dict]:
     """Async accessor for the D-A1 discovery candidate pool. Consumers
-    (``discovery_call_weekly``) feed this directly into the LLM user prompt.
+    (``discovery_call_weekly``) feed this directly into the LLM user
+    prompt.
+
+    GAP-01 (Plan 04) — caps the result at ``limit`` rows
+    (:data:`DISCOVERY_CANDIDATE_LIMIT` = 200 by default), ORDERed by
+    oldest-unplayed-first so the cap selects the rows most likely to be
+    true "rediscoveries" rather than random recent tracks. Tests can
+    drive boundary behavior by passing a smaller ``limit`` without
+    monkeypatching the module constant.
     """
     return await asyncio.to_thread(
-        _read_discovery_eligible_sync, unplayed_days,
+        _read_discovery_eligible_sync, unplayed_days, limit,
     )
 
 
@@ -658,6 +721,64 @@ async def discovery_call_weekly() -> None:
         user_prompt = _build_discovery_user_prompt(
             candidates, taste.summary_text, pick_count,
         )
+
+        # GAP-01 (Plan 04) — per-prompt token estimator (input-side
+        # defense). The DISCOVERY_CANDIDATE_LIMIT (200 rows) is the
+        # primary cap inside _read_discovery_eligible_sync; this
+        # estimator catches the edge case where richer metadata or
+        # unusually verbose taste summaries push the prompt over the
+        # 150K ceiling. We iteratively halve the candidate list
+        # (keeping oldest-unplayed-first per
+        # _read_discovery_eligible_sync's ORDER BY) until the chars/
+        # DISCOVERY_CHARS_PER_TOKEN_RATIO token estimate fits.
+        #
+        # NOTE: the trimmer runs ONCE before the retry loop; the
+        # retry loop below only adjusts max_tokens (OUTPUT side), and
+        # NEVER re-trims candidates. INPUT-side and OUTPUT-side
+        # controls are independent.
+        pre_trim_count = len(candidates)
+        estimated_tokens = (
+            len(system_prompt) + len(user_prompt)
+        ) / DISCOVERY_CHARS_PER_TOKEN_RATIO
+        trim_iterations = 0
+        while estimated_tokens > DISCOVERY_PROMPT_TOKEN_CEILING:
+            # Halt at pick_count — never trim below the number of
+            # picks we plan to ask the LLM for (no point asking for
+            # 5 picks from a pool of 3 candidates).
+            if len(candidates) <= pick_count:
+                logger.error(
+                    "discovery_call_weekly: prompt token estimate %d "
+                    "still exceeds ceiling %d at minimum candidate "
+                    "count %d; proceeding anyway (pathological "
+                    "prompt builder?)",
+                    int(estimated_tokens),
+                    DISCOVERY_PROMPT_TOKEN_CEILING,
+                    len(candidates),
+                )
+                break
+            # Halve the candidate list — keep the first half (oldest-
+            # played first per the SQL ORDER BY).
+            new_count = max(pick_count, len(candidates) // 2)
+            candidates = candidates[:new_count]
+            user_prompt = _build_discovery_user_prompt(
+                candidates, taste.summary_text, pick_count,
+            )
+            estimated_tokens = (
+                len(system_prompt) + len(user_prompt)
+            ) / DISCOVERY_CHARS_PER_TOKEN_RATIO
+            trim_iterations += 1
+
+        if trim_iterations > 0:
+            logger.warning(
+                "discovery_call_weekly: trimming candidate pool from "
+                "%d to %d candidates over %d iteration(s); final "
+                "estimated tokens = %d (ceiling = %d)",
+                pre_trim_count,
+                len(candidates),
+                trim_iterations,
+                int(estimated_tokens),
+                DISCOVERY_PROMPT_TOKEN_CEILING,
+            )
 
         # Build the Anthropic client. In production the credentials come
         # from the settings table; in tests the ``AnthropicClient`` symbol
