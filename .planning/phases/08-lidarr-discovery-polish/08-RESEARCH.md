@@ -965,17 +965,27 @@ AND called_at >= (
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All open questions resolved during /gsd-discuss-phase (2026-05-16). Decisions
+are folded into CONTEXT.md and amended back into the relevant decision blocks
+above (D-A1 amended, D-E1 amended, D-E2 palette locked). Recorded here for
+provenance.
 
 1. **Path A vs Path B for candidate source** — what we know: CONTEXT says "MusicBrainz similar artists" but that's not a real endpoint. What's unclear: whether the user wants strict MB-only (Path A, more work, more rate-limit pressure, fully MetaBrainz) or ListenBrainz-as-supplement (Path B, simpler, slightly less-stable contract). Recommendation: surface to user at start of planning, default to Path B.
+   **RESOLVED:** D-A1 amended — Path B (ListenBrainz `similar-artists` labs endpoint as candidate source; MusicBrainz remains the hallucination validation gate per Pitfall 10). Plan 02 Task 1 ships a smoke-test + committed fixture as the canary against future labs-endpoint shape drift.
 
 2. **Album art for MB-only artists** — what we know: CONTEXT defers this to a placeholder/initials avatar. What's unclear: how good "initials only" looks on the vibe-grouped horizontal scroll layout (D-D2). Recommendation: ship initials avatars in v1; if visually weak, add a Cover Art Archive lookup in a Phase 8.1 quick task.
+   **RESOLVED:** CONTEXT "Claude's Discretion" — ship the muted-square placeholder avatar in v1 (PATTERNS.md §"discover_artist_card.html" uses `bg-surface-muted` 12×12 div). Cover Art Archive integration explicitly deferred to a future Phase 8.1 quick task IF visual feedback warrants.
 
 3. **Which palette option does the user prefer?** — three viable options in Spike 5. Bring all three to the user during planning with a Tailwind utility-class preview screenshot or a quick HTML diff.
+   **RESOLVED:** D-E2 amended — Tailwind 4 `-500` stops locked (`blue-500`, `violet-500`, `emerald-500`, `rose-500`, `amber-500`, `cyan-500`, `pink-500`, `lime-500`, `orange-500`). Orange goes LAST in the assignment order to keep system-action accent color (`bg-accent` Plex-orange) distinguishable.
 
 4. **Should `_record_sync_failure_event` (DISC-08 Part C) write to `EventLog` or to a new `SyncFailureLog` table?** — CONTEXT D-E3 specifies `EventLog` with `event_type="sync_failed"`. Recommendation: stick with `EventLog` (one fewer table, already plumbed to `/debug/events`, dedupe pattern already proven).
+   **RESOLVED:** D-E3 confirmed — `EventLog` with `event_type="sync_failed"`, dedupe via sha256 + 5-min bucket (Phase 5 D-07 pattern). No new table. Plan 01 Task 2 implements.
 
 5. **Lidarr `root_folder` picker UX when multiple root folders exist** — most Lidarr users have one root folder; some have multiple (organised by genre). Recommendation: if `get_root_folder()` returns >1, add a third dropdown to the connection-test partial; otherwise auto-select the only one and don't show a dropdown.
+   **RESOLVED:** D-E1 amended — root-folder dropdown rendered ONLY when Lidarr returns >1; single-root case auto-selects silently. Plan 01 Task 1 ships the conditional render in `connection_status.html`.
 
 ---
 

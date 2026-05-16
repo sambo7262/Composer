@@ -230,6 +230,7 @@ Source of truth: the `Vibe.color` column. New vibes from re-cluster get a fresh 
 
 **MANDATORY — research already produced:**
 - `.planning/phases/08-lidarr-discovery-polish/08-RESEARCH.md` (committed `3f6ca06`, 1,139 lines) — light-spike answers + pyarr 6.6 API surface map + ListenBrainz/MusicBrainz strategy + vibe palette comparison + APScheduler reliability pattern + Pitfall integration. Critical findings folded into amended D-A1, D-E1, D-E2 above. Plan 02 task 1 MUST run the ListenBrainz endpoint smoke-test per RESEARCH.md §3.
+- **Phase 8 validation architecture** is collocated inside RESEARCH.md §"Validation Architecture" (lines ~1002–1056) rather than a standalone VALIDATION.md file — covers test framework, per-requirement test map, sampling rate, and Wave 0 test-file gaps. Plan-checker may flag the missing standalone file; the demotion to warning was accepted because the equivalent content exists in RESEARCH.md.
 </canonical_refs>
 
 <code_context>
