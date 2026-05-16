@@ -29,6 +29,7 @@ from typing import List
 from plexapi.server import PlexServer
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
+from sqlalchemy import text
 
 from app.database import get_engine
 from app.models.vibe import ManagedPlaylist
@@ -54,6 +55,27 @@ class ReconcileResult(BaseModel):
     unchanged: List[str] = Field(default_factory=list)
     silently_dropped: List[str] = Field(default_factory=list)
     retried: List[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7.1 follow-up — weekly Plex Suggestions playlist prune.
+# ---------------------------------------------------------------------------
+
+class PruneResult(BaseModel):
+    """Outcome of :func:`prune_suggestions_playlist_to_mirror`.
+
+    - ``removed``: ratingKeys removed from the Plex playlist on this call.
+    - ``still_present_after_remove``: ratingKeys we asked to remove that are
+      STILL on the Plex playlist after the post-remove verify (logged as a
+      warning; no retry — removal retries are riskier than additive push).
+    - ``mirror_size``: number of ratingKeys currently in SuggestionsMirror.
+    - ``final_plex_count``: number of items in the Plex playlist after prune.
+    """
+
+    removed: List[str] = Field(default_factory=list)
+    still_present_after_remove: List[str] = Field(default_factory=list)
+    mirror_size: int = 0
+    final_plex_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -406,3 +428,206 @@ async def rename_playlist(
         None,
         new_name,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7.1 follow-up — weekly Plex Suggestions playlist prune.
+#
+# Background: ``update_playlist_items`` is ADDITIVE ONLY (Pitfall 5 — never
+# remove tracks a user added). Phase 7.1's SQL refill drains the
+# SuggestionsMirror on each play and refills it, but the Plex playlist still
+# grows monotonically. This prune runs once a week (Sun 03:00 UTC, IMMEDIATELY
+# before discovery_call_weekly) to collapse the Plex playlist down to the
+# current SuggestionsMirror contents.
+#
+# Strict safety gate: ONLY ManagedPlaylist.kind='suggestions' may be touched.
+# The SELECT filter alone enforces this, but we ALSO hard-assert ``mp.kind ==
+# 'suggestions'`` before any Plex mutation. Belt-and-suspenders.
+# ---------------------------------------------------------------------------
+
+
+def _find_suggestions_managed_playlist_sync() -> ManagedPlaylist | None:
+    """Return the single ManagedPlaylist row with kind='suggestions', if any.
+
+    Mirrors :func:`app.services.suggestions_service._find_suggestions_managed_playlist_sync`
+    so the prune helper does not depend on suggestions_service (avoids a
+    circular import via suggestions_service → plex_playlist_service).
+    """
+    with Session(get_engine()) as session:
+        return session.exec(
+            select(ManagedPlaylist).where(
+                ManagedPlaylist.kind == "suggestions"
+            )
+        ).first()
+
+
+def _read_suggestions_mirror_rating_keys_sync() -> set[str]:
+    """Return the set of plex_rating_keys currently in SuggestionsMirror.
+
+    Joins SuggestionsMirror → Track to resolve track_id → plex_rating_key.
+    Raw SQL mirrors the pattern used in
+    :func:`app.services.suggestions_service._delete_mirror_row_sync` so we do
+    not need to import the SuggestionsMirror SQLModel (which would pull in
+    the suggestions module's full import graph).
+    """
+    with Session(get_engine()) as session:
+        rows = session.execute(
+            text(
+                """
+                SELECT t.plex_rating_key
+                FROM suggestionsmirror sm
+                JOIN track t ON t.id = sm.track_id
+                """
+            )
+        ).all()
+        return {str(r[0]) for r in rows if r[0] is not None}
+
+
+# Sentinel for "Plex playlist not yet materialized" (mirror of the constant
+# in suggestions_service). Hardcoded here to avoid a circular import.
+_DEFERRED_PLEX_RATING_KEY_SENTINEL = ""
+
+
+async def prune_suggestions_playlist_to_mirror(
+    plex_url: str,
+    plex_token: str,
+) -> PruneResult:
+    """Collapse the Composer · Suggestions Plex playlist down to mirror contents.
+
+    Runs Sundays 03:00 UTC inside the combined weekly maintenance tick (see
+    :func:`app.services.sync_scheduler._weekly_maintenance_tick`), immediately
+    BEFORE :func:`app.services.suggestions_discovery.discovery_call_weekly`.
+    The order matters: discovery picks land in a freshly-pruned playlist.
+
+    Strict scope: only touches ``ManagedPlaylist.kind='suggestions'``. The
+    SELECT filter is the first line of defense; the hard-assert
+    ``mp.kind == 'suggestions'`` (raises :class:`PermissionError`) is the
+    second. Every other playlist is left untouched.
+
+    Pipeline:
+      1. Find the suggestions ManagedPlaylist row. Missing → log warning + no-op
+         (bootstrap not done yet).
+      2. Hard-assert kind == 'suggestions'.
+      3. Skip if plex_rating_key is the deferred-sentinel empty string
+         (Plex playlist not yet materialized — first refill creates it).
+      4. Read mirror rating-keys (set).
+      5. Fetch current Plex playlist contents.
+      6. ``to_remove = current_plex - mirror``. Empty → no-op.
+      7. ``playlist.removeItems(items_to_remove)`` via to_thread.
+      8. Re-fetch + compute ``still_present`` for the verify step. Warn if
+         non-empty (NO retry — removal retries are riskier than additive push).
+      9. Update ``ManagedPlaylist.last_pushed_at`` + ``track_count``.
+
+    GAP-03 invariant: every ``fetchItem`` call casts rating keys to ``int``
+    (PlexAPI 4.18.1 naive URL concat bug for bare-string ekeys).
+    """
+    mp = await asyncio.to_thread(_find_suggestions_managed_playlist_sync)
+    if mp is None:
+        logger.warning(
+            "prune_suggestions_playlist_to_mirror: no ManagedPlaylist with "
+            "kind='suggestions' (bootstrap not done yet); skipping."
+        )
+        return PruneResult()
+
+    # Hard-assert (belt-and-suspenders — the SELECT filter already enforces).
+    if mp.kind != "suggestions":
+        raise PermissionError(
+            "prune_suggestions_playlist_to_mirror refusing to mutate "
+            f"ManagedPlaylist with kind={mp.kind!r} (expected 'suggestions'). "
+            "This guard is a defensive second line — if it ever fires, the "
+            "SELECT filter has been miswired."
+        )
+
+    if mp.plex_rating_key == _DEFERRED_PLEX_RATING_KEY_SENTINEL:
+        logger.info(
+            "prune_suggestions_playlist_to_mirror: Plex playlist not yet "
+            "materialized (sentinel plex_rating_key=''); skipping. First "
+            "refill will create the Plex playlist."
+        )
+        return PruneResult()
+
+    if not plex_url or not plex_token:
+        logger.info(
+            "prune_suggestions_playlist_to_mirror: Plex not configured "
+            "(plex_url or plex_token empty); skipping."
+        )
+        return PruneResult()
+
+    mirror_keys = await asyncio.to_thread(
+        _read_suggestions_mirror_rating_keys_sync
+    )
+
+    # GAP-03: cast to int once up-front so all fetchItem call sites use int.
+    _playlist_key_int = int(mp.plex_rating_key)
+
+    def _get_current_keys() -> set[str]:
+        plex = PlexServer(plex_url, plex_token, timeout=30)
+        playlist = plex.fetchItem(_playlist_key_int)
+        return {str(item.ratingKey) for item in playlist.items()}
+
+    def _remove_items(keys_to_remove: list[str]) -> int:
+        plex = PlexServer(plex_url, plex_token, timeout=30)
+        playlist = plex.fetchItem(_playlist_key_int)
+        # Fetch each track item individually with int cast (GAP-03).
+        items = [plex.fetchItem(int(k)) for k in keys_to_remove]
+        playlist.removeItems(items)
+        return len(playlist.items())
+
+    try:
+        current_keys = await asyncio.to_thread(_get_current_keys)
+        to_remove = sorted(current_keys - mirror_keys)
+
+        if not to_remove:
+            logger.info(
+                "prune_suggestions_playlist_to_mirror: Plex playlist already "
+                "a subset of mirror (current=%d, mirror=%d); no-op.",
+                len(current_keys), len(mirror_keys),
+            )
+            # Still touch last_pushed_at so monitoring can see the prune ran.
+            await asyncio.to_thread(
+                _update_managed_playlist_sync,
+                mp.plex_rating_key,
+                len(current_keys),
+            )
+            return PruneResult(
+                removed=[],
+                still_present_after_remove=[],
+                mirror_size=len(mirror_keys),
+                final_plex_count=len(current_keys),
+            )
+
+        logger.info(
+            "prune_suggestions_playlist_to_mirror: removing %d tracks "
+            "(current=%d, mirror=%d).",
+            len(to_remove), len(current_keys), len(mirror_keys),
+        )
+        await asyncio.to_thread(_remove_items, to_remove)
+
+        # Post-remove verify (mirror of update_playlist_items post-push verify
+        # in spirit, but WITHOUT retry — removal retries are riskier).
+        after_keys = await asyncio.to_thread(_get_current_keys)
+        still_present = sorted(set(to_remove) & after_keys)
+        if still_present:
+            logger.warning(
+                "prune_suggestions_playlist_to_mirror: %d tracks STILL on "
+                "Plex playlist after removeItems: %s — NOT retrying. User "
+                "can manually clean up via Plexamp.",
+                len(still_present), still_present,
+            )
+
+        await asyncio.to_thread(
+            _update_managed_playlist_sync,
+            mp.plex_rating_key,
+            len(after_keys),
+        )
+
+        return PruneResult(
+            removed=to_remove,
+            still_present_after_remove=still_present,
+            mirror_size=len(mirror_keys),
+            final_plex_count=len(after_keys),
+        )
+    except PermissionError:
+        raise
+    except Exception as exc:
+        raise type(exc)(_sanitize(str(exc), plex_token)) from None

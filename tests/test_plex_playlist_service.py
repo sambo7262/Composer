@@ -759,3 +759,293 @@ async def test_update_playlist_items_passes_int_to_fetchitem(
     # Sanity: additive push still works correctly.
     assert sorted(result.added) == ["1004", "1005"]
     assert "1002" in result.unchanged
+
+
+# ===========================================================================
+# Phase 7.1 follow-up — prune_suggestions_playlist_to_mirror tests
+#
+# Weekly Sun 03:00 UTC prune of the Composer · Suggestions Plex playlist
+# down to the current SuggestionsMirror contents. Hard-asserts kind
+# == 'suggestions' before any Plex mutation.
+# ===========================================================================
+
+
+@pytest.fixture
+def db_with_suggestions(test_engine) -> Generator[Session, None, None]:
+    """Fixture that creates the same tables as db_with_phase6 PLUS the Phase 7
+    SuggestionsMirror table so the prune tests can seed mirror rows.
+    """
+    from app.models.settings import ServiceConfig  # noqa: F401
+    from app.models.track import SyncState, Track  # noqa: F401
+    from app.models.event_log import EventLog  # noqa: F401
+    from app.models.llm_usage import LLMUsage  # noqa: F401
+    from app.models.taste_profile import TasteProfile  # noqa: F401
+    from app.models.vibe import (  # noqa: F401
+        ManagedPlaylist,
+        SetupState,
+        TrackVibe,
+        Vibe,
+    )
+    from app.models.suggestions import (  # noqa: F401
+        NegativeSignal,
+        RefillTriggerLog,
+        SuggestionHistory,
+        SuggestionsMirror,
+    )
+
+    SQLModel.metadata.create_all(test_engine)
+    with Session(test_engine) as session:
+        yield session
+    SQLModel.metadata.drop_all(test_engine)
+
+
+def _seed_track_and_mirror(session, *, track_id: int, plex_rating_key: str,
+                            position: int) -> None:
+    """Insert a Track + SuggestionsMirror row joined by track_id."""
+    from app.models.track import Track
+    from app.models.suggestions import SuggestionsMirror
+
+    session.add(Track(
+        id=track_id,
+        plex_rating_key=plex_rating_key,
+        title=f"Track {plex_rating_key}",
+        artist=f"Artist {plex_rating_key}",
+        album=f"Album {plex_rating_key}",
+    ))
+    session.flush()
+    session.add(SuggestionsMirror(
+        track_id=track_id,
+        position=position,
+        added_at="2026-05-16T03:00:00+00:00",
+    ))
+
+
+def _seed_suggestions_managed_playlist(session, *, plex_rating_key: str,
+                                        kind: str = "suggestions") -> None:
+    from app.models.vibe import ManagedPlaylist
+    session.add(ManagedPlaylist(
+        kind=kind,
+        plex_rating_key=plex_rating_key,
+        composer_name="Composer · Suggestions",
+        track_count=0,
+    ))
+
+
+@pytest.mark.asyncio
+async def test_prune_removes_played_and_rotated_out_tracks(
+    db_with_suggestions, strict_fake_plex_module
+):
+    """Plex has [101, 102, 103, 104, 105]; mirror has [101, 102].
+
+    After prune: Plex = [101, 102]; removeItems called with [103, 104, 105].
+    Uses StrictFakePlexServer to lock in GAP-03 int-cast for the prune path.
+    """
+    strict_fake_plex_module._tracks = {
+        k: FakeTrack(k) for k in ("101", "102", "103", "104", "105")
+    }
+    pl = FakePlaylist(
+        rating_key="500",
+        title="Composer · Suggestions",
+        items=[FakeTrack(k) for k in ("101", "102", "103", "104", "105")],
+    )
+    strict_fake_plex_module._playlists = {"500": pl}
+
+    _seed_suggestions_managed_playlist(
+        db_with_suggestions, plex_rating_key="500",
+    )
+    _seed_track_and_mirror(
+        db_with_suggestions, track_id=1, plex_rating_key="101", position=0,
+    )
+    _seed_track_and_mirror(
+        db_with_suggestions, track_id=2, plex_rating_key="102", position=1,
+    )
+    # Tracks 103, 104, 105 exist in Track table but NOT in mirror — they
+    # should be pruned from Plex.
+    from app.models.track import Track
+    db_with_suggestions.add(Track(
+        id=3, plex_rating_key="103", title="t3", artist="a3", album="al3",
+    ))
+    db_with_suggestions.add(Track(
+        id=4, plex_rating_key="104", title="t4", artist="a4", album="al4",
+    ))
+    db_with_suggestions.add(Track(
+        id=5, plex_rating_key="105", title="t5", artist="a5", album="al5",
+    ))
+    db_with_suggestions.commit()
+
+    from app.services.plex_playlist_service import (
+        prune_suggestions_playlist_to_mirror,
+    )
+
+    result = await prune_suggestions_playlist_to_mirror(
+        plex_url="http://plex.local",
+        plex_token="token-X",
+    )
+
+    # removeItems was called exactly once with [103, 104, 105].
+    assert len(pl.remove_calls) == 1, (
+        f"Expected one removeItems call; got {len(pl.remove_calls)}"
+    )
+    removed_keys = sorted(t.ratingKey for t in pl.remove_calls[0])
+    assert removed_keys == ["103", "104", "105"]
+
+    # Plex playlist now contains only the mirror contents.
+    final_keys = sorted(t.ratingKey for t in pl.items())
+    assert final_keys == ["101", "102"]
+
+    # Result shape correct.
+    assert sorted(result.removed) == ["103", "104", "105"]
+    assert result.still_present_after_remove == []
+    assert result.mirror_size == 2
+    assert result.final_plex_count == 2
+
+    # GAP-03 invariant: every fetchItem call received int.
+    assert strict_fake_plex_module._fetchitem_arg_types, (
+        "Expected at least one fetchItem call"
+    )
+    assert all(
+        t == "int"
+        for t in strict_fake_plex_module._fetchitem_arg_types
+    ), (
+        f"Expected every fetchItem call to receive int; got "
+        f"{strict_fake_plex_module._fetchitem_arg_types}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_prune_preserves_tracks_still_in_mirror(
+    db_with_suggestions, fake_plex_module
+):
+    """Plex has [101, 102]; mirror has [101, 102, 103, 104].
+
+    Plex is a SUBSET of mirror → to_remove is empty → no removeItems call,
+    PruneResult.removed == [].
+    """
+    fake_plex_module._tracks = {
+        k: FakeTrack(k) for k in ("101", "102", "103", "104")
+    }
+    pl = FakePlaylist(
+        rating_key="600",
+        title="Composer · Suggestions",
+        items=[FakeTrack("101"), FakeTrack("102")],
+    )
+    fake_plex_module._playlists = {"600": pl}
+
+    _seed_suggestions_managed_playlist(
+        db_with_suggestions, plex_rating_key="600",
+    )
+    for tid, rk in [(1, "101"), (2, "102"), (3, "103"), (4, "104")]:
+        _seed_track_and_mirror(
+            db_with_suggestions, track_id=tid, plex_rating_key=rk,
+            position=tid - 1,
+        )
+    db_with_suggestions.commit()
+
+    from app.services.plex_playlist_service import (
+        prune_suggestions_playlist_to_mirror,
+    )
+
+    result = await prune_suggestions_playlist_to_mirror(
+        plex_url="http://plex.local",
+        plex_token="token-X",
+    )
+
+    # NO removeItems call at all.
+    assert len(pl.remove_calls) == 0
+    # Plex unchanged.
+    assert sorted(t.ratingKey for t in pl.items()) == ["101", "102"]
+    # Result shape.
+    assert result.removed == []
+    assert result.still_present_after_remove == []
+    assert result.mirror_size == 4
+    assert result.final_plex_count == 2
+
+
+@pytest.mark.asyncio
+async def test_prune_raises_if_kind_is_not_suggestions(
+    db_with_suggestions, fake_plex_module, monkeypatch
+):
+    """Hard-assert: if ManagedPlaylist.kind != 'suggestions', raise
+    PermissionError BEFORE any Plex call.
+
+    Belt-and-suspenders: the SELECT filter alone should already prevent
+    this case, but we monkeypatch _find_suggestions_managed_playlist_sync
+    to return a kind='vibe' row, simulating a future miswiring of the
+    SELECT. The hard-assert must fire.
+    """
+    # No playlists / tracks registered on the fake — the test should not
+    # reach any Plex call.
+    fake_plex_module._tracks = {}
+    fake_plex_module._playlists = {}
+
+    from app.models.vibe import ManagedPlaylist
+    from app.services import plex_playlist_service as pps
+
+    # Build a kind='vibe' row (not committed — passed via monkeypatched
+    # helper) so the assertion path is hit.
+    spoofed_row = ManagedPlaylist(
+        kind="vibe",
+        plex_rating_key="500",
+        composer_name="Composer · Vibe Workout",
+        track_count=0,
+    )
+
+    def _spoofed_finder():
+        return spoofed_row
+
+    monkeypatch.setattr(
+        pps,
+        "_find_suggestions_managed_playlist_sync",
+        _spoofed_finder,
+    )
+
+    with pytest.raises(PermissionError, match="kind"):
+        await pps.prune_suggestions_playlist_to_mirror(
+            plex_url="http://plex.local",
+            plex_token="token-X",
+        )
+
+
+@pytest.mark.asyncio
+async def test_prune_is_no_op_when_plex_subset_of_mirror(
+    db_with_suggestions, fake_plex_module
+):
+    """Plex has [101]; mirror has [101, 102, 103, 104, 105].
+
+    Plex IS a strict subset of mirror → to_remove empty → PruneResult.removed
+    == [] and zero removeItems calls.
+    """
+    fake_plex_module._tracks = {
+        k: FakeTrack(k) for k in ("101", "102", "103", "104", "105")
+    }
+    pl = FakePlaylist(
+        rating_key="700",
+        title="Composer · Suggestions",
+        items=[FakeTrack("101")],
+    )
+    fake_plex_module._playlists = {"700": pl}
+
+    _seed_suggestions_managed_playlist(
+        db_with_suggestions, plex_rating_key="700",
+    )
+    for tid, rk in [(1, "101"), (2, "102"), (3, "103"), (4, "104"), (5, "105")]:
+        _seed_track_and_mirror(
+            db_with_suggestions, track_id=tid, plex_rating_key=rk,
+            position=tid - 1,
+        )
+    db_with_suggestions.commit()
+
+    from app.services.plex_playlist_service import (
+        prune_suggestions_playlist_to_mirror,
+    )
+
+    result = await prune_suggestions_playlist_to_mirror(
+        plex_url="http://plex.local",
+        plex_token="token-X",
+    )
+
+    assert pl.remove_calls == []
+    assert result.removed == []
+    assert sorted(t.ratingKey for t in pl.items()) == ["101"]
+    assert result.mirror_size == 5
+    assert result.final_plex_count == 1
