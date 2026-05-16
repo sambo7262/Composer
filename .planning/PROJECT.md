@@ -130,4 +130,6 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-08 — milestone v2.0 (Music Companion) started*
+*Last updated: 2026-05-16 — Phase 07.1 (suggestions-cost-architecture-sql-refill-weekly-discovery) complete.*
+
+**Phase 07.1 highlights:** Replaced the LLM-on-every-refill suggestions hot path with SQL-driven refill from pre-computed TrackVibe.distance (zero LLM tokens per play). Added weekly LLM discovery cron (Sun 03:00 UTC) that backfills 3-7 fresh picks. Steady-state cost dropped from ~$150/month to ~$0.20/month. New requirements landed: SUGG-12 (SQL refill), SUGG-13 (weekly discovery), SUGG-14 (defensive max_tokens). SUGG-04 reworked. Plus quick task 260516-gym: weekly Plex Suggestions playlist prune aligned with the Sunday cron so playlists reset to ~30 fresh tracks weekly. 3 NAS-UAT gaps surfaced and closed in-phase (GAP-01 prompt 200K, GAP-02 htmx polling loop, GAP-03 PlexAPI int-cast). Remaining HUMAN-UAT items #1/#3/#4 will be verified Sunday 2026-05-17 post-cron-tick; any findings will be folded into bug-fix quick tasks.
