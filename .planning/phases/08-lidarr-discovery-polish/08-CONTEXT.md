@@ -61,8 +61,16 @@ Phase 8 closes the v2.0 loop outward and polishes legacy v1 surfaces. Three conc
 
 ### Area A — Discovery Pipeline
 
-**D-A1 — Seed-first pipeline: MusicBrainz → LLM re-rank.**
-MusicBrainz "similar artists" lookup against a small seed set produces a validated candidate list (50–100 artists, free / no per-query cost beyond rate limits). The LLM only re-ranks this known-real list for taste fit and writes the rationale. Anchors on adjacency, not similarity (Pitfall 13's exact prescription). Cheaper than LLM-first, fewer hallucinations to clean up, and aligns with the Phase 7.1 "LLM only where it has to be" cost discipline. Rejected: LLM-first (more imaginative but more validation failures + more tokens), Hybrid (~2× LLM token cost for marginal diversity gain).
+**D-A1 — Seed-first pipeline: ListenBrainz similar-artists → MusicBrainz validation gate → LLM re-rank.** *(Amended 2026-05-16 per research push-back — see 08-RESEARCH.md §1.)*
+**Original D-A1** (before research): "MusicBrainz similar artists → LLM re-rank." Research surfaced that MusicBrainz does NOT expose a broad "similar artists" relation — its artist-to-artist graph is limited to `member of band`, `collaboration`, `supporting musician`, `subgroup`. Insufficient adjacency for the 50–100 candidates per seed we need.
+
+**Locked pipeline:**
+1. **ListenBrainz `similar-artists` labs endpoint** (`https://labs.api.listenbrainz.org/similar-artists`) is the candidate-source. Built from real listening-pattern co-occurrence; MetaBrainz family (sister project to MusicBrainz); free; no API key. ~50–100 similar artists per seed.
+2. **MusicBrainz lookup** (`/ws/2/artist?query=name:...`) validates each candidate exists with a real MBID before any candidate enters `/discover`. Hallucination gate per Pitfall 10.
+3. **Popularity-bias gate** per D-A3 (still locked from Pitfall 13).
+4. **LLM re-rank** for taste fit + factual-hook-anchored rationale per D-A4.
+
+Cheaper than LLM-first, real similarity (not just shared-band membership), MusicBrainz still the canonical hallucination gate. **Smoke test required at Plan 02 start:** ListenBrainz is on a `labs.` subdomain — researcher flagged the contract is less stable than core MB. Plan 02 first task does a manual `curl` check + writes a fixture so test suite catches future labs-endpoint breakage. Rejected: Path A (synthesize from MB rels + shared label/release-group — sparser adjacency, more rate-limit pressure), Path C (Last.fm `artist.getSimilar` — needs API key, latent tension with PROJECT.md Last.fm out-of-scope item even though that's about scrobbles-as-taste-signal, not discovery candidate source).
 
 **D-A2 — Per-vibe rotation seeds: one starred track per vibe.**
 For each of the user's 3–7 vibes, pick ONE starred track per vibe → MusicBrainz expands each into its "similar artists" list. Guarantees every vibe gets discovery candidates. Natural diversity from vibe heterogeneity. Mirrors Phase 7 D-05's "balanced across all vibes" shortlist intuition. Which track gets picked per vibe rotates week-over-week so each Sunday cron tick gets fresh seeds (planner picks the rotation mechanism — random-from-vibe / round-robin index / least-recently-used; all acceptable).
@@ -123,8 +131,15 @@ Tap `[Dismiss]` in the expanded panel → write a row to a new `DiscoveryDismiss
 
 ### Area E — Settings + Cross-Surface Polish
 
-**D-E1 — Two-step Lidarr settings flow: test connection → select BOTH quality + metadata profiles → save.**
-Current `test_lidarr_connection` returns only quality profiles. Extend to fetch BOTH `get_quality_profile` AND `get_metadata_profile` in the same `to_thread` call. The connection_status partial gains a SECOND dropdown for metadata profile. `save_lidarr` persists `qualityProfileId`, `qualityProfileName`, `metadataProfileId`, `metadataProfileName` to the `ServiceConfig` `lidarr` row's `extras` JSON. `discovery_service.add_artist()` reads both IDs from settings and passes them to `pyarr.add_artist()` per Pitfall 14. This is the **Lidarr connection-test fix that lands FIRST in the phase** (DISC-07 + Pitfall 14 — every other Lidarr feature is built on this).
+**D-E1 — Two-step Lidarr settings flow: test connection → select quality + metadata profiles (+ root folder if multiple) → save.** *(Amended 2026-05-16 per research finding §2 + user decision on root folder UX.)*
+Current `test_lidarr_connection` returns only quality profiles. Extend to fetch THREE lists in the same `to_thread` call: `get_quality_profile`, `get_metadata_profile`, `get_root_folder`. The connection_status partial renders dropdowns:
+- **Quality profile** — always-shown dropdown
+- **Metadata profile** — always-shown dropdown
+- **Root folder** — auto-selected silently if Lidarr returns exactly one; rendered as a dropdown only when >1 (most users have a single music root)
+
+`save_lidarr` persists `qualityProfileId`, `qualityProfileName`, `metadataProfileId`, `metadataProfileName`, `rootFolderPath` to the `ServiceConfig` `lidarr` row's `extras` JSON. `discovery_service.add_artist()` reads all three values from settings and passes them to `pyarr.add_artist(artist=lookup_result, root_dir=..., quality_profile_id=..., metadata_profile_id=..., monitored=True, artist_monitor="all", search_for_missing_albums=True)` per Pitfall 14 and the pyarr 6.6 signature confirmed in RESEARCH.md §2. `search_for_missing_albums=True` is intentional so post-add monitoring (Pitfall 14's 24h check) has real Lidarr activity to observe.
+
+This is the **Lidarr connection-test fix that lands FIRST in the phase** (DISC-07 + Pitfall 14 — every other Lidarr feature is built on this).
 
 **D-E3 — Library-sync cron reliability fix lands in Plan 01 alongside D-E1.**
 NAS UAT 2026-05-16: `Last synced: 2026-05-14T03:01:24` on a 24h schedule (~48h stale). Likely causes: (a) container restart resets `IntervalTrigger` next_run_time, compounding across redeploys; (b) silent sync failure (`sync_service.py:226–229` catches the exception, marks `state=FAILED`, never writes `last_synced`). D-C1's auto-ingest design assumes the daily sync IS daily — this fix is load-bearing for the entire phase.
@@ -137,8 +152,10 @@ Scope:
 
 This is the SECOND foundational task in Plan 01 (after D-E1's Lidarr connection-test fix); both must land before any discovery work.
 
-**D-E2 — Vibe color coding: each vibe gets a persistent distinct color, propagated everywhere a vibe label renders.**
-Add `Vibe.color` column (TEXT, hex like `"#f97316"`). Colors auto-assigned at vibe creation time from a curated palette of 7+ visually distinct hues (planner picks the palette; should be color-blind-safe and look good on dark theme). Surfaces that pick up the color:
+**D-E2 — Vibe color coding: each vibe gets a persistent distinct color, propagated everywhere a vibe label renders.** *(Palette locked 2026-05-16 to Tailwind 4 `-500` stops per user decision after research §5.)*
+Add `Vibe.color` column (TEXT, hex like `"#f97316"`). Colors auto-assigned at vibe creation time from the curated Tailwind 4 `-500` palette: `orange-500 #f97316`, `blue-500 #3b82f6`, `emerald-500 #10b981`, `violet-500 #8b5cf6`, `rose-500 #f43f5e`, `amber-500 #f59e0b`, `cyan-500 #06b6d4`, `pink-500 #ec4899`, `lime-500 #84cc16` (planner: order/extend as needed; ≥7 hues are required for 7-vibe max, the 9 listed give headroom). Chosen for cleanest fit to existing Tailwind 4 styling tokens, native dark-theme tuning, and minimal CSS surgery. Note: `orange-500 #f97316` is very close to Composer's existing Plex-orange accent (`#e5a00d`) — researcher flagged the collision; orange goes LAST in assignment order so it's only used at 7+ vibes when alternatives are exhausted, and `/discover` Lidarr "Add" CTA continues to use the existing `bg-accent` Plex-orange to keep system-action color reserved.
+
+Surfaces that pick up the color:
 - Home page (`/` / `/vibes`) — each vibe card uses the color as an accent (border, badge, or background tint — designer picks within Tailwind 4 tokens)
 - `/suggestions` — vibe chip per row uses the matching color
 - `/discover` — vibe-grouped section headers use the matching color (D-D2)
@@ -211,8 +228,8 @@ Source of truth: the `Vibe.color` column. New vibes from re-cluster get a fresh 
 - `app/main.py` lifespan — `run_phase_61_migration` / `run_phase_07_suggestions_bootstrap` pattern; Phase 8 adds `run_phase_08_discovery_bootstrap` (gates `CostMeterBaseline` + `Vibe.color` backfill + `DiscoveryDismissed` table creation).
 - `.planning/quick/260514-e6w-*` and `260512-kvs-*` — `max_tokens` defensive sizing pattern. Phase 8 artist discovery call inherits via the SUGG-14 retry guard already in `anthropic_client.py`.
 
-**MANDATORY new file the planner will create:**
-- `.planning/phases/08-lidarr-discovery-polish/08-RESEARCH.md` (from `gsd-phase-researcher`) — should answer the SUMMARY.md light-spike questions: (a) pyarr 6.6 `add_artist()` exact signature + required params, (b) MusicBrainz adjacency query rate-limit behavior at this query volume, (c) MusicBrainz vs Last.fm tradeoffs at THIS library scale (~10K tracks, 460+ rated), (d) palette suggestions for D-E2 vibe colors that are color-blind-safe on dark theme.
+**MANDATORY — research already produced:**
+- `.planning/phases/08-lidarr-discovery-polish/08-RESEARCH.md` (committed `3f6ca06`, 1,139 lines) — light-spike answers + pyarr 6.6 API surface map + ListenBrainz/MusicBrainz strategy + vibe palette comparison + APScheduler reliability pattern + Pitfall integration. Critical findings folded into amended D-A1, D-E1, D-E2 above. Plan 02 task 1 MUST run the ListenBrainz endpoint smoke-test per RESEARCH.md §3.
 </canonical_refs>
 
 <code_context>
