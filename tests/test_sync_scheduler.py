@@ -571,6 +571,66 @@ class TestStartSchedulerCatchUpDiscovery:
         )
 
 
+class TestScheduleWeeklyMaintenance:
+    """Phase 7.1 follow-up — combined prune + discovery cron at Sun 03:00 UTC.
+
+    Registers under the same ``discovery_call_weekly`` job id as the original
+    ``schedule_discovery_call_weekly`` so ``replace_existing=True`` evicts
+    any prior registration AND existing tests / monitoring querying by job
+    id keep working.
+    """
+
+    def test_registers_one_cron_job_at_sun_03_utc(self):
+        from apscheduler.triggers.cron import CronTrigger
+
+        sync_scheduler.schedule_weekly_maintenance()
+
+        scheduler = sync_scheduler.get_scheduler()
+        # Single registration under the back-compat job id.
+        jobs = [
+            j for j in scheduler.get_jobs()
+            if j.id == "discovery_call_weekly"
+        ]
+        assert len(jobs) == 1, (
+            f"Expected exactly one cron job; got {len(jobs)}"
+        )
+
+        job = jobs[0]
+        assert isinstance(job.trigger, CronTrigger)
+        day_field = next(
+            (f for f in job.trigger.fields if f.name == "day_of_week"),
+            None,
+        )
+        hour_field = next(
+            (f for f in job.trigger.fields if f.name == "hour"), None,
+        )
+        minute_field = next(
+            (f for f in job.trigger.fields if f.name == "minute"), None,
+        )
+        assert day_field is not None and "sun" in str(day_field).lower()
+        assert hour_field is not None and "3" in str(hour_field)
+        assert minute_field is not None and "0" in str(minute_field)
+
+        # The wired callable is the combined tick, not the bare
+        # discovery_call_weekly — that's the WHOLE point of the prune
+        # follow-up.
+        assert job.func is sync_scheduler._weekly_maintenance_tick
+
+    def test_evicts_prior_schedule_discovery_call_weekly_registration(self):
+        """schedule_discovery_call_weekly() then schedule_weekly_maintenance()
+        leaves exactly one job (the combined tick) under the shared id.
+        """
+        sync_scheduler.schedule_discovery_call_weekly()
+        sync_scheduler.schedule_weekly_maintenance()
+        scheduler = sync_scheduler.get_scheduler()
+        jobs = [
+            j for j in scheduler.get_jobs()
+            if j.id == "discovery_call_weekly"
+        ]
+        assert len(jobs) == 1
+        assert jobs[0].func is sync_scheduler._weekly_maintenance_tick
+
+
 class TestLifespanRegistersDiscoveryCallWeekly:
     """Phase 7.1 D-C1 — verifies the cron is registered AFTER
     start_scheduler() in app/main.py::lifespan.
