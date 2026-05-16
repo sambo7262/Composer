@@ -134,6 +134,13 @@ def schedule_discovery_call_weekly() -> None:
     NULL or > 7 days ago). The catch-up gate is placed AFTER the
     existing ``with Session(engine) as session:`` block (W9) so it
     never opens a nested Session.
+
+    Kept available for direct callers / tests (the Phase 7.1
+    ``TestScheduleDiscoveryCallWeekly`` exercises it). Production
+    lifespan wiring uses :func:`schedule_weekly_maintenance` instead —
+    that registers a combined prune-then-discovery tick at the same
+    cron schedule with the SAME job id (``discovery_call_weekly``) so
+    callers querying by job id continue to find a single registered job.
     """
     # Lazy import keeps the import-graph small and avoids a circular
     # dep with suggestions_discovery (which imports from
@@ -154,6 +161,90 @@ def schedule_discovery_call_weekly() -> None:
     )
     logger.info(
         "Scheduled discovery call weekly on Sundays at 03:00 UTC"
+    )
+
+
+async def _weekly_maintenance_tick() -> None:
+    """Phase 7.1 follow-up — combined Sunday 03:00 UTC maintenance tick.
+
+    Order (NON-NEGOTIABLE — prune MUST run before discovery so the fresh
+    LLM picks land in a freshly-pruned Plex playlist):
+
+      1. ``prune_suggestions_playlist_to_mirror(plex_url, plex_token)`` —
+         best-effort. Wrapped in a try/except so a prune failure does
+         NOT block the discovery call from running.
+      2. ``discovery_call_weekly()`` — unchanged signature + semantics.
+
+    Plex creds come from the same ``_read_plex_creds_sync`` helper used
+    by ``suggestions_service``. If Plex is not configured (creds empty),
+    the prune helper itself short-circuits with a log line.
+    """
+    # Lazy imports — keeps sync_scheduler's import graph minimal and
+    # mirrors the existing :func:`schedule_discovery_call_weekly` pattern.
+    from app.services.plex_playlist_service import (
+        prune_suggestions_playlist_to_mirror,
+    )
+    from app.services.suggestions_discovery import discovery_call_weekly
+    from app.services.suggestions_service import _read_plex_creds_sync
+
+    plex_url, plex_token = await asyncio.to_thread(_read_plex_creds_sync)
+
+    try:
+        result = await prune_suggestions_playlist_to_mirror(
+            plex_url, plex_token,
+        )
+        logger.info(
+            "Weekly maintenance: prune removed=%d, mirror_size=%d, "
+            "final_plex_count=%d, still_present=%d",
+            len(result.removed),
+            result.mirror_size,
+            result.final_plex_count,
+            len(result.still_present_after_remove),
+        )
+    except Exception:
+        # Best-effort — prune failure must not block discovery.
+        logger.exception(
+            "Weekly maintenance: prune step failed; continuing to "
+            "discovery_call_weekly anyway."
+        )
+
+    await discovery_call_weekly()
+
+
+def schedule_weekly_maintenance() -> None:
+    """Phase 7.1 follow-up — register the combined weekly prune + discovery cron.
+
+    Registers a SINGLE cron job at Sun 03:00 UTC pointing at
+    :func:`_weekly_maintenance_tick`. Reuses the existing
+    ``discovery_call_weekly`` job id so:
+
+      - ``replace_existing=True`` cleanly evicts any prior registration
+        from :func:`schedule_discovery_call_weekly` (back-compat with
+        ``schedule_sync`` / ``schedule_polling`` /
+        ``schedule_soft_negative_sweep`` idempotency contracts).
+      - The existing
+        ``TestLifespanRegistersDiscoveryCallWeekly`` test (which queries
+        ``scheduler.get_job('discovery_call_weekly')``) keeps passing.
+
+    The companion D-C2 startup catch-up still lives in
+    :func:`start_scheduler` and now also runs prune before discovery
+    on the catch-up path.
+    """
+    scheduler = get_scheduler()
+    if scheduler.get_job("discovery_call_weekly"):
+        scheduler.remove_job("discovery_call_weekly")
+    scheduler.add_job(
+        _weekly_maintenance_tick,
+        trigger=CronTrigger(
+            day_of_week="sun", hour=3, minute=0, timezone="UTC",
+        ),
+        id="discovery_call_weekly",
+        replace_existing=True,
+        name="Weekly maintenance: prune + discovery (Sundays 03:00 UTC)",
+    )
+    logger.info(
+        "Scheduled weekly maintenance (prune + discovery) on Sundays at "
+        "03:00 UTC"
     )
 
 
@@ -243,18 +334,37 @@ async def start_scheduler() -> None:
         if needs_catch_up:
             logger.info(
                 "Last discovery run is NULL or > 7 days old — "
-                "scheduling catch-up discovery_call_weekly in 10s"
+                "scheduling catch-up weekly maintenance (prune + "
+                "discovery_call_weekly) in 10s"
             )
 
             async def _delayed_catch_up_discovery():
                 await asyncio.sleep(10)
-                # Re-resolve the handler at call time so tests that
+                # Re-resolve handlers at call time so tests that
                 # monkeypatch ``suggestions_discovery.discovery_call_weekly``
-                # work end-to-end. Lazy import for the import-graph
-                # reasons noted on schedule_discovery_call_weekly.
+                # (and the prune helper) work end-to-end. Lazy import
+                # for the import-graph reasons noted on
+                # schedule_discovery_call_weekly.
                 from app.services import (
+                    plex_playlist_service as _pps,
                     suggestions_discovery as _sd_inner,
+                    suggestions_service as _ss,
                 )
+                # Phase 7.1 follow-up — prune runs FIRST so the catch-up
+                # discovery picks land in a freshly-pruned playlist.
+                # Best-effort: prune failure must not block discovery.
+                try:
+                    plex_url, plex_token = await asyncio.to_thread(
+                        _ss._read_plex_creds_sync
+                    )
+                    await _pps.prune_suggestions_playlist_to_mirror(
+                        plex_url, plex_token,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Catch-up: prune step failed; continuing to "
+                        "discovery_call_weekly anyway."
+                    )
                 await _sd_inner.discovery_call_weekly()
 
             asyncio.create_task(_delayed_catch_up_discovery())
