@@ -1557,17 +1557,50 @@ class TestDiscoveryPromptSize:
             + repr([r.getMessage() for r in trim_records])
         )
 
+    def _patch_full_pool(self, monkeypatch, suggestions_discovery):
+        """Force ``compute_discovery_eligible`` to return the full pool
+        (10_000 rows) instead of the SQL-capped 200.
+
+        Python default-arg semantics bind ``limit=DISCOVERY_CANDIDATE_LIMIT``
+        at function-definition time, so simply
+        ``monkeypatch.setattr(suggestions_discovery,
+        "DISCOVERY_CANDIDATE_LIMIT", 10_000)`` does NOT affect existing
+        function default args. We patch the async accessor itself with
+        an explicit ``limit=10_000`` pass-through. This is the
+        belt-and-suspenders monkeypatch step plan-checker concern #3
+        called out — it explicitly raises the LIMIT so the trimmer test
+        cannot pass for the wrong reason (e.g. by the SQL LIMIT alone
+        capping the pool at 200 and the trimmer never running).
+        """
+        import asyncio as _asyncio
+
+        async def _full_pool(unplayed_days=90, limit=10_000):
+            return await _asyncio.to_thread(
+                suggestions_discovery._read_discovery_eligible_sync,
+                unplayed_days, 10_000,
+            )
+        monkeypatch.setattr(
+            suggestions_discovery,
+            "compute_discovery_eligible",
+            _full_pool,
+        )
+
     def test_oversize_prompt_trimmed_until_under_ceiling(
         self, db_with_phase7, monkeypatch, caplog,
     ):
         """GAP-01 cold-start scenario — seed 10_000 candidates, raise
-        DISCOVERY_CANDIDATE_LIMIT to 10_000 so the full pool reaches the
-        trimmer, and assert the final prompt fits under 150K tokens.
+        the effective candidate pool to 10_000 (via the
+        ``_patch_full_pool`` helper that explicitly passes
+        ``limit=10_000`` through to ``_read_discovery_eligible_sync``),
+        and assert the final prompt fits under 150K tokens.
 
         Crucially also asserts a WARNING log with "trimming candidate
         pool" is emitted with pre/post counts, so the test cannot pass
         for the wrong reason (e.g. if the SQL LIMIT alone trimmed the
-        pool down to 200 before the trimmer ran).
+        pool down to 200 before the trimmer ran). This is the
+        plan-checker concern #3 acceptance criterion: the
+        ``DISCOVERY_CANDIDATE_LIMIT`` raise step MUST be explicit so
+        the test cannot accidentally pass via the SQL cap.
         """
         import logging
         from unittest.mock import AsyncMock
@@ -1578,15 +1611,11 @@ class TestDiscoveryPromptSize:
             discovery_call_weekly,
         )
 
-        # Raise the SQL-level LIMIT so the full 10K pool reaches the
-        # in-prompt trimmer (otherwise the SQL LIMIT alone would cap at
-        # 200 rows and the trimmer would never engage — this test
-        # specifically exercises the per-prompt-size control).
-        monkeypatch.setattr(
-            suggestions_discovery, "DISCOVERY_CANDIDATE_LIMIT", 10_000,
-        )
-
         self._seed_n_candidates(db_with_phase7, n=10_000)
+        # Explicit DISCOVERY_CANDIDATE_LIMIT raise (plan-checker
+        # concern #3 — without this the SQL LIMIT alone would cap the
+        # pool at 200 and the trimmer would never engage).
+        self._patch_full_pool(monkeypatch, suggestions_discovery)
 
         async def _ok(*a, **kw):
             return None
@@ -1649,12 +1678,10 @@ class TestDiscoveryPromptSize:
             discovery_call_weekly,
         )
 
-        # Raise the SQL-level LIMIT so the full 10K reaches the trimmer.
-        monkeypatch.setattr(
-            suggestions_discovery, "DISCOVERY_CANDIDATE_LIMIT", 10_000,
-        )
-
         self._seed_n_candidates(db_with_phase7, n=10_000)
+        # Explicit DISCOVERY_CANDIDATE_LIMIT raise (plan-checker
+        # concern #3 — same rationale as above).
+        self._patch_full_pool(monkeypatch, suggestions_discovery)
 
         async def _ok(*a, **kw):
             return None
@@ -1677,12 +1704,15 @@ class TestDiscoveryPromptSize:
         assert call_mock.await_count == 1
         captured_prompt = call_mock.await_args.kwargs["user_prompt"]
 
-        # Oldest seeded track (i=9999) MUST appear; youngest (i=0) MUST
-        # have been trimmed. Use the unique plex_rating_key marker.
-        assert "prompt-cand-9999" in captured_prompt, (
+        # The seed helper assigns title "Candidate Title {i}" — the
+        # i=9999 row is OLDEST (now-10099d) and i=0 is YOUNGEST
+        # (now-100d). After trimming, oldest survives and youngest is
+        # dropped. The title is the unique marker visible inside the
+        # rendered user_prompt.
+        assert "Candidate Title 9999 " in captured_prompt, (
             "Oldest-played track (i=9999) should survive trimming"
         )
-        assert "prompt-cand-0 " not in captured_prompt, (
+        assert "Candidate Title 0 " not in captured_prompt, (
             "Youngest-played track (i=0) should have been trimmed; "
             "found unexpected reference in user_prompt"
         )
