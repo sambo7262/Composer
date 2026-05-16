@@ -1419,6 +1419,344 @@ class TestSuggestionsDiscoveryAstShape:
         )
 
 
+# ---------------------------------------------------------------------------
+# Phase 7.1 Plan 04 GAP-01 — per-prompt token estimator regression tests.
+# NAS UAT 2026-05-16 — discovery_call_weekly raised BadRequestError
+# ("prompt is too long: 202027 tokens > 200000 maximum"). The trimmer in
+# discovery_call_weekly bounds prompt size via a conservative chars/3.5
+# token estimate, halving the candidate list iteratively until the estimate
+# fits under DISCOVERY_PROMPT_TOKEN_CEILING. The trimmer runs ONCE before
+# the retry loop; the retry loop only adjusts max_tokens, never re-trims
+# candidates.
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoveryPromptSize:
+    """GAP-01 (Plan 04) — defensive INPUT-side prompt-size bound.
+
+    Two complementary controls:
+      1. DISCOVERY_CANDIDATE_LIMIT (Task 1) caps candidate pool row count.
+      2. DISCOVERY_PROMPT_TOKEN_CEILING + DISCOVERY_CHARS_PER_TOKEN_RATIO
+         (this class) bound the assembled-prompt size.
+    Belt-and-suspenders: LIMIT alone is insufficient if metadata grows;
+    ceiling alone is insufficient because a zero-LIMIT query would consume
+    DB memory before the trimmer ever ran.
+    """
+
+    def _seed_n_candidates(self, db, n: int):
+        """Insert ``n`` Track rows with PADDED titles (oldest-first by id
+        when last_viewed_at is identical) + the DiscoveryState + a
+        TasteProfile row. The padding inflates per-track chars so the
+        trimmer engages on a ~10K library.
+
+        Mirrors ``_seed_discovery_environment`` (line 553) for the
+        TasteProfile fields exactly — id=1, rated_track_count=50,
+        summary_text=..., computed_at=... — verified against
+        app/models/taste_profile.py.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from app.models.taste_profile import TasteProfile
+        from app.models.track import Track
+        from app.models.vibe import DiscoveryState
+
+        now = datetime.now(timezone.utc)
+        for i in range(n):
+            db.add(Track(
+                plex_rating_key=f"prompt-cand-{i}",
+                title=(f"Candidate Title {i} " + ("x" * 40)),
+                artist=f"Artist {i}",
+                last_viewed_at=(now - timedelta(days=100 + i)).isoformat(),
+            ))
+        db.commit()
+        db.add(DiscoveryState(
+            id=1,
+            plays_since_last_discovery=15,
+            last_discovery_run_at=None,
+        ))
+        db.add(TasteProfile(
+            id=1,
+            rated_track_count=50,
+            summary_text="The user enjoys energetic guitar-driven tracks.",
+            computed_at=now.isoformat(),
+        ))
+        db.commit()
+
+    def test_discovery_prompt_token_ceiling_constant_pinned(self):
+        """GAP-01 — DISCOVERY_PROMPT_TOKEN_CEILING == 150_000 (int)."""
+        from app.services.suggestions_discovery import (
+            DISCOVERY_PROMPT_TOKEN_CEILING,
+        )
+        assert isinstance(DISCOVERY_PROMPT_TOKEN_CEILING, int)
+        assert DISCOVERY_PROMPT_TOKEN_CEILING == 150_000
+
+    def test_discovery_chars_per_token_ratio_constant_pinned(self):
+        """GAP-01 — DISCOVERY_CHARS_PER_TOKEN_RATIO == 3.5 (float).
+        Conservative low-end estimate (Anthropic tokenizer averages
+        ~3.5-4 chars/token for English + structured data).
+        """
+        from app.services.suggestions_discovery import (
+            DISCOVERY_CHARS_PER_TOKEN_RATIO,
+        )
+        assert isinstance(DISCOVERY_CHARS_PER_TOKEN_RATIO, float)
+        assert DISCOVERY_CHARS_PER_TOKEN_RATIO == 3.5
+
+    def test_small_prompt_not_trimmed(
+        self, db_with_phase7, monkeypatch, caplog,
+    ):
+        """Small candidate pool (5 tracks) → prompt fits under ceiling
+        without trimming. Captured user_prompt matches the un-trimmed
+        build; no 'trimming candidate pool' warning is logged.
+        """
+        import logging
+        from unittest.mock import AsyncMock
+
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import (
+            DiscoveryPick,
+            DiscoveryPicksResponse,
+            _build_discovery_user_prompt,
+            discovery_call_weekly,
+        )
+
+        _seed_discovery_environment(db_with_phase7, num_candidates=5)
+
+        # Cost breaker passes.
+        async def _ok(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _ok,
+        )
+
+        call_mock = AsyncMock(return_value=DiscoveryPicksResponse(picks=[]))
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+
+        caplog.set_level(
+            logging.WARNING,
+            logger="app.services.suggestions_discovery",
+        )
+        _run_async(discovery_call_weekly())
+
+        assert call_mock.await_count == 1
+        captured_prompt = call_mock.await_args.kwargs["user_prompt"]
+        # 5 tracks ≈ well under 150K chars → 150K/3.5 = 42.8K tokens.
+        assert (
+            len(captured_prompt) / 3.5
+        ) <= 150_000, "5-track prompt unexpectedly exceeds ceiling"
+
+        # No 'trimming candidate pool' warning emitted.
+        trim_records = [
+            r for r in caplog.records
+            if "trimming candidate pool" in r.getMessage()
+        ]
+        assert trim_records == [], (
+            "5-track prompt should not trigger the trimmer; got: "
+            + repr([r.getMessage() for r in trim_records])
+        )
+
+    def test_oversize_prompt_trimmed_until_under_ceiling(
+        self, db_with_phase7, monkeypatch, caplog,
+    ):
+        """GAP-01 cold-start scenario — seed 10_000 candidates, raise
+        DISCOVERY_CANDIDATE_LIMIT to 10_000 so the full pool reaches the
+        trimmer, and assert the final prompt fits under 150K tokens.
+
+        Crucially also asserts a WARNING log with "trimming candidate
+        pool" is emitted with pre/post counts, so the test cannot pass
+        for the wrong reason (e.g. if the SQL LIMIT alone trimmed the
+        pool down to 200 before the trimmer ran).
+        """
+        import logging
+        from unittest.mock import AsyncMock
+
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import (
+            DiscoveryPicksResponse,
+            discovery_call_weekly,
+        )
+
+        # Raise the SQL-level LIMIT so the full 10K pool reaches the
+        # in-prompt trimmer (otherwise the SQL LIMIT alone would cap at
+        # 200 rows and the trimmer would never engage — this test
+        # specifically exercises the per-prompt-size control).
+        monkeypatch.setattr(
+            suggestions_discovery, "DISCOVERY_CANDIDATE_LIMIT", 10_000,
+        )
+
+        self._seed_n_candidates(db_with_phase7, n=10_000)
+
+        async def _ok(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _ok,
+        )
+
+        call_mock = AsyncMock(return_value=DiscoveryPicksResponse(picks=[]))
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+
+        caplog.set_level(
+            logging.WARNING,
+            logger="app.services.suggestions_discovery",
+        )
+        _run_async(discovery_call_weekly())
+
+        # Verify trimmer engaged.
+        trim_records = [
+            r for r in caplog.records
+            if "trimming candidate pool" in r.getMessage()
+        ]
+        assert trim_records, (
+            "10K-track scenario must emit at least one "
+            "'trimming candidate pool' warning; got "
+            f"caplog records: {[r.getMessage() for r in caplog.records]}"
+        )
+
+        # Final prompt under ceiling.
+        assert call_mock.await_count == 1
+        captured_prompt = call_mock.await_args.kwargs["user_prompt"]
+        estimated_tokens = len(captured_prompt) / 3.5
+        assert estimated_tokens <= 150_000, (
+            f"Final prompt estimate {estimated_tokens:.0f} tokens "
+            f"exceeds ceiling 150_000"
+        )
+
+    def test_trimmed_prompt_preserves_oldest_first(
+        self, db_with_phase7, monkeypatch, caplog,
+    ):
+        """End-to-end check that the trimmer (Task 2) keeps the oldest-
+        played tracks (sorted first by Task 1's SQL ORDER BY) and drops
+        the youngest. Drives the full SQL + trimmer chain.
+
+        Note: the ``_seed_n_candidates`` helper assigns
+        ``last_viewed_at = now - timedelta(days=100 + i)`` so HIGHER i
+        means OLDER (further in the past) — last_viewed_at ASC puts
+        higher-i tracks first. After trimming, the surviving tracks must
+        include the oldest (highest i) and exclude the youngest
+        (lowest i).
+        """
+        import logging
+        from unittest.mock import AsyncMock
+
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import (
+            DiscoveryPicksResponse,
+            discovery_call_weekly,
+        )
+
+        # Raise the SQL-level LIMIT so the full 10K reaches the trimmer.
+        monkeypatch.setattr(
+            suggestions_discovery, "DISCOVERY_CANDIDATE_LIMIT", 10_000,
+        )
+
+        self._seed_n_candidates(db_with_phase7, n=10_000)
+
+        async def _ok(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _ok,
+        )
+
+        call_mock = AsyncMock(return_value=DiscoveryPicksResponse(picks=[]))
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+
+        caplog.set_level(
+            logging.WARNING,
+            logger="app.services.suggestions_discovery",
+        )
+        _run_async(discovery_call_weekly())
+
+        assert call_mock.await_count == 1
+        captured_prompt = call_mock.await_args.kwargs["user_prompt"]
+
+        # Oldest seeded track (i=9999) MUST appear; youngest (i=0) MUST
+        # have been trimmed. Use the unique plex_rating_key marker.
+        assert "prompt-cand-9999" in captured_prompt, (
+            "Oldest-played track (i=9999) should survive trimming"
+        )
+        assert "prompt-cand-0 " not in captured_prompt, (
+            "Youngest-played track (i=0) should have been trimmed; "
+            "found unexpected reference in user_prompt"
+        )
+
+    def test_trimmer_halts_at_pick_count(
+        self, db_with_phase7, monkeypatch, caplog,
+    ):
+        """Pathological prompt builder (always returns >150K-token chars)
+        forces the trimmer to keep halving. The bounded-retry surface
+        requires the trimmer to halt at ``len(candidates) <= pick_count``
+        rather than loop forever — locks in the safety floor.
+
+        Asserts an ERROR log is emitted and the function still calls the
+        LLM with whatever it has (does not infinite-loop, does not
+        raise).
+        """
+        import logging
+        from unittest.mock import AsyncMock
+
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import (
+            DiscoveryPicksResponse,
+            discovery_call_weekly,
+        )
+
+        # 10 candidates is well above pick_count (5 for plays=15).
+        _seed_discovery_environment(
+            db_with_phase7, num_candidates=10,
+            plays_since_last_discovery=15,
+        )
+
+        # Pathological _build_discovery_user_prompt always returns >150K
+        # tokens worth of chars (600K chars / 3.5 ≈ 171K tokens).
+        monkeypatch.setattr(
+            suggestions_discovery,
+            "_build_discovery_user_prompt",
+            lambda *a, **k: "x" * 600_000,
+        )
+
+        async def _ok(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _ok,
+        )
+
+        call_mock = AsyncMock(return_value=DiscoveryPicksResponse(picks=[]))
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+
+        caplog.set_level(
+            logging.ERROR,
+            logger="app.services.suggestions_discovery",
+        )
+        # MUST NOT infinite-loop or raise.
+        _run_async(discovery_call_weekly())
+
+        # LLM was still called with the pathological prompt.
+        assert call_mock.await_count == 1
+
+        # ERROR record from the halt-at-pick-count branch.
+        halt_records = [
+            r for r in caplog.records
+            if r.levelno >= logging.ERROR
+            and "exceeds ceiling" in r.getMessage()
+            and "minimum candidate count" in r.getMessage()
+        ]
+        assert halt_records, (
+            "Trimmer halt-at-pick-count branch must log an ERROR; got: "
+            f"{[r.getMessage() for r in caplog.records]}"
+        )
+
+
 class TestSuggestionsDiscoveryMaxTokensGuard:
     """Phase 7.1 SUGG-14 — defensive max_tokens sizing on the weekly
     discovery LLM call.
