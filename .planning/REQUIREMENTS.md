@@ -144,7 +144,8 @@ Closes the loop outward — recommend new artists that match your taste, add the
 - [ ] **DISC-04**: Discovery applies popularity-bias mitigation — penalizes artists with disproportionate library penetration ("you don't need more Coldplay"); demotes mainstream over differentiated picks
 - [ ] **DISC-05**: One-click add sends an artist to Lidarr with the user's configured quality profile + metadata profile; pre-flight check confirms quality profile validity and surfaces clear error if Lidarr unreachable
 - [ ] **DISC-06**: After Lidarr import completes (detected via Lidarr webhook OR aggressive polling on a short timer post-add), newly-imported tracks are auto-queued for Essentia analysis and then scored against vibes/taste profile
-- [ ] **DISC-07**: Lidarr connection-test bug from v1 is fixed — settings page reliably validates URL/API key; clear error messages distinguish unreachable, auth failure, and version mismatch
+- [ ] **DISC-07**: Lidarr connection-test bug from v1 is fixed — settings page reliably validates URL/API key; clear error messages distinguish unreachable, auth failure, and version mismatch. **(Added Phase 8 discuss 2026-05-16 / D-E1):** the connection-test response returns BOTH `qualityProfile` AND `metadataProfile` lists in one call; the settings UI presents both as dropdowns; saving persists both `qualityProfileId/Name` AND `metadataProfileId/Name` to `ServiceConfig.extras`. `discovery_service.add_artist()` reads both IDs and passes them to `pyarr.add_artist()` per Pitfall 14 (the v1 bug was incomplete profile fetch + missing metadata profile).
+- [ ] **DISC-08** (Phase 8 D-E3 — added 2026-05-16): Library-sync cron is observably reliable across container restarts and silent failures. (a) Switch or augment APScheduler `IntervalTrigger(hours=24)` so missed ticks across restarts catch up; lifespan reads `SyncState.last_sync_completed` and fires one sync if `now - last_sync_completed > interval_hours + grace`. (b) Silent sync failures (currently caught at `sync_service.py:226-229` and never surfaced) emit a structured event into `EventLog` with `event_type="sync_failed"` so `/debug/events` shows them. NAS UAT 2026-05-16 confirmed the bug: `Last synced: 2026-05-14T03:01:24` on a 24h interval (~48h stale). This is load-bearing for DISC-06 auto-ingest (which piggybacks the daily sync per Phase 8 D-C1).
 
 ### UI / Mobile-First
 
@@ -158,6 +159,8 @@ Every new v2 surface is portrait-first; v1 chat retires; legacy screens get a re
 - [ ] **UI-06**: v1 mood-chat UI removed — `/chat` route deleted, nav references removed, related templates archived; data preserved in DB but no UI access
 - [ ] **UI-07**: Responsive pass on settings page and library browse page — service cards and track lists work cleanly portrait at 375px wide
 - [ ] **UI-08**: "Why this track?" rationale, vibe coverage indicator, and skip-track dismiss action are all designed mobile-first
+- [ ] **UI-09** (Phase 8 D-E2 — added 2026-05-16): Vibe color coding. Each `Vibe` gets a persistent `color` (TEXT hex, e.g. `"#f97316"`) auto-assigned at creation time from a curated dark-theme color-blind-safe palette of ≥7 visually distinct hues. The color propagates wherever a vibe label renders: home page vibe cards, `/suggestions` vibe chips, `/discover` vibe-grouped section headers, wizard proposal cards, `/debug/vibes` diagnostic cards, `recluster_modal` vibe pills. Source of truth: `Vibe.color` column (additive migration via `_migrate_add_columns()`). Existing vibes backfilled on first Phase 8 deploy. Re-cluster preserves existing colors for unchanged vibes; new vibes pick from unused palette slots.
+- [ ] **UI-10** (Phase 8 D-B4 — added 2026-05-16): Home-page weekly LLM cost chip. Compact chip at top of vibes home (`/` / `/vibes`): `"This week: $X.XX · next refresh in Nd"`. Sums `LLMUsage.cost_estimate_usd` WHERE `called_at >= last_weekly_cron_tick_at` AND `called_at >= cost_meter_baseline.deploy_at`. Source of `last_weekly_cron_tick_at`: new `WeeklyCronState` single-row table updated on successful `_weekly_maintenance_tick`. Initialization: new `CostMeterBaseline` single-row table seeded with Phase 8 deploy timestamp; LLMUsage rows older than the baseline are EXCLUDED from the chip permanently (historical / testing rows are irrelevant for runaway-cost detection). Tap opens `/debug/suggestions` for full per-purpose breakdown. The detailed cost meter on settings page continues to report unfiltered history.
 
 ### Debug / Observability
 
@@ -286,15 +289,19 @@ Maps requirements to phases. Filled during roadmap creation; updated as phases c
 | OPS-05 (1 req) | Phase 7 | Pending (LLM observability ships with first ranking call) |
 | DEBUG-03, DEBUG-05 (2 reqs) | Phase 7 | Pending (`/debug/suggestions` + `/debug` index linked from settings) |
 | DISC-03..07 (5 reqs) | Phase 8 | Pending |
+| DISC-08 (1 req — added 2026-05-16 D-E3) | Phase 8 | Pending (library-sync cron reliability) |
 | UI-07, UI-08 (2 reqs) | Phase 8 | Pending (legacy screen polish + multi-surface mobile-first detail) |
+| UI-09 (1 req — added 2026-05-16 D-E2) | Phase 8 | Pending (vibe color coding across surfaces) |
+| UI-10 (1 req — added 2026-05-16 D-B4) | Phase 8 | Pending (home-page weekly LLM cost chip) |
 | OPS-06 (1 req) | Phase 8 | Pending (legacy playlist recognition) |
 | DEBUG-04 (1 req) | Phase 8 | Pending (`/debug/discovery` page) |
 | ENG-01..03 (3 reqs) | Phase 9 (optional) | Pending |
 
 **Coverage (v2.0):**
-- Required (Phases 5–8): **69 requirements** mapped — 7 EVT + 5 RATE + 4 OPS-01..04 + 1 DEBUG-01 + 12 VIBE-01..12 + 7 WIZ-01..07 + 1 DEBUG-02 + 2 VIBE-13/14 + 1 WIZ-08 + 11 SUGG + 6 UI-01..06 + 1 OPS-05 + 2 DEBUG-03/05 + 5 DISC + 2 UI-07/08 + 1 OPS-06 + 1 DEBUG-04 = 69
+- Required (Phases 5–8): **72 requirements** mapped — 7 EVT + 5 RATE + 4 OPS-01..04 + 1 DEBUG-01 + 12 VIBE-01..12 + 7 WIZ-01..07 + 1 DEBUG-02 + 2 VIBE-13/14 + 1 WIZ-08 + 11 SUGG + 6 UI-01..06 + 1 OPS-05 + 2 DEBUG-03/05 + 5 DISC-03..07 + 1 DISC-08 + 2 UI-07/08 + 1 UI-09 + 1 UI-10 + 1 OPS-06 + 1 DEBUG-04 = 72
 - Optional (Phase 9): **3 requirements** (ENG-01..03)
-- Total v2.0 surface: **72 requirements**, all mapped, **0 unmapped**
+- Total v2.0 surface: **75 requirements**, all mapped, **0 unmapped**
+- 2026-05-16: Phase 8 discuss-phase added DISC-08, UI-09, UI-10 (3 net-new reqs).
 - Phase 9 is explicitly cuttable; everything else is required for v2.0
 - Roadmap validated 2026-05-11 — all v2.0 REQ-IDs map to exactly one phase, no orphans, no duplicates
 

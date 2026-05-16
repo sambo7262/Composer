@@ -267,7 +267,7 @@ Plans:
 ### Phase 8: Lidarr Discovery + Polish
 **Goal**: User can discover new artists matching their taste and one-click add to Lidarr; new arrivals from Lidarr auto-ingest into Essentia analysis + vibe scoring; legacy v1 screens (settings, library) are responsive on mobile portrait
 **Depends on**: Phase 7 (taste profile, prompt-cache infrastructure, LLM cost breaker, recommendation history table all reused; Lidarr is the leafy outward closer)
-**Requirements**: DISC-03, DISC-04, DISC-05, DISC-06, DISC-07, UI-07, UI-08, OPS-06, DEBUG-04
+**Requirements**: DISC-03, DISC-04, DISC-05, DISC-06, DISC-07, DISC-08, UI-07, UI-08, UI-09, UI-10, OPS-06, DEBUG-04
 **Success Criteria** (what must be TRUE):
   1. User opens the Discover tab and sees ≥10 artist suggestions ranked by closeness to taste profile, each with a one-line "why" rationale ("Same label as Four Tet · MusicBrainz adjacent to 3 starred artists"); no artist already in the library appears
   2. User clicks "Add" on a discovered artist; Lidarr accepts the request without error using the configured quality + metadata profiles, and Composer shows "Added to Lidarr" feedback
