@@ -237,8 +237,12 @@ async def lifespan(app: FastAPI):
     6. start_scheduler() — APScheduler registers library_sync + plex_polling jobs.
     7. maybe_trigger_first_run_backfill() — fires once if Phase 5 just deployed
        onto a populated DB whose user_rating column is still NULL across the board.
-    8. schedule_soft_negative_sweep() + schedule_discovery_call_weekly() —
+    8. schedule_soft_negative_sweep() + schedule_weekly_maintenance() —
        Phase 7 / 7.1 cron jobs registered on the same scheduler singleton.
+       ``schedule_weekly_maintenance`` is the Phase 7.1 follow-up combined
+       prune + discovery tick (replaces the bare
+       ``schedule_discovery_call_weekly`` registration; uses the same
+       ``discovery_call_weekly`` job id so monitoring keeps working).
     """
     init_db()
     get_encryptor()
@@ -262,12 +266,15 @@ async def lifespan(app: FastAPI):
     from app.services.sync_scheduler import schedule_soft_negative_sweep
 
     schedule_soft_negative_sweep()
-    # Phase 7.1 D-C1 — register the weekly LLM discovery call. Same
-    # AsyncIOScheduler singleton as soft-negative sweep; SAME ordering
-    # requirement (must be after start_scheduler()).
-    from app.services.sync_scheduler import schedule_discovery_call_weekly
+    # Phase 7.1 D-C1 + follow-up — register the combined weekly maintenance
+    # tick (prune Plex Suggestions playlist down to SuggestionsMirror, then
+    # discovery_call_weekly). Same AsyncIOScheduler singleton; SAME ordering
+    # requirement (must be after start_scheduler()). Job id is still
+    # ``discovery_call_weekly`` so monitoring + existing tests querying by
+    # job id keep working.
+    from app.services.sync_scheduler import schedule_weekly_maintenance
 
-    schedule_discovery_call_weekly()
+    schedule_weekly_maintenance()
     # Phase 5 (D-10 / Pitfall 7): auto-trigger backfill if we have tracks but
     # nothing is rated — classic "first deploy onto an existing v1 library".
     from app.services.backfill_service import maybe_trigger_first_run_backfill
