@@ -203,13 +203,16 @@ async def test_update_playlist_items_is_additive_only(db_with_phase6, fake_plex_
 
     Tracks `a` and `c` MUST stay (Pitfall 5 — never remove user-added tracks).
     """
+    # Real Plex rating keys are integers; use numeric strings so int() casts
+    # succeed (the production code path passes these through int() before
+    # fetchItem — see plex_playlist_service.py:_playlist_key_int).
     fake_plex_module._tracks = {
-        k: FakeTrack(k) for k in ("a", "b", "c", "d", "e")
+        k: FakeTrack(k) for k in ("101", "102", "103", "104", "105")
     }
     pl = FakePlaylist(
         rating_key="500",
         title="Composer · Workout",
-        items=[FakeTrack("a"), FakeTrack("b"), FakeTrack("c")],
+        items=[FakeTrack("101"), FakeTrack("102"), FakeTrack("103")],
     )
     fake_plex_module._playlists = {"500": pl}
 
@@ -230,19 +233,19 @@ async def test_update_playlist_items_is_additive_only(db_with_phase6, fake_plex_
         plex_url="http://plex.local",
         plex_token="token-X",
         playlist_rating_key="500",
-        desired_rating_keys=["b", "d", "e"],
+        desired_rating_keys=["102", "104", "105"],
     )
 
-    # addItems was invoked once with [d, e] (NOT [a, c] removal).
+    # addItems was invoked once with [104, 105] (NOT [101, 103] removal).
     assert len(pl.add_calls) == 1
     added_keys = sorted(t.ratingKey for t in pl.add_calls[0])
-    assert added_keys == ["d", "e"]
+    assert added_keys == ["104", "105"]
     # No removeItems calls.
     assert pl.remove_calls == []
 
-    assert sorted(result.added) == ["d", "e"]
-    assert "b" in result.unchanged
-    # a and c are not in desired BUT they remain in the playlist (additive only).
+    assert sorted(result.added) == ["104", "105"]
+    assert "102" in result.unchanged
+    # 101 and 103 are not in desired BUT they remain in the playlist (additive only).
 
 
 # ---------------------------------------------------------------------------
@@ -252,21 +255,23 @@ async def test_update_playlist_items_is_additive_only(db_with_phase6, fake_plex_
 async def test_update_playlist_items_post_push_verify_finds_silently_dropped(
     db_with_phase6, fake_plex_module
 ):
-    """addItems succeeds but post-push re-fetch shows e missing → silently_dropped=[e]."""
-    fake_plex_module._tracks = {k: FakeTrack(k) for k in ("a", "b", "c", "d", "e")}
+    """addItems succeeds but post-push re-fetch shows 205 missing → silently_dropped=[205]."""
+    # Real Plex rating keys are integers (production code casts via int() before
+    # fetchItem); use numeric strings here so the cast succeeds.
+    fake_plex_module._tracks = {k: FakeTrack(k) for k in ("201", "202", "203", "204", "205")}
     pl = FakePlaylist(
         rating_key="600",
         title="Composer · Late Night",
-        items=[FakeTrack("a"), FakeTrack("b"), FakeTrack("c")],
+        items=[FakeTrack("201"), FakeTrack("202"), FakeTrack("203")],
     )
 
-    # Override addItems on this specific instance to drop `e`.
+    # Override addItems on this specific instance to drop 205.
     original_add = pl.addItems
-    def _add_drop_e(items_to_add):
-        # Skip any item whose ratingKey is "e"
-        actually_added = [it for it in items_to_add if it.ratingKey != "e"]
+    def _add_drop_205(items_to_add):
+        # Skip any item whose ratingKey is "205"
+        actually_added = [it for it in items_to_add if it.ratingKey != "205"]
         original_add(actually_added)
-    pl.addItems = _add_drop_e
+    pl.addItems = _add_drop_205
 
     fake_plex_module._playlists = {"600": pl}
 
@@ -286,12 +291,12 @@ async def test_update_playlist_items_post_push_verify_finds_silently_dropped(
         plex_url="http://plex.local",
         plex_token="token-X",
         playlist_rating_key="600",
-        desired_rating_keys=["b", "d", "e"],
+        desired_rating_keys=["202", "204", "205"],
     )
 
-    # e was silently dropped on first push; retry tried again and still missing.
-    assert "e" in result.silently_dropped
-    assert "e" in result.retried
+    # 205 was silently dropped on first push; retry tried again and still missing.
+    assert "205" in result.silently_dropped
+    assert "205" in result.retried
 
 
 # ---------------------------------------------------------------------------
@@ -637,3 +642,120 @@ async def test_rename_playlist_validates_composer_prefix(db_with_phase6, fake_pl
         ).first()
         assert row is not None
         assert row.composer_name == "Composer · Renamed"
+
+
+# ---------------------------------------------------------------------------
+# Regression: update_playlist_items MUST pass int (not bare str) to fetchItem
+# ---------------------------------------------------------------------------
+#
+# PlexAPI 4.18.1's `PlexServer.fetchItem(ekey)` does naive URL concatenation
+# when ekey is a bare string without a leading `/`, producing broken URLs like
+# `http://host:32400` + `'77830'` → `http://host:3240077830` → InvalidURL.
+# With an int, PlexAPI builds the canonical `/library/metadata/{int}` path.
+#
+# `ManagedPlaylist.plex_rating_key` is TEXT in SQLite, so naive callers pass
+# the raw str → silent prod failure (caught at suggestions_service.py:853 by
+# the broad except, logged as `update_playlist_items failed`, no further
+# attempt). Discovered on 2026-05-16 NAS UAT after Phase 7.1's SQL refill mirror
+# of the deleted Phase 7 LLM-ranking push branch went live; root-caused via
+# the [PLEX-PUSH-DEBUG] instrumentation. See
+# .planning/debug/plex-push-not-firing.md.
+#
+# The existing FakePlexServer.fetchItem accepts any arg (does `key = str(key)`
+# on entry) — that's why the bug slipped through unit tests. This regression
+# test uses a strict fake that rejects bare-string keys, mimicking PlexAPI's
+# real behavior. If anyone ever drops the `int(...)` cast in
+# plex_playlist_service.py:_get_current_keys or :_add_items, this test fails.
+
+class StrictFakePlexServer(FakePlexServer):
+    """Fake that rejects bare-string keys, mimicking PlexAPI URL concat behavior."""
+    _fetchitem_arg_types: list = []
+
+    def fetchItem(self, key):
+        # Record the argument type for assertion.
+        type(self)._fetchitem_arg_types.append(type(key).__name__)
+        # Real PlexAPI 4.18.1 builds a broken URL for bare-string ekey lacking
+        # a `/` prefix. Simulate by rejecting str inputs that aren't paths.
+        if isinstance(key, str) and not key.startswith("/"):
+            raise ValueError(
+                f"StrictFakePlexServer.fetchItem: bare-string key {key!r} "
+                "would trigger naive URL concat in real PlexAPI. "
+                "Pass int or path-prefixed str."
+            )
+        # int → look up by str() in the existing maps (test convenience).
+        lookup = str(key) if isinstance(key, int) else key
+        if lookup in self._playlists:
+            return self._playlists[lookup]
+        if lookup in self._tracks:
+            return self._tracks[lookup]
+        raise KeyError(f"StrictFakePlexServer.fetchItem: unknown key {key!r}")
+
+
+@pytest.fixture
+def strict_fake_plex_module(monkeypatch):
+    class _FreshStrict(StrictFakePlexServer):
+        _playlists = {}
+        _tracks = {}
+        _create_returns_key = "999"
+        _drop_keys_on_create = set()
+        _drop_keys_on_addItems = set()
+        _fetchitem_arg_types = []
+
+    monkeypatch.setattr(
+        "app.services.plex_playlist_service.PlexServer",
+        _FreshStrict,
+    )
+    return _FreshStrict
+
+
+@pytest.mark.asyncio
+async def test_update_playlist_items_passes_int_to_fetchitem(
+    db_with_phase6, strict_fake_plex_module
+):
+    """REGRESSION (2026-05-16 NAS UAT): every fetchItem call inside
+    update_playlist_items MUST receive an int rating key. The strict fake
+    raises ValueError on bare-string keys to mimic PlexAPI's naive URL concat.
+    """
+    strict_fake_plex_module._tracks = {
+        k: FakeTrack(k) for k in ("1001", "1002", "1003", "1004", "1005")
+    }
+    pl = FakePlaylist(
+        rating_key="500",
+        title="Composer · Workout",
+        items=[FakeTrack("1001"), FakeTrack("1002"), FakeTrack("1003")],
+    )
+    strict_fake_plex_module._playlists = {"500": pl}
+
+    from app.models.vibe import ManagedPlaylist
+    db_with_phase6.add(
+        ManagedPlaylist(
+            kind="vibe",
+            plex_rating_key="500",
+            composer_name="Composer · Workout",
+        )
+    )
+    db_with_phase6.commit()
+
+    from app.services.plex_playlist_service import update_playlist_items
+
+    # Note: caller passes STRING rating keys (this is the production shape —
+    # the values come from a TEXT column). The fix lives INSIDE
+    # update_playlist_items, which must cast to int before fetchItem.
+    result = await update_playlist_items(
+        plex_url="http://plex.local",
+        plex_token="token-X",
+        playlist_rating_key="500",        # str, as production passes
+        desired_rating_keys=["1002", "1004", "1005"],   # str, as production
+    )
+
+    # The strict fake would have raised ValueError if any fetchItem call got
+    # a bare str. Reaching this point means all fetchItem calls received int.
+    # Additionally assert it explicitly via the recorded arg types.
+    assert strict_fake_plex_module._fetchitem_arg_types, \
+        "Expected at least one fetchItem call; recorded zero."
+    assert all(t == "int" for t in strict_fake_plex_module._fetchitem_arg_types), \
+        f"Expected every fetchItem call to receive int; got {strict_fake_plex_module._fetchitem_arg_types}"
+
+    # Sanity: additive push still works correctly.
+    assert sorted(result.added) == ["1004", "1005"]
+    assert "1002" in result.unchanged

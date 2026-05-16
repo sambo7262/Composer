@@ -229,16 +229,24 @@ async def update_playlist_items(
 
     desired_set = {str(k) for k in desired_rating_keys}
 
+    # PlexAPI 4.18.1's fetchItem does naive URL concatenation when ekey is a
+    # bare string without a leading `/` — `plex_url='http://host:32400'` +
+    # ekey='77830' → `http://host:3240077830` → InvalidURL. Cast to int so
+    # PlexAPI builds the canonical `/library/metadata/{int}` path internally.
+    # (Bug introduced by Phase 7.1 D-D1's mirror of the deleted Phase 7 push
+    # branch; managedplaylist.plex_rating_key is TEXT in SQLite, hence a str.)
+    _playlist_key_int = int(playlist_rating_key)
+
     def _get_current_keys():
         plex = PlexServer(plex_url, plex_token, timeout=30)
-        playlist = plex.fetchItem(playlist_rating_key)
+        playlist = plex.fetchItem(_playlist_key_int)
         return {str(item.ratingKey) for item in playlist.items()}
 
     def _add_items(keys_to_add: list[str]):
         plex = PlexServer(plex_url, plex_token, timeout=30)
-        playlist = plex.fetchItem(playlist_rating_key)
+        playlist = plex.fetchItem(_playlist_key_int)
         # Fetch each track item individually to avoid path-format coupling.
-        items = [plex.fetchItem(k) for k in keys_to_add]
+        items = [plex.fetchItem(int(k)) for k in keys_to_add]
         playlist.addItems(items)
 
     try:
