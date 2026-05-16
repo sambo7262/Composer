@@ -243,7 +243,7 @@ Plans:
 
 **Depends on:** Phase 7 (SuggestionsMirror + handle_track_played drain + Composer · Suggestions playlist materialization), Phase 6.2 (TrackVibe.distance computed for every track)
 
-**Plans:** 3/3 plans complete
+**Plans:** 5/5 plans complete
 
 Plans:
 - [x] 07.1-01-PLAN.md — Foundation: DiscoveryState model + SQL refill primitive (refill_mirror_sql) + DELETE legacy refill_suggestions_queue / refill_suggestions_for_vibe / SUGGESTIONS_RANK_MAX_TOKENS + handle_track_played counter increment + REQUIREMENTS.md updates (SUGG-12, SUGG-13, SUGG-14)
