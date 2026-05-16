@@ -83,6 +83,16 @@ DISCOVERY_MAX_TOKENS_FLOOR = 8000
 # "discovery this week" specifically.
 DISCOVERY_PURPOSE = "discovery_weekly"
 
+# ---------------------------------------------------------------------------
+# GAP-01 (Plan 04) — defensive INPUT-side candidate cap. Phase 7.1 NAS UAT
+# 2026-05-16 surfaced a cold-start case where ~10.5K eligible tracks blew
+# past Claude's 200K input context limit (202027 tokens vs. 200000 max — see
+# 07.1-VERIFICATION.md gaps frontmatter). DISCOVERY_CANDIDATE_LIMIT is the
+# hard LIMIT used by ``_read_discovery_eligible_sync`` ORDER BY oldest-
+# unplayed first; the symmetric output-side floor lives in
+# ``DISCOVERY_MAX_TOKENS_FLOOR`` above. Both ship together.
+DISCOVERY_CANDIDATE_LIMIT = 200
+
 
 # ---------------------------------------------------------------------------
 # SUGG-13 — Pydantic shapes for the weekly LLM discovery response.
@@ -268,6 +278,7 @@ def compute_adaptive_pick_count(plays_since_last_discovery: int) -> int:
 
 def _read_discovery_eligible_sync(
     unplayed_days: int = DISCOVERY_UNPLAYED_DAYS,
+    limit: int = DISCOVERY_CANDIDATE_LIMIT,
 ) -> list[dict]:
     """D-A1 — owned tracks unplayed in ``unplayed_days`` (default 90)
     days, MINUS tracks currently in :class:`SuggestionsMirror`, MINUS hard
@@ -287,6 +298,18 @@ def _read_discovery_eligible_sync(
     If the DB ever stores non-ISO-8601 timestamps, this comparison silently
     breaks — current invariants (``sync_service`` writes only via
     ``datetime.now(timezone.utc).isoformat()``) prevent that.
+
+    GAP-01 cap (Plan 04): ORDER BY ``CASE WHEN t.last_viewed_at IS NULL
+    THEN 0 ELSE 1 END`` (NULL rows first, since 0 < 1), THEN
+    ``t.last_viewed_at ASC`` (oldest-played first), THEN ``t.id ASC``
+    (deterministic tie-break for fixture-based tests). ``LIMIT :limit``
+    caps the worst-case candidate pool at :data:`DISCOVERY_CANDIDATE_LIMIT`
+    (= 200) rows by default — defends against cold-start prompt-size
+    blowup against Claude's 200K input context. The CASE-WHEN pattern is
+    the portable SQLite alternative to the ``NULLS FIRST`` keyword (not
+    supported across SQLite versions). Tests can drive boundary behavior
+    by passing a smaller ``limit`` without monkeypatching the module
+    constant.
     """
     from sqlalchemy import text
 
@@ -322,11 +345,17 @@ def _read_discovery_eligible_sync(
                     SELECT track_id FROM suggestionhistory
                     WHERE surfaced_at >= :fourteen_days_ago
                 )
+                ORDER BY
+                    CASE WHEN t.last_viewed_at IS NULL THEN 0 ELSE 1 END,
+                    t.last_viewed_at ASC,
+                    t.id ASC
+                LIMIT :limit
                 """
             ),
             {
                 "cutoff": cutoff,
                 "fourteen_days_ago": fourteen_days_ago,
+                "limit": limit,
             },
         ).all()
         return [
@@ -343,12 +372,21 @@ def _read_discovery_eligible_sync(
 
 async def compute_discovery_eligible(
     unplayed_days: int = DISCOVERY_UNPLAYED_DAYS,
+    limit: int = DISCOVERY_CANDIDATE_LIMIT,
 ) -> list[dict]:
     """Async accessor for the D-A1 discovery candidate pool. Consumers
-    (``discovery_call_weekly``) feed this directly into the LLM user prompt.
+    (``discovery_call_weekly``) feed this directly into the LLM user
+    prompt.
+
+    GAP-01 (Plan 04) — caps the result at ``limit`` rows
+    (:data:`DISCOVERY_CANDIDATE_LIMIT` = 200 by default), ORDERed by
+    oldest-unplayed-first so the cap selects the rows most likely to be
+    true "rediscoveries" rather than random recent tracks. Tests can
+    drive boundary behavior by passing a smaller ``limit`` without
+    monkeypatching the module constant.
     """
     return await asyncio.to_thread(
-        _read_discovery_eligible_sync, unplayed_days,
+        _read_discovery_eligible_sync, unplayed_days, limit,
     )
 
 
