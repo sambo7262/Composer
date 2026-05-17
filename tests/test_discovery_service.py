@@ -447,7 +447,124 @@ def test_compute_candidate_set_popularity_gate_keeps_with_adjacency(
     assert counts.kept == 1
     assert kept[0].mb_id == "adj"
     assert kept[0].adjacency_kind == "artist-relation"
-    assert "Starred Artist" in kept[0].factual_hook
+    # User-facing hook drops the "MusicBrainz" jargon — reads as a clean
+    # "Linked to your starred X" instead of the prior gate diagnostic.
+    assert kept[0].factual_hook == "Linked to your starred Starred Artist"
+
+
+def test_factual_hook_uses_listenbrainz_comment_when_no_adjacency(
+    db_with_phase7, monkeypatch,
+):
+    """Default-pass case (not popular, no adjacency): factual_hook uses the
+    LB ``comment`` field instead of the internal gate diagnostic.
+    """
+    from app.services import discovery_service, listenbrainz_client, musicbrainz_client
+
+    _make_track_with_artist_mbid(db_with_phase7, 1, "seed-mbid")
+
+    async def _fake_lb(seed_mbid, limit=100):
+        return [
+            {
+                "artist_mbid": "candidate-mbid",
+                "name": "Mogwai",
+                "comment": "Scottish post-rock band",
+                "score": 100,
+            },
+        ]
+    monkeypatch.setattr(listenbrainz_client, "get_similar_artists", _fake_lb)
+
+    async def _fake_lookup(mb_id):
+        return {
+            "id": "candidate-mbid", "name": "Mogwai",
+            "artist-relation-list": [],
+            "release-group-list": [{}],  # tiny catalog → passes gate by default
+        }
+    monkeypatch.setattr(musicbrainz_client, "lookup_artist", _fake_lookup)
+
+    async def _no_lidarr():
+        return set()
+    monkeypatch.setattr(discovery_service, "_get_lidarr_known_artists", _no_lidarr)
+
+    kept, counts = _run_async(
+        discovery_service.compute_candidate_set_for_seed(1, 1)
+    )
+    assert counts.kept == 1
+    # LB comment surfaces verbatim — no "below popularity threshold" leak.
+    assert kept[0].factual_hook == "Scottish post-rock band"
+    assert kept[0].adjacency_kind == "below-popularity"
+
+
+def test_factual_hook_falls_back_to_mb_disambiguation(
+    db_with_phase7, monkeypatch,
+):
+    """When LB comment is empty but MB has disambiguation, surface that."""
+    from app.services import discovery_service, listenbrainz_client, musicbrainz_client
+
+    _make_track_with_artist_mbid(db_with_phase7, 1, "seed-mbid")
+
+    async def _fake_lb(seed_mbid, limit=100):
+        return [
+            {"artist_mbid": "x", "name": "X", "comment": "", "score": 100},
+        ]
+    monkeypatch.setattr(listenbrainz_client, "get_similar_artists", _fake_lb)
+
+    async def _fake_lookup(mb_id):
+        return {
+            "id": "x", "name": "X",
+            "disambiguation": "British alternative rock band",
+            "artist-relation-list": [],
+            "release-group-list": [{}],
+        }
+    monkeypatch.setattr(musicbrainz_client, "lookup_artist", _fake_lookup)
+
+    async def _no_lidarr():
+        return set()
+    monkeypatch.setattr(discovery_service, "_get_lidarr_known_artists", _no_lidarr)
+
+    kept, _ = _run_async(
+        discovery_service.compute_candidate_set_for_seed(1, 1)
+    )
+    assert kept[0].factual_hook == "British alternative rock band"
+
+
+def test_factual_hook_seed_similarity_fallback(
+    db_with_phase7, monkeypatch,
+):
+    """No LB comment AND no MB disambiguation → "Similar to your starred {seed}"."""
+    from app.services import discovery_service, listenbrainz_client, musicbrainz_client
+    from app.models.track import Track
+    from sqlmodel import Session
+
+    # Seed track has a known artist name we can match against the fallback.
+    with Session(db_with_phase7.bind) as s:
+        seed = Track(
+            id=1, plex_rating_key="rk-1", title="t",
+            artist="Four Tet", plex_artist_mbid="seed-mbid",
+        )
+        s.add(seed)
+        s.commit()
+
+    async def _fake_lb(seed_mbid, limit=100):
+        return [
+            {"artist_mbid": "x", "name": "X", "comment": "", "score": 100},
+        ]
+    monkeypatch.setattr(listenbrainz_client, "get_similar_artists", _fake_lb)
+
+    async def _fake_lookup(mb_id):
+        return {
+            "id": "x", "name": "X", "disambiguation": "",
+            "artist-relation-list": [], "release-group-list": [{}],
+        }
+    monkeypatch.setattr(musicbrainz_client, "lookup_artist", _fake_lookup)
+
+    async def _no_lidarr():
+        return set()
+    monkeypatch.setattr(discovery_service, "_get_lidarr_known_artists", _no_lidarr)
+
+    kept, _ = _run_async(
+        discovery_service.compute_candidate_set_for_seed(1, 1)
+    )
+    assert kept[0].factual_hook == "Similar to your starred Four Tet"
 
 
 # ===========================================================================

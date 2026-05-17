@@ -427,6 +427,19 @@ def _read_seed_artist_mbid_sync(seed_track_id: int) -> Optional[str]:
         return track.plex_artist_mbid
 
 
+def _read_seed_artist_name_sync(seed_track_id: int) -> str:
+    """Companion to ``_read_seed_artist_mbid_sync`` — fetch the seed
+    track's artist display name for use in the user-facing factual hook
+    (``Similar to your starred {seed}``). Returns empty string when the
+    track row is missing (caller already handled the no-MBID case).
+    """
+    with Session(get_engine()) as session:
+        track = session.get(Track, seed_track_id)
+        if track is None:
+            return ""
+        return track.artist or ""
+
+
 def _get_in_library_mbids_sync() -> set:
     """Pitfall 12 — already-in-composer-library set.
 
@@ -541,13 +554,15 @@ def _passes_popularity_gate(
 ) -> tuple:
     """D-A3 + Pitfall 13 — hard adjacency gate + soft popularity proxy.
 
-    Returns ``(pass: bool, reason: str)``. ``reason`` is the factual hook
-    (D-A4) when pass=True, or the drop reason when pass=False.
+    Returns ``(pass: bool, reason: str)``. ``reason`` is the INTERNAL
+    diagnostic surfaced on /debug/discovery — NOT a user-facing string.
+    The user-facing factual hook is built separately in
+    :func:`_build_factual_hook` so the UI can layer LB comment / MB
+    disambiguation / seed-similarity into a friendly one-liner.
 
     Pass criteria (any of):
       1. MusicBrainz artist-relation target mbid in starred set.
-      2. Shared label name with a starred artist's label (currently no-op
-         because Track has no label column; future enrichment).
+      2. Shared label name with a starred artist's label.
       3. (Default) NOT-too-popular: release-group count <= threshold.
 
     Fails iff none of the above and release-group count > threshold.
@@ -557,9 +572,9 @@ def _passes_popularity_gate(
         target = (rel.get("artist") or {}).get("id")
         if target and target in starred_mbids:
             rel_name = (rel.get("artist") or {}).get("name") or target
-            return True, f"MusicBrainz adjacent to your starred {rel_name}"
+            return True, f"adjacent-to-starred:{rel_name}"
 
-    # Shared label check (best-effort; currently empty starred_labels).
+    # Shared label check.
     artist_labels: set = set()
     for rg in mb_artist.get("release-group-list", []) or []:
         for credit in rg.get("artist-credit", []) or []:
@@ -569,19 +584,50 @@ def _passes_popularity_gate(
                     artist_labels.add(label)
     shared = artist_labels & starred_labels
     if shared:
-        return True, f"Shares label with your starred {next(iter(shared))}"
+        return True, f"shared-label:{next(iter(shared))}"
 
-    # Soft popularity proxy: drop if release-group count > threshold AND
-    # no adjacency.
     rg_count = len(mb_artist.get("release-group-list", []) or [])
     if rg_count > DISCOVERY_ARTIST_RG_POPULARITY_THRESHOLD:
         return False, f"popularity-gate drop (release-groups={rg_count})"
 
-    # Default pass — the candidate is not too popular AND lacks explicit
-    # adjacency. We let it through because ListenBrainz's similarity score
-    # already implies a taste-relevant connection; the popularity gate is
-    # only meant to filter the megastars.
-    return True, "below popularity threshold"
+    return True, "below-popularity-threshold"
+
+
+def _build_factual_hook(
+    raw_entry: dict, mb_artist: dict, gate_reason: str,
+    seed_artist_name: str,
+) -> str:
+    """Build a one-line user-facing hook for the discovery card.
+
+    Priority order (best signal first):
+      1. Adjacency hit: "Linked to your starred {name}" (drops the
+         "MusicBrainz" jargon from the gate's internal reason).
+      2. Shared label: "Shares a label with your starred {label}".
+      3. ListenBrainz ``comment`` if non-empty (often a 1-sentence bio
+         e.g. "Scottish post-rock band").
+      4. MusicBrainz ``disambiguation`` (also a short tag, e.g.
+         "British alternative rock band").
+      5. Fallback to seed-similarity: "Similar to your starred {seed}".
+
+    The gate's internal taxonomy strings (``adjacent-to-starred:X`` /
+    ``shared-label:X`` / ``below-popularity-threshold``) live on
+    ``DiscoveryCandidate.adjacency_kind`` for /debug/discovery — never
+    surfaced verbatim in the UI.
+    """
+    if gate_reason.startswith("adjacent-to-starred:"):
+        rel_name = gate_reason.split(":", 1)[1]
+        return f"Linked to your starred {rel_name}"
+    if gate_reason.startswith("shared-label:"):
+        label = gate_reason.split(":", 1)[1]
+        return f"Shares a label with your starred {label}"
+    # Default-pass: use the best available external blurb.
+    lb_comment = (raw_entry.get("comment") or "").strip()
+    if lb_comment:
+        return lb_comment
+    mb_disambig = (mb_artist.get("disambiguation") or "").strip()
+    if mb_disambig:
+        return mb_disambig
+    return f"Similar to your starred {seed_artist_name}"
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +663,9 @@ async def compute_candidate_set_for_seed(
             seed_track_id,
         )
         return [], counts
+    seed_artist_name = await asyncio.to_thread(
+        _read_seed_artist_name_sync, seed_track_id,
+    )
 
     raw = await listenbrainz_client.get_similar_artists(
         seed_artist_mbid, limit=100,
@@ -645,25 +694,32 @@ async def compute_candidate_set_for_seed(
             counts.validation_drops += 1
             continue
         # D-A3 + Pitfall 13 — popularity + adjacency gate.
-        ok, reason = _passes_popularity_gate(
+        ok, gate_reason = _passes_popularity_gate(
             mb_artist, starred, starred_labels,
         )
         if not ok:
             counts.popularity_drops += 1
             logger.debug(
-                "Popularity-gate drop mb_id=%s: %s", mb_id, reason,
+                "Popularity-gate drop mb_id=%s: %s", mb_id, gate_reason,
             )
             continue
+        # D-A4 — build user-facing hook separately from the internal
+        # gate reason. The gate string (adjacent-to-starred:X /
+        # shared-label:X / below-popularity-threshold) lives only on
+        # adjacency_kind for /debug/discovery.
+        hook = _build_factual_hook(
+            raw_entry, mb_artist, gate_reason, seed_artist_name,
+        )
         kept.append(CandidateRecord(
             mb_id=mb_id,
             artist_name=mb_artist.get("name", name),
             seed_track_id=seed_track_id,
             seed_vibe_id=seed_vibe_id,
             mb_listener_count=None,  # MB lacks listener counts
-            factual_hook=reason,
+            factual_hook=hook,
             adjacency_kind=(
-                "artist-relation" if "adjacent" in reason
-                else "shared-label" if "label" in reason
+                "artist-relation" if gate_reason.startswith("adjacent-to-starred:")
+                else "shared-label" if gate_reason.startswith("shared-label:")
                 else "below-popularity"
             ),
         ))

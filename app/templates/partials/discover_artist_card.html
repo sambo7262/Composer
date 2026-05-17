@@ -36,7 +36,7 @@
       <div class="text-[14px] font-medium text-text-primary truncate">
         {{ artist.artist_name | e }}
       </div>
-      <div class="text-[12px] text-text-secondary truncate">
+      <div class="text-[12px] text-text-secondary line-clamp-2">
         {{ artist.factual_hook | e }}
       </div>
     </div>
@@ -52,6 +52,11 @@
        hx-swap="beforeend"
        hx-target="#top-tracks-{{ artist.mb_id }}"
        class="px-2.5 py-2 border-t border-border">
+    {% if artist.factual_hook %}
+      <p class="text-[12px] text-text-secondary mb-1.5">
+        {{ artist.factual_hook | e }}
+      </p>
+    {% endif %}
     <p class="text-[13px] text-text-primary mb-1.5">
       <span class="text-text-secondary">Why this artist? </span>
       {{ artist.llm_rationale | e }}
