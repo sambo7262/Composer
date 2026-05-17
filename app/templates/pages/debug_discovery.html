@@ -1,0 +1,328 @@
+{% extends "base.html" %}
+{% set active_page = "settings" %}
+{% block title %}Debug: Discovery · Composer{% endblock %}
+{% block content %}
+  {# Phase 8 Plan 05 — DEBUG-04 / DEBUG-05.
+     Plain-HTML diagnostic surface. 5 sections + cost panel + recent-LLM
+     calls + manual tick trigger button. Every timestamp piped through
+     the local_time Jinja filter (260516-tza convention). Lidarr /
+     Anthropic credentials are NEVER rendered — see T-08-25 in the
+     Plan 05 threat register. #}
+  <div class="pt-2 pb-4 space-y-6">
+    <h1 class="text-[22px] font-semibold text-text-primary">/debug/discovery</h1>
+    <p class="text-text-secondary text-[13px]">
+      Diagnostic-only. Plain HTML — safe to copy-paste a screenshot.
+    </p>
+
+    {# --- Manual cron trigger — Plan 05 ADDITION-1 ----------------------- #}
+    <section
+      x-data="{
+        state: '{{ running_state.state }}',
+        lastError: {{ (running_state.last_error or '') | tojson }},
+        async refresh() {
+          try {
+            const r = await fetch('/api/discovery/tick-state', {headers: {'Accept': 'application/json'}});
+            if (r.ok) {
+              const j = await r.json();
+              this.state = j.state || 'idle';
+              this.lastError = j.last_error || '';
+            }
+          } catch (e) { /* swallow — best-effort poll */ }
+        },
+        async trigger() {
+          this.state = 'running';
+          try {
+            const r = await fetch('/api/discovery/run-tick-now', {method: 'POST'});
+            if (r.status === 409) { this.state = 'running'; }
+          } catch (e) { /* swallow — Alpine fetch */ }
+        }
+      }"
+      x-init="setInterval(() => refresh(), 5000)"
+    >
+      <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+        Weekly tick — manual trigger
+      </h2>
+      <p class="text-text-secondary text-[13px] mb-2">
+        Runs the full Sunday 03:00 UTC weekly maintenance tick now
+        (prune → suggestions discovery → artist discovery → stamp
+        <code class="text-[12px]">WeeklyCronState.last_tick_at</code>).
+        Page polls every 5s.
+      </p>
+      <div class="flex items-center gap-3">
+        <button type="button"
+                :disabled="state === 'running'"
+                @click="trigger()"
+                class="min-h-11 px-4 py-2 rounded-md bg-accent
+                       text-surface-primary text-[14px] font-semibold
+                       disabled:opacity-50 disabled:cursor-not-allowed">
+          <span x-show="state !== 'running'">Run weekly tick now</span>
+          <span x-show="state === 'running'">Running…</span>
+        </button>
+        <span class="text-[13px]"
+              :class="{
+                'text-text-secondary': state === 'idle',
+                'text-accent': state === 'running',
+                'text-error': state === 'error',
+                'text-text-muted': state === 'cost_locked',
+              }">
+          state: <span x-text="state"></span>
+        </span>
+      </div>
+      <p class="text-[12px] text-text-muted mt-1"
+         x-show="lastError">
+        last error: <span x-text="lastError"></span>
+      </p>
+      <noscript>
+        <form method="post" action="/api/discovery/run-tick-now" class="inline">
+          <button type="submit"
+                  class="min-h-11 px-4 py-2 rounded-md bg-accent
+                         text-surface-primary text-[14px] font-semibold">
+            Run weekly tick now (no-JS fallback)
+          </button>
+        </form>
+      </noscript>
+    </section>
+
+    {# --- Cost panel — artist-only ---------------------------------------- #}
+    <section>
+      <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+        Artist-discovery LLM cost (all-time)
+      </h2>
+      <p class="text-text-primary text-[15px]">
+        Total: ${{ "%.4f" | format(artist_cost_usd) }}
+      </p>
+      <p class="text-text-secondary text-[13px]">
+        Sums LLMUsage WHERE purpose LIKE
+        <code class="text-[12px]">discovery_artist_%</code>. For combined
+        suggestions + discovery cost see
+        <a class="text-accent underline" href="/debug/suggestions">/debug/suggestions</a>.
+      </p>
+    </section>
+
+    {# --- Section 1 — Last weekly candidate set --------------------------- #}
+    <section>
+      <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+        Last weekly candidate set ({{ candidates|length }} artists)
+      </h2>
+      {% if candidates|length == 0 %}
+        <p class="text-text-secondary text-[14px]">None recorded.</p>
+      {% else %}
+        <div class="overflow-x-auto">
+          <table class="w-full text-[12px] font-mono">
+            <thead><tr class="text-text-secondary">
+              <th class="text-left pr-2">mb_id</th>
+              <th class="text-left pr-2">artist</th>
+              <th class="text-left pr-2">seed_vibe</th>
+              <th class="text-right pr-2">listeners</th>
+              <th class="text-left pr-2">pop_gate</th>
+              <th class="text-right pr-2">rank</th>
+              <th class="text-left pr-2">factual hook</th>
+              <th class="text-left pr-2">rationale</th>
+              <th class="text-left">created_at</th>
+            </tr></thead>
+            <tbody>
+              {% for c in candidates %}
+                <tr>
+                  <td class="pr-2">{{ c.mb_id }}</td>
+                  <td class="pr-2">{{ c.artist_name | e }}</td>
+                  <td class="pr-2">{{ (c.seed_vibe.name | e) if c.seed_vibe else '—' }}</td>
+                  <td class="pr-2 text-right">{{ c.mb_listener_count or '—' }}</td>
+                  <td class="pr-2">{{ 'yes' if c.popularity_gate_pass else 'NO' }}</td>
+                  <td class="pr-2 text-right">{{ c.llm_rank or '—' }}</td>
+                  <td class="pr-2">{{ (c.factual_hook or '') | e }}</td>
+                  <td class="pr-2">{{ (c.llm_rationale or '') | e }}</td>
+                  <td>{{ c.created_at | local_time }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+      {% if counts is none %}
+        <p class="text-text-muted text-[11px] mt-1">
+          Per-tick funnel counts (listenbrainz_returned / validation_drops /
+          dedup_drops / popularity_drops / kept) are not persisted in v1 —
+          see logs.
+        </p>
+      {% endif %}
+    </section>
+
+    {# --- Section 2 — DiscoveryAdd lifecycle timeline --------------------- #}
+    <section>
+      <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+        DiscoveryAdd lifecycle timeline ({{ adds|length }})
+      </h2>
+      {% if adds|length == 0 %}
+        <p class="text-text-secondary text-[14px]">None recorded.</p>
+      {% else %}
+        <div class="overflow-x-auto">
+          <table class="w-full text-[12px] font-mono">
+            <thead><tr class="text-text-secondary">
+              <th class="text-left pr-2">mb_id</th>
+              <th class="text-left pr-2">artist</th>
+              <th class="text-left pr-2">added_at</th>
+              <th class="text-left pr-2">lidarr_status</th>
+              <th class="text-left pr-2">last polled</th>
+              <th class="text-left pr-2">composer_sync_seen</th>
+              <th class="text-left pr-2">essentia</th>
+              <th class="text-left pr-2">vibe_slotted</th>
+              <th class="text-left">removed_from_discover</th>
+            </tr></thead>
+            <tbody>
+              {% for a in adds %}
+                <tr>
+                  <td class="pr-2">{{ a.mb_id }}</td>
+                  <td class="pr-2">{{ a.artist_name | e }}</td>
+                  <td class="pr-2">{{ a.added_at | local_time }}</td>
+                  <td class="pr-2">{{ a.lidarr_status or '—' }}</td>
+                  <td class="pr-2">{{ a.lidarr_status_polled_at | local_time }}</td>
+                  <td class="pr-2">{{ a.composer_sync_seen_at | local_time }}</td>
+                  <td class="pr-2">{{ a.essentia_complete_at | local_time }}</td>
+                  <td class="pr-2">{{ a.vibe_slotted_at | local_time }}</td>
+                  <td>{{ a.removed_from_discover_at | local_time }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </section>
+
+    {# --- Section 3 — Recent MusicBrainz queries (via cache) -------------- #}
+    <section>
+      <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+        Recent MusicBrainz queries ({{ mb_queries|length }})
+      </h2>
+      {% if mb_queries|length == 0 %}
+        <p class="text-text-secondary text-[14px]">None recorded.</p>
+      {% else %}
+        <div class="overflow-x-auto">
+          <table class="w-full text-[12px] font-mono">
+            <thead><tr class="text-text-secondary">
+              <th class="text-left pr-2">mb_id</th>
+              <th class="text-left pr-2">cached_at</th>
+              <th class="text-left">payload (truncated)</th>
+            </tr></thead>
+            <tbody>
+              {% for m in mb_queries %}
+                <tr>
+                  <td class="pr-2">{{ m.mb_id }}</td>
+                  <td class="pr-2">{{ m.cached_at | local_time }}</td>
+                  <td>{{ (m.payload_json[:120] or '') | e }}…</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+      <p class="text-text-muted text-[11px] mt-1">
+        MusicBrainz free-tier rate-limit: 1 req/sec
+        (<code>musicbrainzngs.set_rate_limit</code>). Cache amortises
+        repeat lookups indefinitely.
+      </p>
+    </section>
+
+    {# --- Section 4 — Recent Lidarr add_artist requests ------------------- #}
+    <section>
+      <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+        Recent Lidarr add_artist requests ({{ lidarr_adds|length }})
+      </h2>
+      {% if lidarr_adds|length == 0 %}
+        <p class="text-text-secondary text-[14px]">None recorded.</p>
+      {% else %}
+        <div class="overflow-x-auto">
+          <table class="w-full text-[12px] font-mono">
+            <thead><tr class="text-text-secondary">
+              <th class="text-left pr-2">mb_id</th>
+              <th class="text-left pr-2">artist</th>
+              <th class="text-left pr-2">added_at</th>
+              <th class="text-right pr-2">lidarr_artist_id</th>
+              <th class="text-left pr-2">last status</th>
+              <th class="text-left">last polled</th>
+            </tr></thead>
+            <tbody>
+              {% for a in lidarr_adds %}
+                <tr>
+                  <td class="pr-2">{{ a.mb_id }}</td>
+                  <td class="pr-2">{{ a.artist_name | e }}</td>
+                  <td class="pr-2">{{ a.added_at | local_time }}</td>
+                  <td class="pr-2 text-right">{{ a.lidarr_artist_id or '—' }}</td>
+                  <td class="pr-2">{{ a.lidarr_status or '—' }}</td>
+                  <td>{{ a.lidarr_status_polled_at | local_time }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </section>
+
+    {# --- Section 5 — Lidarr connection-test history ---------------------- #}
+    <section>
+      <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+        Lidarr connection-test history ({{ lidarr_test_history|length }})
+      </h2>
+      {% if lidarr_test_history|length == 0 %}
+        <p class="text-text-secondary text-[14px]">
+          Not yet wired into EventLog (Phase 8 deferred — see
+          <a class="text-accent underline" href="/settings">/settings</a>
+          for current Lidarr state).
+        </p>
+      {% else %}
+        <div class="overflow-x-auto">
+          <table class="w-full text-[12px] font-mono">
+            <thead><tr class="text-text-secondary">
+              <th class="text-left pr-2">received_at</th>
+              <th class="text-left pr-2">event_type</th>
+              <th class="text-left">payload (truncated)</th>
+            </tr></thead>
+            <tbody>
+              {% for e in lidarr_test_history %}
+                <tr>
+                  <td class="pr-2">{{ e.received_at | local_time }}</td>
+                  <td class="pr-2">{{ e.event_type | e }}</td>
+                  <td>{{ ((e.raw_payload or '')[:120]) | e }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </section>
+
+    {# --- Recent artist-discovery LLM calls (cost detail) ----------------- #}
+    <section>
+      <h2 class="text-[15px] font-semibold text-text-primary mb-2">
+        Recent artist-discovery LLM calls ({{ artist_recent_calls|length }})
+      </h2>
+      {% if artist_recent_calls|length == 0 %}
+        <p class="text-text-secondary text-[14px]">None recorded.</p>
+      {% else %}
+        <div class="overflow-x-auto">
+          <table class="w-full text-[12px] font-mono">
+            <thead><tr class="text-text-secondary">
+              <th class="text-left pr-2">called_at</th>
+              <th class="text-left pr-2">purpose</th>
+              <th class="text-left pr-2">model</th>
+              <th class="text-right pr-2">in/out/cache_r/cache_c</th>
+              <th class="text-right pr-2">cost</th>
+              <th class="text-left">error</th>
+            </tr></thead>
+            <tbody>
+              {% for u in artist_recent_calls %}
+                <tr>
+                  <td class="pr-2">{{ u.called_at | local_time }}</td>
+                  <td class="pr-2">{{ u.purpose | e }}</td>
+                  <td class="pr-2">{{ u.model | e }}</td>
+                  <td class="pr-2 text-right">{{ u.input_tokens }}/{{ u.output_tokens }}/{{ u.cache_read_input_tokens }}/{{ u.cache_creation_input_tokens }}</td>
+                  <td class="pr-2 text-right">${{ "%.4f" | format(u.cost_estimate_usd) }}</td>
+                  <td>{{ (u.error_text or '') | e }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </section>
+  </div>
+{% endblock %}

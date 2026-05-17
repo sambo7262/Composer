@@ -24,8 +24,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/discovery", tags=["discovery"])
@@ -178,6 +178,82 @@ async def get_status_row(mb_id: str, request: Request) -> HTMLResponse:
         "partials/discover_status_row.html",
         ctx,
     )
+
+
+# ---------------------------------------------------------------------------
+# Plan 05 ADDITION-1 — Manual "Run weekly tick now" trigger.
+# ---------------------------------------------------------------------------
+#
+# POST /api/discovery/run-tick-now invokes the FULL weekly maintenance tick
+# (prune → suggestions discovery → artist discovery → WeeklyCronState stamp)
+# in a FastAPI BackgroundTask. Returns 202 immediately so the page poll can
+# pick up the state transition.
+#
+# 409 if ``discovery_service.get_state().state == "running"`` — concurrent
+# manual triggers are rejected to avoid double-running the cron.
+#
+# GET /api/discovery/tick-state — small JSON status endpoint the page polls
+# every 5s. Read-only; never blocks. Same /debug/* gating (no public exposure
+# beyond the existing pattern).
+#
+# IMPORTANT: routes placed BEFORE the ``/{mb_id}/...`` catch-all routes so
+# FastAPI matches the literal paths first instead of treating "run-tick-now"
+# / "tick-state" as an ``mb_id`` path segment.
+
+
+@router.post("/run-tick-now")
+async def run_tick_now(
+    request: Request, background_tasks: BackgroundTasks,
+) -> Response:
+    """Plan 05 ADDITION-1 — manually invoke ``_weekly_maintenance_tick``.
+
+    Returns:
+      - 202 with JSON {"status": "started"} if the background task was
+        scheduled (the tick will run asynchronously).
+      - 409 with JSON {"status": "already_running"} if the discovery
+        service singleton state is "running".
+
+    The endpoint NEVER blocks on the tick itself — the BackgroundTask
+    runs after the response is flushed. Any tick exception is captured
+    inside :func:`discovery_service.run_manual_weekly_tick` so the
+    BackgroundTask never propagates an unhandled exception.
+    """
+    from app.services import discovery_service
+
+    state = discovery_service.get_state()
+    if state.state == "running":
+        return JSONResponse(
+            content={
+                "status": "already_running",
+                "last_run_at": state.last_run_at,
+            },
+            status_code=409,
+        )
+
+    background_tasks.add_task(discovery_service.run_manual_weekly_tick)
+    return JSONResponse(
+        content={"status": "started"},
+        status_code=202,
+    )
+
+
+@router.get("/tick-state")
+async def tick_state(request: Request) -> JSONResponse:
+    """Plan 05 ADDITION-1 — read-only JSON status for the 5s page poll.
+
+    Returns the discovery_service module singleton snapshot:
+    ``{"state": str, "last_run_at": str|None, "last_error": str|None,
+       "last_candidates_made": int}``.
+    """
+    from app.services import discovery_service
+
+    state = discovery_service.get_state()
+    return JSONResponse(content={
+        "state": state.state,
+        "last_run_at": state.last_run_at,
+        "last_error": state.last_error,
+        "last_candidates_made": state.last_candidates_made,
+    })
 
 
 @router.get("/{mb_id}/top-tracks", response_class=HTMLResponse)

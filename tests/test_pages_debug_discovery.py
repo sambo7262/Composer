@@ -105,7 +105,10 @@ def _seed_track(session, *, plex_rating_key="rk-1", title="T1", artist="A1",
 
 def _seed_vibe(session, *, name="Mellow", color="#3b82f6"):
     from app.models.vibe import Vibe
-    v = Vibe(name=name, color=color, is_active=True)
+    v = Vibe(
+        name=name, color=color, is_active=True,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
     session.add(v)
     session.commit()
     session.refresh(v)
