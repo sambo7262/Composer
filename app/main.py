@@ -297,6 +297,12 @@ app = FastAPI(title="Composer", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
+# UI timestamps render in America/Los_Angeles (user preference). Filter
+# definition + registration helper live in app/utils/jinja_filters.py so
+# test fixtures with their own Environment can stay in sync.
+from app.utils.jinja_filters import register_filters as _register_filters
+_register_filters(templates.env)
+
 # Include routers
 app.include_router(api_analysis.router)
 app.include_router(api_chat.router)

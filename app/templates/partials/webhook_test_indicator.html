@@ -10,7 +10,7 @@
               bg-surface-elevated text-text-secondary
             {% endif %}">
   {% if last_test_received_at and last_test_received_at > test_armed_at %}
-    &#10003; Webhook test received at {{ last_test_received_at }}
+    &#10003; Webhook test received at {{ last_test_received_at | local_time }}
   {% else %}
     &#9203; Waiting for test event&hellip; (paste URL into Plex Web → Account → Webhooks, then send test)
   {% endif %}

@@ -17,7 +17,7 @@
     <div>
       <dt class="text-text-secondary">Last rating event</dt>
       <dd class="text-text-primary text-[13px] font-mono mt-1">
-        {% if last_rating_event_at %}{{ last_rating_event_at }}{% else %}—{% endif %}
+        {{ last_rating_event_at | local_time }}
       </dd>
     </div>
   </dl>

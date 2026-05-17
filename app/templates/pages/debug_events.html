@@ -43,7 +43,7 @@
       <dd>{{ queue_depth }} events pending</dd>
       <dt class="text-text-secondary">Last test</dt>
       <dd>
-        {% if last_test_received_at %}{{ last_test_received_at }}
+        {% if last_test_received_at %}{{ last_test_received_at | local_time }}
           <details class="mt-1">
             <summary class="cursor-pointer text-text-secondary text-[12px]">payload preview</summary>
             <pre class="text-[12px] overflow-x-auto bg-surface-elevated p-2 mt-1">{{ (last_test_payload | tojson(indent=2))[:200] }}</pre>
@@ -70,11 +70,11 @@
         {% if events %}
           {% for e in events %}
           <tr class="{% if e.handler_error %}bg-error/5{% endif %} border-t border-border">
-            <td class="p-1 align-top">{{ e.received_at }}</td>
+            <td class="p-1 align-top">{{ e.received_at | local_time }}</td>
             <td class="p-1 align-top">{{ e.source }}</td>
             <td class="p-1 align-top">{{ e.event_type }}</td>
             <td class="p-1 align-top">{{ e.plex_rating_key or "—" }}</td>
-            <td class="p-1 align-top">{{ e.processed_at or "—" }}</td>
+            <td class="p-1 align-top">{{ e.processed_at | local_time }}</td>
             <td class="p-1 align-top">
               {% if e.handler_error %}<span class="text-error">{{ e.handler_error[:120] }}</span>
               {% else %}<span class="text-text-secondary text-[10px]">{{ e.dedupe_key[:16] }}…</span>{% endif %}

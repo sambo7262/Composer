@@ -28,10 +28,13 @@ def _read(rel_path: str) -> str:
 def jinja_env() -> Environment:
     """Jinja2 env that mirrors FastAPI's setup but skips the include system
     where the test only needs to render a single partial in isolation."""
-    return Environment(
+    env = Environment(
         loader=FileSystemLoader(str(TEMPLATES_DIR)),
         autoescape=select_autoescape(["html", "jinja"]),
     )
+    from app.utils.jinja_filters import register_filters
+    register_filters(env)
+    return env
 
 
 # ---------------------------------------------------------------------------

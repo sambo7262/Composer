@@ -75,7 +75,7 @@
       Sync Now
     </button>
     <span class="text-text-secondary text-[13px]">
-      {% if last_synced %}Last synced: {{ last_synced }}{% endif %}
+      {% if last_synced %}Last synced: {{ last_synced | local_time }}{% endif %}
       {% if track_count %} &middot; {{ track_count }} tracks{% endif %}
     </span>
   </div>

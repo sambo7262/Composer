@@ -22,10 +22,13 @@ TEMPLATES_DIR = REPO_ROOT / "app" / "templates"
 
 @pytest.fixture
 def jinja_env() -> Environment:
-    return Environment(
+    env = Environment(
         loader=FileSystemLoader(str(TEMPLATES_DIR)),
         autoescape=select_autoescape(["html", "jinja"]),
     )
+    from app.utils.jinja_filters import register_filters
+    register_filters(env)
+    return env
 
 
 @pytest.fixture

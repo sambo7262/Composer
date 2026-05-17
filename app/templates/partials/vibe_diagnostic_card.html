@@ -33,7 +33,7 @@
     <dt class="text-text-secondary">Silhouette</dt>
     <dd class="text-text-primary">{{ "%.2f"|format(vibe.silhouette_score or 0) }}</dd>
     <dt class="text-text-secondary">Last clustered</dt>
-    <dd class="text-text-primary text-[12px] font-mono">{{ vibe.centroid_recomputed_at or vibe.created_at }}</dd>
+    <dd class="text-text-primary text-[12px] font-mono">{{ (vibe.centroid_recomputed_at or vibe.created_at) | local_time }}</dd>
     <dt class="text-text-secondary">Active</dt>
     <dd class="text-text-primary">{{ "yes" if vibe.is_active else "no (archived)" }}</dd>
   </dl>

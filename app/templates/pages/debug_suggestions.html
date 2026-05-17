@@ -13,8 +13,8 @@
       </h2>
       <pre class="bg-surface-elevated rounded p-3 text-[12px] font-mono whitespace-pre-wrap">today_calls: {{ breaker.today_calls }}
 today_cost_usd: ${{ "%.4f"|format(breaker.today_cost_usd) }}
-last_call_at: {{ breaker.last_call_at or '—' }}
-last_tripped_at: {{ breaker.last_tripped_at or '—' }}
+last_call_at: {{ breaker.last_call_at | local_time }}
+last_tripped_at: {{ breaker.last_tripped_at | local_time }}
 last_tripped_reason: {{ breaker.last_tripped_reason or '—' }}</pre>
     </section>
 
@@ -33,7 +33,7 @@ last_tripped_reason: {{ breaker.last_tripped_reason or '—' }}</pre>
               <div class="text-[12px] text-text-secondary mt-1">
                 vibe: {{ (s.vibe.name | e) if s.vibe else 'none' }} ·
                 score: {{ "%.3f"|format(s.row.score or 0.0) }} ·
-                added: {{ s.row.added_at }}
+                added: {{ s.row.added_at | local_time }}
               </div>
               {% if s.row.rationale %}
                 <div class="text-[12px] text-text-muted mt-1">
@@ -68,7 +68,7 @@ last_tripped_reason: {{ breaker.last_tripped_reason or '—' }}</pre>
           <tbody>
             {% for r in refill_log %}
               <tr>
-                <td>{{ r.triggered_at }}</td>
+                <td>{{ r.triggered_at | local_time }}</td>
                 <td>{{ r.event_source }}</td>
                 <td class="text-right">{{ r.candidates_evaluated }}</td>
                 <td class="text-right">{{ r.picks_made }}</td>
@@ -104,7 +104,7 @@ last_tripped_reason: {{ breaker.last_tripped_reason or '—' }}</pre>
           <tbody>
             {% for u in llm_calls %}
               <tr>
-                <td>{{ u.called_at }}</td>
+                <td>{{ u.called_at | local_time }}</td>
                 <td>{{ u.purpose }}</td>
                 <td class="text-right">{{ u.input_tokens }}</td>
                 <td class="text-right">{{ u.cache_creation_input_tokens }}</td>
@@ -137,7 +137,7 @@ last_tripped_reason: {{ breaker.last_tripped_reason or '—' }}</pre>
           <tbody>
             {% for n in negative_signals %}
               <tr>
-                <td>{{ n.created_at }}</td>
+                <td>{{ n.created_at | local_time }}</td>
                 <td>{{ n.signal_type }}</td>
                 <td>track_id={{ n.track_id or '—' }} ·
                     artist={{ (n.artist | e) if n.artist else '—' }}</td>

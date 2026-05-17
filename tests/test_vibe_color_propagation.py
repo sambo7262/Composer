@@ -37,6 +37,9 @@ def jinja_env() -> Environment:
     )
     # feature_chip_text is referenced by vibe_diagnostic_card / vibe_proposal_card.
     env.globals["feature_chip_text"] = lambda *args, **kwargs: "stub-chip"
+    # local_time filter referenced by any template that renders a *_at column.
+    from app.utils.jinja_filters import register_filters
+    register_filters(env)
     return env
 
 

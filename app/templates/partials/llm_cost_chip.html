@@ -12,6 +12,7 @@
      - days_until_refresh: int | None (None when has_first_tick is False)
      - breaker_paused: bool (llm_cost_breaker tripped within the last 60s)
      - has_first_tick: bool (False when WeeklyCronState.last_tick_at IS NULL)
+     - next_tick_local_str: str (next Sun 03:00 UTC rendered in LA time, DST-aware)
 
    Tap target is min-h-11 (44px — UI-08 mobile-first). Tap navigates to
    /debug/suggestions for the per-purpose breakdown card. #}
@@ -33,7 +34,7 @@
       {% endif %}
     {% else %}
       <span class="text-text-secondary">
-        Your first weekly tick lands Sunday at 03:00 UTC.
+        Your first weekly tick lands {{ next_tick_local_str }}.
       </span>
     {% endif %}
   </a>
