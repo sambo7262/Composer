@@ -38,6 +38,7 @@ from app.models.vibe import MigrationLog, Vibe
 logger = logging.getLogger(__name__)
 
 PHASE_08_MIGRATION_ID = "8.0-discovery-bootstrap"
+PHASE_08_1_MIGRATION_ID = "8.1-discovery-dedupe-mb-id"
 
 
 # D-E2 locked palette — Tailwind 4 -500 stops. Orange-500 (#f97316) goes
@@ -247,6 +248,56 @@ def _backfill_track_artist_mbids_sync() -> None:
     )
 
 
+def _dedupe_discovery_candidates_sync() -> int:
+    """Collapse duplicate :class:`DiscoveryCandidate` rows by ``mb_id``.
+
+    For each ``mb_id`` with row count > 1, keep the row with the lowest
+    ``llm_rank`` (NULLs treated as 9999 via COALESCE), ties broken by the
+    lowest ``id``. Delete all other rows for that ``mb_id``. Preserves
+    ``seed_vibe_id`` on the winner row as-is — lowest rank IS the answer;
+    don't second-guess which vibe "should" own the artist.
+
+    Tiebreak rule (MUST match the in-memory dedup at
+    :func:`artist_discovery_call_weekly` ~line 1185 — lowest
+    COALESCE(llm_rank, 9999), then stable iteration / lowest id).
+
+    Returns the total number of deleted rows.
+    """
+    from sqlalchemy import func
+
+    from app.models.discovery import DiscoveryCandidate
+
+    deleted_total = 0
+    with Session(get_engine()) as session:
+        # Find mb_ids with > 1 row.
+        dup_mbids = [
+            row[0] for row in session.exec(
+                select(DiscoveryCandidate.mb_id)
+                .group_by(DiscoveryCandidate.mb_id)
+                .having(func.count(DiscoveryCandidate.id) > 1)
+            ).all()
+        ]
+        for mbid in dup_mbids:
+            rows = list(session.exec(
+                select(DiscoveryCandidate)
+                .where(DiscoveryCandidate.mb_id == mbid)
+            ).all())
+            # Winner: lowest COALESCE(llm_rank, 9999), ties → lowest id.
+            rows.sort(
+                key=lambda r: (
+                    r.llm_rank if r.llm_rank is not None else 9999,
+                    r.id,
+                )
+            )
+            # rows[0] is the winner — left untouched (incl. seed_vibe_id).
+            for loser in rows[1:]:
+                session.delete(loser)
+                deleted_total += 1
+        if deleted_total > 0:
+            session.commit()
+    return deleted_total
+
+
 async def run_phase_08_discovery_bootstrap() -> None:
     """Lifespan one-shot. Gated by ``MigrationLog(phase_id='8.0-discovery-bootstrap')``.
 
@@ -302,6 +353,54 @@ async def run_phase_08_discovery_bootstrap() -> None:
         datetime.now(timezone.utc).isoformat(),
     )
     logger.info("Phase 8 discovery bootstrap complete.")
+
+
+async def run_phase_08_1_discovery_dedupe_mb_id() -> None:
+    """QUICK FIX (260517-lyw) — lifespan one-shot. Gated by
+    ``MigrationLog(phase_id='8.1-discovery-dedupe-mb-id')``.
+
+    Collapses pre-existing duplicate :class:`DiscoveryCandidate` rows
+    that accumulated before the write-time dedup in
+    :func:`artist_discovery_call_weekly` was added. Mirrors the shape
+    of :func:`run_phase_08_discovery_bootstrap` — same gate pattern,
+    same failure semantics (leaves ``completed_at`` NULL on exception
+    so the next restart retries).
+    """
+    existing = await asyncio.to_thread(
+        _read_migration_log_sync, PHASE_08_1_MIGRATION_ID,
+    )
+    if existing is not None and existing.completed_at is not None:
+        logger.info(
+            "Phase 8.1 dedupe migration already complete "
+            "(completed_at=%s); skipping.",
+            existing.completed_at,
+        )
+        return
+
+    # In-flight marker — next restart retries on failure.
+    await asyncio.to_thread(
+        _upsert_migration_log_sync, PHASE_08_1_MIGRATION_ID, None,
+    )
+
+    try:
+        deleted = await asyncio.to_thread(_dedupe_discovery_candidates_sync)
+    except Exception:
+        logger.exception(
+            "Phase 8.1 dedupe migration failed; "
+            "will retry on next restart."
+        )
+        return
+
+    await asyncio.to_thread(
+        _upsert_migration_log_sync,
+        PHASE_08_1_MIGRATION_ID,
+        datetime.now(timezone.utc).isoformat(),
+    )
+    logger.info(
+        "Phase 8.1 dedupe migration complete: "
+        "deleted %d duplicate DiscoveryCandidate rows.",
+        deleted,
+    )
 
 
 # =====================================================================
