@@ -15,28 +15,38 @@
     </p>
 
     {# --- Manual cron trigger — Plan 05 ADDITION-1 ----------------------- #}
+    {# UAT bug 260517: previously this section used x-data="..." (double-quoted
+       HTML attribute) with `tojson` filter values inside. `tojson` emits
+       double-quoted JSON, which closes the outer attribute early — Alpine
+       sees a broken x-data, throws, and the x-show spans stay in their
+       initial display:none state (empty button, "state:" with no value).
+
+       Fix: outer x-data uses SINGLE-quoted HTML attribute; all Jinja
+       interpolations go through `tojson` so they emit safely-escaped JSON
+       (double-quoted string or null), which is valid JS inside single-quoted
+       attribute. #}
     <section
-      x-data="{
-        state: '{{ running_state.state }}',
-        lastError: {{ (running_state.last_error or '') | tojson }},
+      x-data='{
+        state: {{ running_state.state | tojson }},
+        lastError: {{ (running_state.last_error or "") | tojson }},
         async refresh() {
           try {
-            const r = await fetch('/api/discovery/tick-state', {headers: {'Accept': 'application/json'}});
+            const r = await fetch("/api/discovery/tick-state", {headers: {"Accept": "application/json"}});
             if (r.ok) {
               const j = await r.json();
-              this.state = j.state || 'idle';
-              this.lastError = j.last_error || '';
+              this.state = j.state || "idle";
+              this.lastError = j.last_error || "";
             }
           } catch (e) { /* swallow — best-effort poll */ }
         },
         async trigger() {
-          this.state = 'running';
+          this.state = "running";
           try {
-            const r = await fetch('/api/discovery/run-tick-now', {method: 'POST'});
-            if (r.status === 409) { this.state = 'running'; }
+            const r = await fetch("/api/discovery/run-tick-now", {method: "POST"});
+            if (r.status === 409) { this.state = "running"; }
           } catch (e) { /* swallow — Alpine fetch */ }
         }
-      }"
+      }'
       x-init="setInterval(() => refresh(), 5000)"
     >
       <h2 class="text-[15px] font-semibold text-text-primary mb-2">
