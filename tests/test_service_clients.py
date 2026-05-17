@@ -82,7 +82,12 @@ class TestLidarrClient:
 
     @patch("app.services.lidarr_client.Lidarr")
     async def test_success_returns_quality_profiles(self, mock_lidarr_cls):
-        """test_lidarr_connection returns quality profiles with id and name."""
+        """test_lidarr_connection returns quality profiles with id and name.
+
+        Phase 8 D-E1 (DISC-07): the return shape now includes three lists
+        (quality_profiles, metadata_profiles, root_folders) so add_artist()
+        has both profile IDs available per Pitfall 14.
+        """
         from app.services.lidarr_client import test_lidarr_connection
 
         mock_lidarr = MagicMock()
@@ -90,13 +95,15 @@ class TestLidarrClient:
             {"id": 1, "name": "Lossless"},
             {"id": 2, "name": "Standard"},
         ]
+        mock_lidarr.get_metadata_profile.return_value = []
+        mock_lidarr.get_root_folder.return_value = []
         mock_lidarr_cls.return_value = mock_lidarr
 
         result = await test_lidarr_connection("http://lidarr:8686", "api-key-123")
 
         assert result["success"] is True
-        assert len(result["profiles"]) == 2
-        assert result["profiles"][0] == {"id": 1, "name": "Lossless"}
+        assert len(result["quality_profiles"]) == 2
+        assert result["quality_profiles"][0] == {"id": 1, "name": "Lossless"}
 
     @patch("app.services.lidarr_client.Lidarr")
     async def test_bad_credentials_returns_auth_error(self, mock_lidarr_cls):

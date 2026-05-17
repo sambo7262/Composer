@@ -17,7 +17,7 @@
     {% elif service == "anthropic" %}
     <p class="text-text-secondary text-[15px] mb-3">Connected. Select a model below.</p>
     {% elif service == "lidarr" %}
-    <p class="text-text-secondary text-[15px] mb-3">Connected. Select a default quality profile below.</p>
+    <p class="text-text-secondary text-[15px] mb-3">Connected. Select quality + metadata profiles below.</p>
     {% endif %}
 
     <form hx-post="/api/settings/{{ service }}/save" hx-target="#{{ service }}-card">
@@ -47,20 +47,53 @@
       {% elif service == "lidarr" %}
         <input type="hidden" name="url" value="{{ url }}">
         <input type="hidden" name="api_key" value="{{ api_key }}">
+
+        {# Phase 8 D-E1 — quality profile dropdown (always shown). #}
         <div class="mb-3">
-          <label for="{{ service }}-option" class="block text-[13px] text-text-secondary mb-1">{{ option_label }}</label>
-          <select id="{{ service }}-option" name="profile_id"
-                  class="w-full bg-surface-elevated border border-border rounded px-4 py-2 text-text-primary focus:border-border-focus focus:ring-1 focus:ring-border-focus">
-            {% for opt in options %}
+          <label for="lidarr-quality" class="block text-[13px] text-text-secondary mb-1">Quality profile</label>
+          <select id="lidarr-quality" name="quality_profile_id"
+                  class="w-full bg-surface-elevated border border-border rounded px-4 py-2 text-text-primary focus:border-border-focus focus:ring-1 focus:ring-border-focus min-h-[44px]">
+            {% for opt in quality_profiles %}
             <option value="{{ opt.id }}">{{ opt.name }}</option>
             {% endfor %}
           </select>
-          <select name="profile_name" class="hidden">
-            {% for opt in options %}
+          <select name="quality_profile_name" class="hidden">
+            {% for opt in quality_profiles %}
             <option value="{{ opt.name }}" {% if loop.first %}selected{% endif %}>{{ opt.name }}</option>
             {% endfor %}
           </select>
         </div>
+
+        {# Phase 8 D-E1 / Pitfall 14 — metadata profile dropdown (always shown). #}
+        <div class="mb-3">
+          <label for="lidarr-metadata" class="block text-[13px] text-text-secondary mb-1">Metadata profile</label>
+          <select id="lidarr-metadata" name="metadata_profile_id"
+                  class="w-full bg-surface-elevated border border-border rounded px-4 py-2 text-text-primary focus:border-border-focus focus:ring-1 focus:ring-border-focus min-h-[44px]">
+            {% for opt in metadata_profiles %}
+            <option value="{{ opt.id }}">{{ opt.name }}</option>
+            {% endfor %}
+          </select>
+          <select name="metadata_profile_name" class="hidden">
+            {% for opt in metadata_profiles %}
+            <option value="{{ opt.name }}" {% if loop.first %}selected{% endif %}>{{ opt.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        {# Phase 8 D-E1 — root folder dropdown only when >1. Auto-selected silently otherwise. #}
+        {% if root_folders|length > 1 %}
+        <div class="mb-3">
+          <label for="lidarr-root" class="block text-[13px] text-text-secondary mb-1">Root folder</label>
+          <select id="lidarr-root" name="root_folder_path"
+                  class="w-full bg-surface-elevated border border-border rounded px-4 py-2 text-text-primary focus:border-border-focus focus:ring-1 focus:ring-border-focus min-h-[44px]">
+            {% for r in root_folders %}
+            <option value="{{ r.path }}">{{ r.path }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% else %}
+        <input type="hidden" name="root_folder_path" value="{{ root_folders[0].path if root_folders else '' }}">
+        {% endif %}
       {% endif %}
 
       <button type="submit"

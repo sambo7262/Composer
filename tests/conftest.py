@@ -105,6 +105,16 @@ def db_with_phase7(test_engine):
         SuggestionHistory,
         SuggestionsMirror,
     )
+    # Phase 8 — register discovery tables so the fixture matches production
+    # schema after the Phase 8 lifespan bootstrap.
+    from app.models.discovery import (  # noqa: F401
+        CostMeterBaseline,
+        DiscoveryAdd,
+        DiscoveryCandidate,
+        DiscoveryDismissed,
+        MusicBrainzCache,
+        WeeklyCronState,
+    )
 
     # init_db() runs the additive _migrate_add_columns ALTERs (LLMUsage
     # error_text from Phase 7.1 + the existing setupstate / track ones)

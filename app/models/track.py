@@ -53,6 +53,11 @@ class Track(SQLModel, table=True):
     # (added in Plan 01) covers WHERE pending_slot_in = 1 lookups.
     pending_slot_in: Optional[int] = Field(default=0)
 
+    # Phase 8 Pitfall 12 — MusicBrainz Artist Identifier for cross-surface dedup.
+    # Populated from plex_client during Plan 01 backfill + on subsequent syncs.
+    # NULL until backfilled; Plan 02 _get_in_library_mbids_sync filters out NULLs.
+    plex_artist_mbid: Optional[str] = Field(default=None, index=True)
+
 
 class SyncState(SQLModel, table=True):
     """Tracks the last sync timestamp and total track count."""

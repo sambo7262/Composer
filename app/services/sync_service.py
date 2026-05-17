@@ -225,8 +225,58 @@ async def run_sync() -> None:
 
     except Exception as exc:
         _sync_status.state = SyncStateEnum.FAILED
-        _sync_status.error = _sanitize_error(str(exc), token)
+        sanitized = _sanitize_error(str(exc), token)
+        _sync_status.error = sanitized
         logger.exception("Sync failed")
+        # Phase 8 D-E3 / DISC-08 — surface to /debug/events so silent
+        # failures are observable. Best-effort: never let the event-log
+        # write break the FAILED state transition (the in-memory status
+        # update above is the primary user-facing signal).
+        try:
+            await _record_sync_failure_event(sanitized)
+        except Exception:
+            logger.exception("Failed to record sync_failed EventLog row")
+
+
+async def _record_sync_failure_event(error_text: str) -> None:
+    """Phase 8 DISC-08 — write a sync_failed EventLog row.
+
+    Dedupe key uses the Phase 5 D-07 pattern (sha256 + 5-minute bucket) so a
+    flapping failure from the same root cause doesn't spam the log but
+    distinct failures over time are individually recorded. INSERT OR IGNORE
+    on the UNIQUE(dedupe_key) constraint is race-free.
+    """
+    import hashlib
+
+    from sqlalchemy.exc import IntegrityError as _SAIntegrityError
+    from sqlite3 import IntegrityError as _SQLite3IntegrityError
+
+    from app.models.event_log import EventLog
+
+    now = datetime.now(timezone.utc)
+    bucket = int(now.timestamp() // 300)
+    dedupe = hashlib.sha256(
+        f"sync_failed|{error_text[:200]}|{bucket}".encode()
+    ).hexdigest()
+
+    def _insert():
+        with Session(get_engine()) as session:
+            try:
+                session.add(EventLog(
+                    source="sync",
+                    event_type="sync_failed",
+                    plex_rating_key=None,
+                    dedupe_key=dedupe,
+                    received_at=now.isoformat(),
+                    processed_at=now.isoformat(),
+                    handler_error=error_text[:500],
+                    raw_payload=None,
+                ))
+                session.commit()
+            except (_SAIntegrityError, _SQLite3IntegrityError):
+                session.rollback()  # dedupe collision within bucket — expected
+
+    await asyncio.to_thread(_insert)
 
 
 def get_last_sync_info(session: Session) -> dict:

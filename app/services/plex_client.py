@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Optional
 
 from plexapi.server import PlexServer
 
@@ -112,3 +113,73 @@ async def test_plex_connection(url: str, token: str) -> dict:
             "success": False,
             "error": "Could not connect. Check the URL and credentials, then try again.",
         }
+
+
+def get_artist_mbid_by_name(name: str) -> Optional[str]:
+    """Phase 8 Pitfall 12 — sync helper to fetch a Plex artist's MBID by name.
+
+    Used by ``discovery_service._backfill_track_artist_mbids_sync`` during the
+    Phase 8 lifespan bootstrap. The caller wraps invocation in
+    ``asyncio.to_thread`` so PlexAPI's sync calls don't block the event loop.
+
+    Plex stores MusicBrainz artist identifiers in either:
+      - the ``.guid`` field as ``"mbid://<uuid>"``, or
+      - the ``.guids`` collection (multiple identifiers) as
+        ``[Guid(id='mbid://<uuid>'), Guid(id='spotify:...'), ...]``.
+    We accept both shapes and extract the 36-char UUID. Returns ``None`` if
+    Plex is unreachable, the artist is not found, or no MBID is on file.
+
+    NOTE: connection state is read from ``ServiceConfig`` settings; the helper
+    is intentionally credentials-aware so the lifespan bootstrap doesn't have
+    to plumb url/token through every call site.
+    """
+    import re
+
+    try:
+        from sqlmodel import Session
+
+        from app.database import get_engine
+        from app.services.settings_service import (
+            get_decrypted_credential, get_setting,
+        )
+
+        with Session(get_engine()) as s:
+            setting = get_setting(s, "plex")
+            if setting is None or not setting.url:
+                return None
+            token = get_decrypted_credential(s, "plex") or ""
+            if not token:
+                return None
+            extras = setting.extra_config or {}
+            library_id = extras.get("library_id")
+        if not library_id:
+            return None
+
+        plex = PlexServer(setting.url, token, timeout=15)
+        # PlexAPI: section.searchArtists(title=...) returns a list of Artist objects.
+        section = plex.library.sectionByID(int(library_id))
+        artists = section.searchArtists(title=name)
+        if not artists:
+            return None
+        artist = artists[0]
+
+        # Try .guid first (singular), then .guids collection.
+        mbid_re = re.compile(
+            r"mbid://([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+            r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+        )
+        candidate_strings = []
+        single = getattr(artist, "guid", None)
+        if single:
+            candidate_strings.append(str(single))
+        multi = getattr(artist, "guids", None) or []
+        for g in multi:
+            candidate_strings.append(str(getattr(g, "id", g)))
+        for s_value in candidate_strings:
+            m = mbid_re.search(s_value)
+            if m:
+                return m.group(1)
+        return None
+    except Exception:
+        # Best-effort lookup: bootstrap caller logs the failure and proceeds.
+        return None
