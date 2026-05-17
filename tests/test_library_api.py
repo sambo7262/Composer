@@ -221,9 +221,12 @@ class TestStatsEndpoint:
 
         response = client.get("/api/library/stats")
         assert response.status_code == 200
-        # Must show the most recent rating_changed timestamp, NOT the later track_played one.
-        assert "2026-05-08T11:30:00+00:00" in response.text
-        assert "2026-05-09T00:00:00+00:00" not in response.text
+        # Phase 8 260516-tza: timestamps now render in America/Los_Angeles via
+        # the local_time Jinja filter. UTC 11:30 = PDT 04:30 (summer DST).
+        # Must show the most recent rating_changed timestamp, NOT the later
+        # track_played one (UTC 2026-05-09T00:00 = PDT 2026-05-08 17:00).
+        assert "2026-05-08 04:30 PDT" in response.text
+        assert "2026-05-08 17:00 PDT" not in response.text
 
 
 class TestLibraryPage:
