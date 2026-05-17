@@ -281,7 +281,7 @@ Plans:
 - [x] 08-02-PLAN.md — Discovery pipeline backend: ListenBrainz smoke-test + listenbrainz/musicbrainz clients + discovery_service.artist_discovery_call_weekly piggybacking _weekly_maintenance_tick (DISC-03/04/05/06)
 - [x] 08-03-PLAN.md — Vibe color propagation across surfaces (UI-09) + home-page weekly LLM cost chip (UI-10)
 - [x] 08-04-PLAN.md — /discover page (vibe-grouped horizontal-scroll + tap-to-expand + Add-to-Lidarr + Dismiss + status-row lifecycle) + library mobile-first rewrite (DISC-03/05 + UI-07/08)
-- [ ] 08-05-PLAN.md — /debug/discovery diagnostic page (DEBUG-04) + OPS-06 legacy-playlist hands-off regression guard
+- [x] 08-05-PLAN.md — /debug/discovery diagnostic page (DEBUG-04) + OPS-06 legacy-playlist hands-off regression guard
 **UI hint**: yes
 **Key Concerns** (pitfalls to bake in):
   - **Lidarr connection-test fix is foundational** (Pitfall 14, DISC-07): the v1 carry-over bug (likely Docker-network resolution against `synobridge` rather than `localhost`) is the FIRST task of the phase. Until connection-test is reliable, every other Lidarr feature is built on sand. Reference `.planning/notes/connection-test-bugs.md`.
