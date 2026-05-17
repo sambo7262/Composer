@@ -1648,6 +1648,14 @@ def _read_active_discover_data_sync() -> dict:
     - Subtract DiscoveryAdd rows whose ``vibe_slotted_at IS NOT NULL``
       (D-D4 — once slotted, the artist drops out of /discover entirely).
     - Only render sections for ``Vibe.is_active=True``.
+    - **CR-01 fix**: filter ``DiscoveryCandidate.created_at >= WeeklyCronState.last_tick_at``
+      so /discover only shows THIS week's set. ``_write_discovery_candidates_sync``
+      is INSERT-only by design; without this floor, every Sunday tick's writes
+      accumulate forever and the page eventually renders every candidate the
+      LLM has ever produced. The cutoff also scopes ``cand_vibe_lookup``
+      so the in-flight-add grouping doesn't read historical rows.
+      Pre-first-tick the cutoff is None → no filter (correct: no historical
+      writes can exist yet).
     """
     from app.models.discovery import (
         DiscoveryAdd,
@@ -1661,6 +1669,10 @@ def _read_active_discover_data_sync() -> dict:
         vibes = list(session.exec(
             select(Vibe).where(Vibe.is_active == True).order_by(Vibe.id.asc())  # noqa: E712
         ).all())
+
+        weekly = session.get(WeeklyCronState, 1)
+        has_first_tick = weekly is not None and weekly.last_tick_at is not None
+        week_cutoff = weekly.last_tick_at if has_first_tick else None
 
         dismissed_mbids = {
             r for r in session.exec(select(DiscoveryDismissed.mb_id)).all()
@@ -1678,11 +1690,17 @@ def _read_active_discover_data_sync() -> dict:
                 DiscoveryAdd.vibe_slotted_at.is_(None)  # type: ignore[union-attr]
             )
         ).all())
-        # Group in-flight adds by their candidate's seed_vibe_id (so the
-        # status row appears under the right vibe section).
+        # Group in-flight adds by their candidate's seed_vibe_id. Scope the
+        # lookup query to this-week candidates only (CR-01) so we don't read
+        # every row in history just to build the vibe-grouping map.
+        cand_lookup_q = select(DiscoveryCandidate)
+        if week_cutoff is not None:
+            cand_lookup_q = cand_lookup_q.where(
+                DiscoveryCandidate.created_at >= week_cutoff,
+            )
         cand_vibe_lookup = {
             c.mb_id: c.seed_vibe_id
-            for c in session.exec(select(DiscoveryCandidate)).all()
+            for c in session.exec(cand_lookup_q).all()
         }
         in_flight_by_vibe: dict = {}
         for add in in_flight_adds:
@@ -1696,6 +1714,10 @@ def _read_active_discover_data_sync() -> dict:
                 select(DiscoveryCandidate)
                 .where(DiscoveryCandidate.seed_vibe_id == vibe.id)
             )
+            if week_cutoff is not None:
+                cands_q = cands_q.where(
+                    DiscoveryCandidate.created_at >= week_cutoff,
+                )
             if dismissed_mbids:
                 cands_q = cands_q.where(
                     DiscoveryCandidate.mb_id.not_in(dismissed_mbids)  # type: ignore[union-attr]
@@ -1715,9 +1737,6 @@ def _read_active_discover_data_sync() -> dict:
             ))
 
         lidarr_configured = is_service_configured(session, "lidarr")
-
-        weekly = session.get(WeeklyCronState, 1)
-        has_first_tick = weekly is not None and weekly.last_tick_at is not None
 
     return {
         "sections": sections,
@@ -2019,7 +2038,12 @@ async def run_manual_weekly_tick() -> None:
     global _status
     _status.state = "running"
     _status.last_run_at = datetime.now(timezone.utc).isoformat()
-    _status.last_error = None
+    # WR-01 fix: do NOT clear last_error here. ``artist_discovery_call_weekly``
+    # and other inner steps catch their own exceptions and stamp
+    # ``_status.state`` + ``last_error`` themselves; clearing on entry would
+    # erase the prior tick's error before we'd surfaced a new outcome. The
+    # success path below sets last_error=None explicitly when we know nothing
+    # failed.
     try:
         # Late import to avoid a circular at module load (sync_scheduler
         # imports from us indirectly via the lazy imports inside its
@@ -2027,7 +2051,15 @@ async def run_manual_weekly_tick() -> None:
         # :func:`artist_discovery_call_weekly`.
         from app.services.sync_scheduler import _weekly_maintenance_tick
         await _weekly_maintenance_tick()
-        _status.state = "idle"
+        # WR-01 fix: inner functions (e.g. artist_discovery_call_weekly,
+        # discovery_call_weekly) catch their own exceptions and stamp
+        # _status.state to "cost_locked" / "error" without raising. Only
+        # mark idle if no inner step recorded a terminal failure — otherwise
+        # the operator polling /debug/discovery would see "idle" while the
+        # tick actually failed silently.
+        if _status.state == "running":
+            _status.state = "idle"
+            _status.last_error = None
     except Exception as exc:
         logger.exception(
             "run_manual_weekly_tick: weekly tick raised; captured.",

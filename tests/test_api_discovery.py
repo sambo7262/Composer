@@ -689,3 +689,66 @@ class TestTopTracksEndpoint:
         resp = client_full.get("/api/discovery/some-mbid/top-tracks")
         assert resp.status_code == 200
         assert "<ul" not in resp.text
+
+
+# ============================================================================
+# CR-01 regression — /discover only renders THIS week's candidates
+# ============================================================================
+
+
+class TestDiscoverWeeklyRotation:
+    """CR-01 — `_write_discovery_candidates_sync` is INSERT-only by design.
+    Without a week-cutoff filter on the read path, every Sunday tick's writes
+    accumulate forever and /discover would render every candidate the LLM has
+    ever produced. This test pins the WeeklyCronState.last_tick_at floor.
+    """
+
+    def test_candidates_older_than_last_tick_are_excluded(
+        self, client_full, test_engine,
+    ):
+        """Prior-week candidate row + current-week candidate row → /discover
+        renders only the current-week one."""
+        from app.models.discovery import DiscoveryCandidate, WeeklyCronState
+
+        _save_lidarr_config(test_engine)
+        vibe_id = _seed_vibe(test_engine)
+        seed_track_id = _seed_track(test_engine, plex_rating_key="rk-seed")
+
+        now = datetime.now(timezone.utc)
+        tick_at = now.isoformat()
+        last_week = (now - timedelta(days=8)).isoformat()
+        this_week = (now + timedelta(seconds=1)).isoformat()
+
+        with Session(test_engine) as s:
+            # WeeklyCronState row may already exist via bootstrap — upsert.
+            existing = s.get(WeeklyCronState, 1)
+            if existing is None:
+                s.add(WeeklyCronState(id=1, last_tick_at=tick_at))
+            else:
+                existing.last_tick_at = tick_at
+                s.add(existing)
+            s.add(DiscoveryCandidate(
+                mb_id="old-mbid", artist_name="Old Candidate",
+                seed_track_id=seed_track_id, seed_vibe_id=vibe_id,
+                popularity_gate_pass=True, llm_rank=1,
+                llm_rationale="from-last-week",
+                factual_hook="stale",
+                created_at=last_week,
+            ))
+            s.add(DiscoveryCandidate(
+                mb_id="new-mbid", artist_name="New Candidate",
+                seed_track_id=seed_track_id, seed_vibe_id=vibe_id,
+                popularity_gate_pass=True, llm_rank=2,
+                llm_rationale="from-this-week",
+                factual_hook="fresh",
+                created_at=this_week,
+            ))
+            s.commit()
+
+        resp = client_full.get("/discover")
+        assert resp.status_code == 200
+        body = resp.text
+        # New (this-week) candidate renders.
+        assert "New Candidate" in body
+        # Old (last-week) candidate MUST be filtered out — CR-01 regression.
+        assert "Old Candidate" not in body

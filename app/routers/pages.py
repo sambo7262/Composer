@@ -110,9 +110,28 @@ def _compute_home_chip_context(session: Session) -> dict:
 
     has_first_tick = weekly is not None and weekly.last_tick_at is not None
 
+    # WR-05 fix: when the baseline row is missing (bootstrap partial-success
+    # path), force the chip into pre-first-tick state instead of silently
+    # falling back to epoch and surfacing every historical / testing row.
+    # has_first_tick is also forced False so the empty-state copy renders.
+    if baseline is None:
+        return {
+            "this_week_cost_usd": 0.0,
+            "days_until_refresh": None,
+            "breaker_paused": False,
+            "has_first_tick": False,
+            "next_tick_local_str": (
+                __import__(
+                    "app.utils.jinja_filters", fromlist=["next_sunday_03_utc_in_la"],
+                ).next_sunday_03_utc_in_la()
+            ),
+            "baseline_missing": True,
+        }
+
     # Lexicographic ISO 8601 ordering matches chronological ordering — same
-    # invariant used by the /settings 7-day window query.
-    baseline_iso = baseline.deploy_at if baseline else "1970-01-01T00:00:00+00:00"
+    # invariant used by the /settings 7-day window query. (WR-04 — known
+    # fragile under microsecond drift; tracked in 08-REVIEW.md for Phase 8.1.)
+    baseline_iso = baseline.deploy_at
     if has_first_tick:
         floor = max(weekly.last_tick_at, baseline_iso)
     else:
