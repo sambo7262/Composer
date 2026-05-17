@@ -288,18 +288,29 @@ async def read_chat_retired() -> HTMLResponse:
 
 
 @router.get("/discover", response_class=HTMLResponse)
-async def read_discover_placeholder(request: Request):
-    """Phase 7 (CR-04 fix) — /discover placeholder until Phase 8.
+async def read_discover(request: Request):
+    """Phase 8 Plan 04 (DISC-03/05 / D-D2..D-D5) — vibe-grouped discovery surface.
 
-    The mobile bottom tab bar (partials/bottom_tab_bar.html) renders a
-    "Discover" entry; this route exists so taps land on a 200 instead of
-    a 404 until Phase 8 ships Lidarr-driven artist discovery.
+    Reads the active candidate set from
+    ``discovery_service.read_active_discover_data`` (subtracts
+    DiscoveryDismissed at read time per D-B2, hides
+    vibe_slotted DiscoveryAdds per D-D4) and renders
+    ``pages/discover.html``.
     """
+    from app.services import discovery_service
+
     templates = get_templates()
+    data = await discovery_service.read_active_discover_data()
     return templates.TemplateResponse(
         request,
-        "pages/discover_placeholder.html",
-        {"active_page": "discover"},
+        "pages/discover.html",
+        {
+            "active_page": "discover",
+            "sections": data["sections"],
+            "lidarr_configured": data["lidarr_configured"],
+            "vibes_exist": data["vibes_exist"],
+            "has_first_tick": data["has_first_tick"],
+        },
     )
 
 
