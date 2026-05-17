@@ -933,10 +933,20 @@ async def refill_mirror_sql(
         allocations[vid] = base + extra
 
     # Per-vibe top-N + random sample of allocation.
-    # Hot-path refill surfaces UNRATED tracks only — rated tracks already
-    # live in their vibe playlists. The unrated helper computes distance
-    # against the vibe centroid directly (TrackVibe is rated-only by design).
+    # PRIMARY path: unrated tracks (260516-uvr hotfix — rated tracks already
+    # live in their vibe playlists; Suggestions should be a discovery
+    # surface). The unrated helper computes distance against the vibe
+    # centroid directly (TrackVibe is rated-only by design).
+    #
+    # FALLBACK path (260517-vyq): when the unrated pool is empty for a vibe
+    # (most likely cause: the user's unrated tracks haven't been Essentia-
+    # analyzed yet → NULL audio features → filtered out), fall back to the
+    # rated TrackVibe pool so the queue doesn't run dry. Better UX to surface
+    # a rated track than to leave the queue empty after every play. The
+    # fallback is observable in /debug/suggestions (latency_ms is the same;
+    # logged at INFO level here so operators can see when it kicks in).
     picks: List[dict] = []
+    fallback_vibes = 0
     for vid, n_picks in allocations.items():
         if n_picks <= 0:
             continue
@@ -944,10 +954,28 @@ async def refill_mirror_sql(
             _read_top_n_unrated_for_vibe_sync, vid, TOP_N_PER_VIBE,
         )
         if not pool:
+            # Unrated pool empty for this vibe — fall back to rated.
+            pool = await asyncio.to_thread(
+                _read_top_n_for_vibe_sync, vid, TOP_N_PER_VIBE,
+            )
+            if pool:
+                fallback_vibes += 1
+                logger.info(
+                    "refill_mirror_sql: vibe_id=%d unrated pool empty; "
+                    "falling back to rated TrackVibe pool (%d candidates).",
+                    vid, len(pool),
+                )
+        if not pool:
             continue
         sample_size = min(n_picks, len(pool))
         chosen = random.sample(pool, sample_size)
         picks.extend(chosen)
+    if fallback_vibes > 0:
+        logger.info(
+            "refill_mirror_sql: %d vibe(s) fell back to rated pool; deploy "
+            "Essentia analysis to widen the unrated discovery surface.",
+            fallback_vibes,
+        )
 
     # Persist picks + RefillTriggerLog row.
     latency_ms = int((_time.monotonic() - start) * 1000)

@@ -1656,15 +1656,20 @@ def _read_active_discover_data_sync() -> dict:
     - Subtract DiscoveryAdd rows whose ``vibe_slotted_at IS NOT NULL``
       (D-D4 — once slotted, the artist drops out of /discover entirely).
     - Only render sections for ``Vibe.is_active=True``.
-    - **CR-01 fix**: filter ``DiscoveryCandidate.created_at >= WeeklyCronState.last_tick_at``
-      so /discover only shows THIS week's set. ``_write_discovery_candidates_sync``
-      is INSERT-only by design; without this floor, every Sunday tick's writes
-      accumulate forever and the page eventually renders every candidate the
-      LLM has ever produced. The cutoff also scopes ``cand_vibe_lookup``
-      so the in-flight-add grouping doesn't read historical rows.
-      Pre-first-tick the cutoff is None → no filter (correct: no historical
-      writes can exist yet).
+    - **CR-01 fix v2**: filter ``DiscoveryCandidate.created_at >= now - 8 days``
+      so /discover only shows the most recent week's set. The earlier
+      v1 fix used ``last_tick_at`` as a strict equality, but
+      ``_weekly_maintenance_tick`` writes candidates BEFORE stamping
+      ``last_tick_at`` — so ``created_at < last_tick_at`` by milliseconds and
+      every freshly-written candidate was filtered out (bug surfaced
+      2026-05-17 UAT: candidates visible on /debug/discovery, empty on
+      /discover). Rolling 8-day window keeps the spirit (drop stale weeks
+      from INSERT-only growth) without depending on stamp ordering.
+      ``has_first_tick`` is preserved separately for the cost-chip
+      pre-first-tick copy.
     """
+    from datetime import timedelta
+
     from app.models.discovery import (
         DiscoveryAdd,
         DiscoveryCandidate,
@@ -1680,7 +1685,12 @@ def _read_active_discover_data_sync() -> dict:
 
         weekly = session.get(WeeklyCronState, 1)
         has_first_tick = weekly is not None and weekly.last_tick_at is not None
-        week_cutoff = weekly.last_tick_at if has_first_tick else None
+        # Rolling cutoff = now - 8 days (1 day buffer past the weekly cron
+        # cadence). Survives stamp-ordering quirks; no chicken-and-egg with
+        # the artist-discovery insert path.
+        week_cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=8)
+        ).isoformat()
 
         dismissed_mbids = {
             r for r in session.exec(select(DiscoveryDismissed.mb_id)).all()
@@ -1699,13 +1709,12 @@ def _read_active_discover_data_sync() -> dict:
             )
         ).all())
         # Group in-flight adds by their candidate's seed_vibe_id. Scope the
-        # lookup query to this-week candidates only (CR-01) so we don't read
-        # every row in history just to build the vibe-grouping map.
-        cand_lookup_q = select(DiscoveryCandidate)
-        if week_cutoff is not None:
-            cand_lookup_q = cand_lookup_q.where(
-                DiscoveryCandidate.created_at >= week_cutoff,
-            )
+        # lookup query to this-week candidates only (CR-01 v2 rolling
+        # 8-day cutoff) so we don't read every row in history just to
+        # build the vibe-grouping map.
+        cand_lookup_q = select(DiscoveryCandidate).where(
+            DiscoveryCandidate.created_at >= week_cutoff,
+        )
         cand_vibe_lookup = {
             c.mb_id: c.seed_vibe_id
             for c in session.exec(cand_lookup_q).all()
@@ -1721,11 +1730,8 @@ def _read_active_discover_data_sync() -> dict:
             cands_q = (
                 select(DiscoveryCandidate)
                 .where(DiscoveryCandidate.seed_vibe_id == vibe.id)
+                .where(DiscoveryCandidate.created_at >= week_cutoff)
             )
-            if week_cutoff is not None:
-                cands_q = cands_q.where(
-                    DiscoveryCandidate.created_at >= week_cutoff,
-                )
             if dismissed_mbids:
                 cands_q = cands_q.where(
                     DiscoveryCandidate.mb_id.not_in(dismissed_mbids)  # type: ignore[union-attr]

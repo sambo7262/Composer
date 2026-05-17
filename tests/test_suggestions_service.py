@@ -1208,3 +1208,98 @@ class TestNoLegacyLlmRefillRefs:
             "module:\n"
             + "\n".join(violations)
         )
+
+
+class TestRefillFallbackToRated:
+    """Hotfix 260517-vyq — when the unrated pool is empty for a vibe (most
+    likely cause: the user's unrated tracks haven't been Essentia-analyzed
+    yet → NULL audio features → filtered out), refill_mirror_sql must fall
+    back to the rated TrackVibe pool so the queue doesn't run dry.
+    """
+
+    def test_falls_back_to_rated_when_no_unrated_with_features(self, db_phase7):
+        """Seed only rated tracks (no unrated) → refill picks from the rated
+        TrackVibe pool instead of returning empty."""
+        from app.models.suggestions import SuggestionsMirror
+        from app.models.track import Track
+        from app.models.vibe import TrackVibe
+        from app.services import suggestions_service
+
+        _seed_managed_suggestions(db_phase7)
+        v = _seed_vibe(db_phase7, "active")
+        # 3 rated tracks WITH features + TrackVibe rows. No unrated tracks.
+        rated_ids = []
+        for i in range(3):
+            t = Track(
+                plex_rating_key=f"rated-{i}", title=f"T{i}", artist="A",
+                energy=0.5, tempo=120.0, danceability=0.5, valence=0.5,
+                user_rating=10.0,
+            )
+            db_phase7.add(t)
+            db_phase7.commit()
+            db_phase7.refresh(t)
+            rated_ids.append(t.id)
+            db_phase7.add(TrackVibe(
+                track_id=t.id, vibe_id=v.id, distance=0.1,
+                assigned_at=datetime.now(timezone.utc).isoformat(),
+                assigned_by="cluster",
+            ))
+        db_phase7.commit()
+
+        _run_async(suggestions_service.refill_mirror_sql(target=3))
+
+        mirror_rows = db_phase7.exec(select(SuggestionsMirror)).all()
+        assert len(mirror_rows) > 0, (
+            "Fallback to rated pool must populate mirror when unrated is empty"
+        )
+        # All picks are from the rated pool we seeded.
+        assert {r.track_id for r in mirror_rows}.issubset(set(rated_ids))
+
+    def test_prefers_unrated_when_both_available(self, db_phase7):
+        """Mixed unrated + rated → unrated takes precedence (no fallback fires)."""
+        from app.models.suggestions import SuggestionsMirror
+        from app.models.track import Track
+        from app.models.vibe import TrackVibe
+        from app.services import suggestions_service
+
+        _seed_managed_suggestions(db_phase7)
+        v = _seed_vibe(db_phase7, "active")
+        # 3 rated WITH TrackVibe rows.
+        rated_ids = []
+        for i in range(3):
+            t = Track(
+                plex_rating_key=f"rated-{i}", title=f"R{i}", artist="A",
+                energy=0.5, tempo=120.0, danceability=0.5, valence=0.5,
+                user_rating=10.0,
+            )
+            db_phase7.add(t)
+            db_phase7.commit()
+            db_phase7.refresh(t)
+            rated_ids.append(t.id)
+            db_phase7.add(TrackVibe(
+                track_id=t.id, vibe_id=v.id, distance=0.1,
+                assigned_at=datetime.now(timezone.utc).isoformat(),
+                assigned_by="cluster",
+            ))
+        # 3 unrated WITH features (so they pass the helper's NOT NULL check).
+        unrated_ids = []
+        for i in range(3):
+            t = Track(
+                plex_rating_key=f"unrated-{i}", title=f"U{i}", artist="B",
+                energy=0.5, tempo=120.0, danceability=0.5, valence=0.5,
+                user_rating=None,
+            )
+            db_phase7.add(t)
+            db_phase7.commit()
+            db_phase7.refresh(t)
+            unrated_ids.append(t.id)
+        db_phase7.commit()
+
+        _run_async(suggestions_service.refill_mirror_sql(target=3))
+
+        mirror_rows = db_phase7.exec(select(SuggestionsMirror)).all()
+        picked_ids = {r.track_id for r in mirror_rows}
+        # Mirror must be ALL unrated; rated pool is not touched when
+        # unrated is available.
+        assert picked_ids.issubset(set(unrated_ids))
+        assert picked_ids.isdisjoint(set(rated_ids))
