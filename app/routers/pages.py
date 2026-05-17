@@ -160,20 +160,9 @@ def _compute_home_chip_context(session: Session) -> dict:
             "rendering chip without paused modifier"
         )
 
-    # Pre-format the "next tick" string in PT for the chip's first-tick message.
-    # Cron fires Sun 03:00 UTC; render the next occurrence in LA so users see a
-    # familiar weekday/time. DST is handled automatically by zoneinfo.
-    from zoneinfo import ZoneInfo
-    now_utc = _dt.now(_tz.utc)
-    days_ahead = (6 - now_utc.weekday()) % 7  # Mon=0 ... Sun=6
-    next_tick_utc = (now_utc + _td(days=days_ahead)).replace(
-        hour=3, minute=0, second=0, microsecond=0,
-    )
-    if next_tick_utc <= now_utc:
-        next_tick_utc += _td(days=7)
-    next_tick_la = next_tick_utc.astimezone(ZoneInfo("America/Los_Angeles"))
-    # %-I drops leading zero on hour; %Z = PDT/PST.
-    next_tick_local_str = next_tick_la.strftime("%A %b %-d at %-I:%M %p %Z")
+    # Pre-format the "next tick" string in PT — shared helper handles DST.
+    from app.utils.jinja_filters import next_sunday_03_utc_in_la
+    next_tick_local_str = next_sunday_03_utc_in_la()
 
     return {
         "this_week_cost_usd": this_week_cost_usd,
@@ -299,6 +288,8 @@ async def read_discover(request: Request):
     """
     from app.services import discovery_service
 
+    from app.utils.jinja_filters import next_sunday_03_utc_in_la
+
     templates = get_templates()
     data = await discovery_service.read_active_discover_data()
     return templates.TemplateResponse(
@@ -310,6 +301,7 @@ async def read_discover(request: Request):
             "lidarr_configured": data["lidarr_configured"],
             "vibes_exist": data["vibes_exist"],
             "has_first_tick": data["has_first_tick"],
+            "next_tick_local_str": next_sunday_03_utc_in_la(),
         },
     )
 

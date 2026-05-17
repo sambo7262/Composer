@@ -231,7 +231,15 @@ class TestDiscoverEmptyStates:
         # message.
         resp = client_full.get("/discover")
         assert resp.status_code == 200
-        assert "first discoveries land Sunday" in resp.text
+        # Message now renders the next Sun 03:00 UTC tick in LA time, e.g.
+        # "Saturday May 17 at 8:00 PM PDT" (DST-aware). Pin the prefix + PT marker.
+        assert "first discoveries land" in resp.text
+        body = resp.text
+        assert ("PDT" in body or "PST" in body)
+        # Ensure no UTC leakage in the immediate empty-state copy.
+        idx = body.index("first discoveries land")
+        snippet = body[idx:idx + 200]
+        assert "UTC" not in snippet
 
 
 # ----------------------------------------------------------------------

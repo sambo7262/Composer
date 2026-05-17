@@ -68,3 +68,18 @@ def test_register_filters_attaches_local_time_to_env():
     assert "local_time" in env.filters
     template = env.from_string("{{ '2026-05-16T20:00:00+00:00' | local_time }}")
     assert template.render() == "2026-05-16 13:00 PDT"
+
+
+def test_next_sunday_03_utc_in_la_returns_pt_string():
+    from app.utils.jinja_filters import next_sunday_03_utc_in_la
+
+    out = next_sunday_03_utc_in_la()
+    # Format is "Weekday Month Day at H:MM AM/PM TZ" — must include a PT marker
+    # so the UI never accidentally surfaces UTC.
+    assert "PDT" in out or "PST" in out
+    # Saturday or Sunday depending on whether the next firing falls into the
+    # current LA-day or the next (DST shift can move the wallclock hour).
+    assert any(day in out for day in ("Saturday", "Sunday"))
+    # Hour is one of 7:00 / 8:00 PM depending on PST/PDT.
+    assert ":00" in out
+    assert ("7:00 PM" in out) or ("8:00 PM" in out)

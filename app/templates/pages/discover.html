@@ -5,7 +5,8 @@
    Empty states (CONTEXT D-D2 Claude's Discretion):
    - Lidarr unconfigured → CTA to /settings
    - No vibes yet → CTA to /setup wizard
-   - First cron tick not run → "Your first discoveries land Sunday at 03:00 UTC"
+   - First cron tick not run → "Your first discoveries land {next_tick_local_str}"
+     (rendered in LA time via app.utils.jinja_filters.next_sunday_03_utc_in_la)
    - Cron ran but no candidates → "try again after next Sunday"
 
    Renders one ``partials/discover_vibe_section.html`` per active vibe;
@@ -39,7 +40,7 @@
       </p>
     {% elif not has_first_tick %}
       <p class="text-text-secondary text-[14px] mb-3">
-        Your first discoveries land Sunday at 03:00 UTC.
+        Your first discoveries land {{ next_tick_local_str }}.
       </p>
     {% elif total_candidates == 0 and total_in_flight == 0 %}
       <p class="text-text-secondary text-[14px] mb-3">

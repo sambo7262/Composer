@@ -7,7 +7,7 @@ Test fixtures that build their own ``Environment(...)`` must call
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -38,6 +38,27 @@ def local_time(value: Any, fmt: str = "%Y-%m-%d %H:%M %Z") -> str:
         dt = dt.replace(tzinfo=timezone.utc)
     la = dt.astimezone(ZoneInfo("America/Los_Angeles"))
     return la.strftime(fmt)
+
+
+def next_sunday_03_utc_in_la() -> str:
+    """Return the next "Sunday 03:00 UTC" weekly cron firing, rendered in LA.
+
+    The weekly maintenance tick is anchored to Sun 03:00 UTC (CronTrigger in
+    sync_scheduler.py). For UI surfaces that show "your next tick fires at..."
+    we render the next occurrence in America/Los_Angeles so the user sees the
+    familiar weekday/time (e.g. "Saturday May 17 at 8:00 PM PDT"). DST is
+    handled automatically by zoneinfo.
+    """
+    now_utc = datetime.now(timezone.utc)
+    days_ahead = (6 - now_utc.weekday()) % 7  # Mon=0 ... Sun=6
+    next_tick_utc = (now_utc + timedelta(days=days_ahead)).replace(
+        hour=3, minute=0, second=0, microsecond=0,
+    )
+    if next_tick_utc <= now_utc:
+        next_tick_utc += timedelta(days=7)
+    next_tick_la = next_tick_utc.astimezone(ZoneInfo("America/Los_Angeles"))
+    # %-I drops leading zero on hour; %Z = PDT/PST.
+    return next_tick_la.strftime("%A %b %-d at %-I:%M %p %Z")
 
 
 def register_filters(env) -> None:
