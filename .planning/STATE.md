@@ -4,14 +4,14 @@ milestone: v2.0
 milestone_name: — Music Companion
 status: executing
 stopped_at: Phase 7 context gathered via /gsd-discuss-phase. Four gray areas resolved (refill cadence + bootstrap, shortlist composition, queue UI + dismiss interaction, skip-tracking calibration); 13 implementation decisions captured in `07-CONTEXT.md`. Researcher and planner can proceed without re-asking the user. The system-prompt-caching fix (Anthropic >2048-token minimum that bit Phase 6.2) is folded into Phase 7 D-07 as the shared longer preamble — load-bearing for SC4 ("`cache_read_input_tokens` accumulating").
-last_updated: "2026-05-16T20:08:00.094Z"
-last_activity: 2026-05-16
+last_updated: "2026-05-17T01:50:01.194Z"
+last_activity: 2026-05-17 -- Phase 08 execution started
 progress:
   total_phases: 11
   completed_phases: 10
-  total_plans: 32
+  total_plans: 37
   completed_plans: 32
-  percent: 100
+  percent: 86
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-08)
 
 **Core value:** Your Plex stars are the truth. Composer turns them into living vibe playlists and a steady stream of personalized discoveries — without you having to describe a vibe each time.
-**Current focus:** Phase 07.1 — suggestions-cost-architecture-sql-refill-weekly-discovery
+**Current focus:** Phase 08 — lidarr-discovery-polish
 
 ## Current Position
 
-Phase: 8
-Plan: Not started
-Status: Executing Phase 07.1
-Last activity: 2026-05-16
+Phase: 08 (lidarr-discovery-polish) — EXECUTING
+Plan: 1 of 5
+Status: Executing Phase 08
+Last activity: 2026-05-17 -- Phase 08 execution started
 
 ### v2.0 Phase Snapshot
 
