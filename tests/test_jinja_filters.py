@@ -70,6 +70,31 @@ def test_register_filters_attaches_local_time_to_env():
     assert template.render() == "2026-05-16 13:00 PDT"
 
 
+def test_usd_cost_zero():
+    from app.utils.jinja_filters import usd_cost
+    assert usd_cost(0) == "$0.00"
+    assert usd_cost(0.0) == "$0.00"
+    assert usd_cost(None) == "$0.00"
+    assert usd_cost("not-a-number") == "$0.00"
+
+
+def test_usd_cost_sub_cent_uses_4_decimals():
+    from app.utils.jinja_filters import usd_cost
+    # Sub-cent → 4 decimals so cache-hit-heavy calls don't read as $0.00.
+    assert usd_cost(0.0023) == "$0.0023"
+    assert usd_cost(0.0001) == "$0.0001"
+    # Just under 1 cent.
+    assert usd_cost(0.0099) == "$0.0099"
+
+
+def test_usd_cost_one_cent_and_up_uses_2_decimals():
+    from app.utils.jinja_filters import usd_cost
+    assert usd_cost(0.01) == "$0.01"
+    assert usd_cost(0.42) == "$0.42"
+    assert usd_cost(1.234) == "$1.23"
+    assert usd_cost(42.50) == "$42.50"
+
+
 def test_next_sunday_03_utc_in_la_returns_pt_string():
     from app.utils.jinja_filters import next_sunday_03_utc_in_la
 

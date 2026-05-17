@@ -627,3 +627,65 @@ class TestStaleWarningChip:
         assert resp.status_code == 200
         # No stale chip because status isn't searching/pending.
         assert 'data-stale-warning="true"' not in resp.text
+
+
+# ============================================================================
+# GET /api/discovery/{mb_id}/top-tracks — UAT-iter lazy-load on expand
+# ============================================================================
+
+
+class TestTopTracksEndpoint:
+    def test_top_tracks_renders_list(
+        self, client_full, test_engine, monkeypatch,
+    ):
+        from app.services import listenbrainz_client
+
+        async def _fake_top(mbid, limit=5):
+            return [
+                {"recording_name": "Karma Police", "release_name": "OK Computer", "recording_mbid": "a"},
+                {"recording_name": "Creep", "release_name": "Pablo Honey", "recording_mbid": "b"},
+            ]
+        monkeypatch.setattr(
+            listenbrainz_client, "get_top_recordings_for_artist", _fake_top,
+        )
+
+        resp = client_full.get("/api/discovery/some-mbid/top-tracks")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Karma Police" in body
+        assert "OK Computer" in body
+        assert "Creep" in body
+
+    def test_top_tracks_empty_response_renders_empty_body(
+        self, client_full, test_engine, monkeypatch,
+    ):
+        """Empty list from ListenBrainz → empty partial (no error, no list)."""
+        from app.services import listenbrainz_client
+
+        async def _fake_top(mbid, limit=5):
+            return []
+        monkeypatch.setattr(
+            listenbrainz_client, "get_top_recordings_for_artist", _fake_top,
+        )
+
+        resp = client_full.get("/api/discovery/some-mbid/top-tracks")
+        assert resp.status_code == 200
+        # No <ul> rendered when tracks is empty.
+        assert "<ul" not in resp.text
+
+    def test_top_tracks_handler_failure_returns_empty(
+        self, client_full, test_engine, monkeypatch,
+    ):
+        """If the LB helper raises, the route still returns 200 with empty body
+        — the UI must never break the page on a third-party flake."""
+        from app.services import listenbrainz_client
+
+        async def _boom(mbid, limit=5):
+            raise RuntimeError("network down")
+        monkeypatch.setattr(
+            listenbrainz_client, "get_top_recordings_for_artist", _boom,
+        )
+
+        resp = client_full.get("/api/discovery/some-mbid/top-tracks")
+        assert resp.status_code == 200
+        assert "<ul" not in resp.text

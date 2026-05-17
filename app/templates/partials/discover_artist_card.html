@@ -1,9 +1,19 @@
 {# Phase 8 Plan 04 (D-D3 / D-D4 / D-D5) — tap-to-expand artist card.
 
-   Mirrors the Phase 7 suggestions_row.html vocabulary verbatim:
+   UAT iter (260516):
+   - Vertical layout (no more min-w-[260px]); full-width on mobile.
+   - Avatar placeholder dropped — saves 48px so the artist name + factual
+     hook breathe. Cover-Art-Archive integration still deferred per
+     CONTEXT (out of scope for v1).
+   - Tighter padding (px-2.5 py-1.5) so 6+ cards fit on a single mobile
+     viewport without horizontal cramming.
+   - Top tracks lazy-loaded from ListenBrainz on first expand via
+     hx-trigger="revealed once" on the expanded panel.
+
+   Mirrors the Phase 7 suggestions_row.html vocabulary:
    - x-data + x-show toggle pattern
    - Add + Dismiss buttons inside the expanded panel
-   - alpine-morph preservation via the body-level hx-ext (no per-element opt-in)
+   - alpine-morph preservation via the body-level hx-ext
 
    Tap targets are min-h-11 (44px — Pitfall 17 / UI-04). The vibe-color
    chip uses the inline `style="background-color: ...33; color: ...;"`
@@ -20,30 +30,33 @@
      class="bg-surface-card border border-border rounded-lg overflow-hidden">
   <button type="button"
           @click="expanded = !expanded"
-          class="w-full flex items-center gap-3 px-3 py-2 min-h-11 text-left
+          class="w-full flex items-center gap-2 px-2.5 py-1.5 min-h-11 text-left
                  hover:bg-surface-elevated focus:bg-surface-elevated transition-colors">
-    <div class="w-12 h-12 bg-surface-muted rounded flex-shrink-0">
-      {# Placeholder avatar — Cover Art Archive integration deferred per
-         CONTEXT (out of scope for v1; see deferred-ideas). #}
-    </div>
     <div class="flex-1 min-w-0">
       <div class="text-[14px] font-medium text-text-primary truncate">
         {{ artist.artist_name | e }}
       </div>
-      <div class="text-[13px] text-text-secondary truncate">
+      <div class="text-[12px] text-text-secondary truncate">
         {{ artist.factual_hook | e }}
       </div>
     </div>
-    <span class="text-[11px] rounded-full px-2 py-0.5 whitespace-nowrap"
+    <span class="text-[11px] rounded-full px-2 py-0.5 whitespace-nowrap flex-shrink-0"
           style="background-color: {{ (section.vibe.color or '#3a3a3e') }}33; color: {{ section.vibe.color or '#e8e8ed' }};">
       {{ section.vibe.name | e }}
     </span>
   </button>
-  <div x-show="expanded" x-cloak class="px-3 py-2 border-t border-border">
-    <p class="text-[13px] text-text-primary mb-2">
+  <div x-show="expanded"
+       x-cloak
+       hx-get="/api/discovery/{{ artist.mb_id }}/top-tracks"
+       hx-trigger="revealed once"
+       hx-swap="beforeend"
+       hx-target="#top-tracks-{{ artist.mb_id }}"
+       class="px-2.5 py-2 border-t border-border">
+    <p class="text-[13px] text-text-primary mb-1.5">
       <span class="text-text-secondary">Why this artist? </span>
       {{ artist.llm_rationale | e }}
     </p>
+    <div id="top-tracks-{{ artist.mb_id }}"></div>
     <div class="flex gap-2 mt-1">
       <button type="button"
               hx-post="/api/discovery/{{ artist.mb_id }}/add"

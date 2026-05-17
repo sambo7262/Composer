@@ -3,6 +3,7 @@
 POST /api/discovery/{mb_id}/add           — D-D5 / DISC-05 one-click Lidarr add
 POST /api/discovery/{mb_id}/dismiss       — D-D5 artist-only exclude
 GET  /api/discovery/{mb_id}/status-row    — D-C3 lazy lifecycle poll (5min cache)
+GET  /api/discovery/{mb_id}/top-tracks    — UAT iter: ListenBrainz top recordings (lazy-load on expand)
 
 Best-effort error handling: never block the user from dismissing a row
 even if the underlying handler raises (mirrors api_suggestions.dismiss_track).
@@ -176,4 +177,27 @@ async def get_status_row(mb_id: str, request: Request) -> HTMLResponse:
         request,
         "partials/discover_status_row.html",
         ctx,
+    )
+
+
+@router.get("/{mb_id}/top-tracks", response_class=HTMLResponse)
+async def get_top_tracks(mb_id: str, request: Request) -> HTMLResponse:
+    """UAT iter — fetch 5 famous tracks for an artist from ListenBrainz.
+
+    Lazy-loaded by the tap-to-expand card via hx-trigger="revealed once".
+    Best-effort: any failure renders an empty partial (UI shows nothing,
+    user can still add/dismiss). The endpoint is read-only and idempotent.
+    """
+    from app.services.listenbrainz_client import get_top_recordings_for_artist
+    try:
+        tracks = await get_top_recordings_for_artist(mb_id, limit=5)
+    except Exception:
+        logger.exception("get_top_tracks: handler raised for mb_id=%s", mb_id)
+        tracks = []
+
+    templates = get_templates()
+    return templates.TemplateResponse(
+        request,
+        "partials/discover_top_tracks.html",
+        {"tracks": tracks},
     )

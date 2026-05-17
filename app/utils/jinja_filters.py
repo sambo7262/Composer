@@ -61,6 +61,32 @@ def next_sunday_03_utc_in_la() -> str:
     return next_tick_la.strftime("%A %b %-d at %-I:%M %p %Z")
 
 
+def usd_cost(value: Any) -> str:
+    """Render a USD cost with precision that surfaces sub-cent values.
+
+    Why: prompt caching makes a single Anthropic call cost ~$0.001-$0.02.
+    The default 2-decimal display ("%.2f") truncates anything < $0.005 to
+    "$0.00", which makes the cost chip read as "no costs" right after a
+    cache-hit-heavy call.
+
+    Tiers:
+      - 0 → "$0.00"
+      - > 0 and < 0.01 → 4 decimals (e.g. "$0.0023")
+      - >= 0.01 → 2 decimals (e.g. "$0.42")
+
+    Always prefixed with "$"; returns "$0.00" for None / non-numeric input.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "$0.00"
+    if v <= 0:
+        return "$0.00"
+    if v < 0.01:
+        return "$" + f"{v:.4f}"
+    return "$" + f"{v:.2f}"
+
+
 def register_filters(env) -> None:
     """Attach Composer filters to a Jinja Environment.
 
@@ -69,3 +95,4 @@ def register_filters(env) -> None:
     """
     target = env.env if hasattr(env, "env") and not hasattr(env, "filters") else env
     target.filters["local_time"] = local_time
+    target.filters["usd_cost"] = usd_cost

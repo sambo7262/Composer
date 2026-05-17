@@ -7,8 +7,15 @@
    chip so historical / testing data doesn't pollute the canary. The
    /debug/suggestions cost meter card remains unfiltered (full history).
 
+   UAT iter (260516):
+   - Cost ALWAYS shown (pre- and post-first-tick) so user sees accumulation
+     before the first weekly cron stamp lands.
+   - usd_cost filter renders sub-cent values with 4 decimals so cache-hit-heavy
+     calls (~$0.001) don't read as "$0.00".
+
    Context required (set by app.routers.pages._compute_home_chip_context):
-     - this_week_cost_usd: float (post-baseline + post-last-tick sum)
+     - this_week_cost_usd: float (sum since baseline; "this week" framing
+       only applies once has_first_tick=True)
      - days_until_refresh: int | None (None when has_first_tick is False)
      - breaker_paused: bool (llm_cost_breaker tripped within the last 60s)
      - has_first_tick: bool (False when WeeklyCronState.last_tick_at IS NULL)
@@ -20,22 +27,21 @@
   <a href="/debug/suggestions"
      class="inline-flex items-center gap-2 min-h-11 rounded-full
             border border-border bg-surface-card px-3 py-1.5
-            text-[13px] text-text-secondary no-underline">
+            text-[13px] text-text-secondary no-underline flex-wrap">
+    <span class="text-text-primary font-medium">
+      {% if has_first_tick %}This week: {% endif %}{{ this_week_cost_usd | usd_cost }}
+    </span>
     {% if has_first_tick %}
-      <span class="text-text-primary font-medium">
-        This week: ${{ "%.2f"|format(this_week_cost_usd) }}
-      </span>
       {% if days_until_refresh is not none %}
         <span class="text-text-muted">·</span>
         <span>next refresh in {{ days_until_refresh }}d</span>
       {% endif %}
-      {% if breaker_paused %}
-        <span class="text-error font-medium ml-1">· paused</span>
-      {% endif %}
     {% else %}
-      <span class="text-text-secondary">
-        Your first weekly tick lands {{ next_tick_local_str }}.
-      </span>
+      <span class="text-text-muted">·</span>
+      <span>first refresh {{ next_tick_local_str }}</span>
+    {% endif %}
+    {% if breaker_paused %}
+      <span class="text-error font-medium ml-1">· paused</span>
     {% endif %}
   </a>
 </div>

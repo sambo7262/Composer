@@ -216,3 +216,117 @@ async def test_respects_limit_param(monkeypatch):
         "any-mbid", limit=2,
     )
     assert len(result) == 2
+
+
+# ============================================================================
+# get_top_recordings_for_artist — UAT-iter helper (LB top-recordings endpoint)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_top_recordings_returns_normalized_list(monkeypatch):
+    """Returns list of {recording_name, release_name, recording_mbid}
+    sliced to limit; drops entries missing recording_name.
+    """
+    from app.services import listenbrainz_client
+
+    raw = [
+        {
+            "recording_name": "Karma Police",
+            "release_name": "OK Computer",
+            "recording_mbid": "9e2ad5bc-c6f9-40d2-a36f-3122ee2072a3",
+            "length": 262440,
+        },
+        {
+            "recording_name": "Creep",
+            "release_name": "Pablo Honey",
+            "recording_mbid": "x",
+        },
+        {
+            # Missing recording_name → must be filtered out.
+            "release_name": "Mystery",
+            "recording_mbid": "z",
+        },
+    ]
+    fake_client = _make_fake_httpx_client(json_value=raw)
+    monkeypatch.setattr(
+        "app.services.listenbrainz_client.httpx.AsyncClient",
+        lambda *a, **kw: fake_client,
+    )
+
+    result = await listenbrainz_client.get_top_recordings_for_artist(
+        "any-mbid", limit=5,
+    )
+    assert len(result) == 2
+    assert result[0]["recording_name"] == "Karma Police"
+    assert result[0]["release_name"] == "OK Computer"
+    assert result[0]["recording_mbid"] == "9e2ad5bc-c6f9-40d2-a36f-3122ee2072a3"
+    # Extra fields (length, etc.) are stripped — return shape is tight.
+    assert "length" not in result[0]
+
+
+@pytest.mark.asyncio
+async def test_top_recordings_respects_limit(monkeypatch):
+    from app.services import listenbrainz_client
+
+    raw = [
+        {"recording_name": f"track-{i}", "release_name": f"rel-{i}", "recording_mbid": f"id-{i}"}
+        for i in range(10)
+    ]
+    fake_client = _make_fake_httpx_client(json_value=raw)
+    monkeypatch.setattr(
+        "app.services.listenbrainz_client.httpx.AsyncClient",
+        lambda *a, **kw: fake_client,
+    )
+
+    result = await listenbrainz_client.get_top_recordings_for_artist(
+        "any-mbid", limit=3,
+    )
+    assert len(result) == 3
+
+
+@pytest.mark.asyncio
+async def test_top_recordings_returns_empty_on_http_5xx(monkeypatch):
+    from app.services import listenbrainz_client
+
+    fake_client = _make_fake_httpx_client(
+        status_code=503,
+        raise_for_status_exc=httpx.HTTPStatusError(
+            "503", request=MagicMock(), response=MagicMock(status_code=503),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.listenbrainz_client.httpx.AsyncClient",
+        lambda *a, **kw: fake_client,
+    )
+
+    assert await listenbrainz_client.get_top_recordings_for_artist("x") == []
+
+
+@pytest.mark.asyncio
+async def test_top_recordings_returns_empty_on_timeout(monkeypatch):
+    from app.services import listenbrainz_client
+
+    fake_client = _make_fake_httpx_client(
+        get_exc=httpx.TimeoutException("timeout"),
+    )
+    monkeypatch.setattr(
+        "app.services.listenbrainz_client.httpx.AsyncClient",
+        lambda *a, **kw: fake_client,
+    )
+
+    assert await listenbrainz_client.get_top_recordings_for_artist("x") == []
+
+
+@pytest.mark.asyncio
+async def test_top_recordings_returns_empty_on_non_list(monkeypatch):
+    """Defensive — endpoint returning a dict / null gracefully empty-results."""
+    from app.services import listenbrainz_client
+
+    fake_client = _make_fake_httpx_client(json_value={"error": "wat"})
+    monkeypatch.setattr(
+        "app.services.listenbrainz_client.httpx.AsyncClient",
+        lambda *a, **kw: fake_client,
+    )
+
+    assert await listenbrainz_client.get_top_recordings_for_artist("x") == []

@@ -1,0 +1,12 @@
+{# UAT iter — lazy-loaded top recordings from ListenBrainz for the expanded
+   artist card. Empty list collapses cleanly. #}
+{% if tracks %}
+  <ul class="text-[12px] text-text-secondary list-none pl-0 mb-2 space-y-0.5">
+    {% for t in tracks %}
+      <li class="truncate">
+        <span class="text-text-primary">{{ t.recording_name | e }}</span>{% if t.release_name %}
+          <span class="text-text-muted"> · {{ t.release_name | e }}</span>{% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+{% endif %}

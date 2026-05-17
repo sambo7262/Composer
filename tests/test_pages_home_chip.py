@@ -150,9 +150,10 @@ class TestHomeChipQuery:
         # Pre-first-tick message now renders the next Sun 03:00 UTC tick as
         # LA-localized "Saturday May 17 at 8:00 PM PDT" (or PST in winter).
         # DST-aware via zoneinfo. Pin the prefix + the PT zone marker.
-        assert "Your first weekly tick lands" in body
+        # Pre-first-tick chip now renders cost (even $0.00) + "first refresh"
+        # context (LA-localized via next_sunday_03_utc_in_la, DST-aware).
+        assert "first refresh" in body
         assert ("PDT" in body or "PST" in body)
-        assert "UTC" not in body.split("Your first weekly tick lands")[1].split(".")[0]
 
     def test_chip_baseline_filter_excludes_historical_rows(self, client_full, test_engine):
         """Rows with called_at < CostMeterBaseline.deploy_at are excluded."""
@@ -277,9 +278,10 @@ class TestHomeChipQuery:
         # Pre-first-tick message now renders the next Sun 03:00 UTC tick as
         # LA-localized "Saturday May 17 at 8:00 PM PDT" (or PST in winter).
         # DST-aware via zoneinfo. Pin the prefix + the PT zone marker.
-        assert "Your first weekly tick lands" in body
+        # Pre-first-tick chip now renders cost (even $0.00) + "first refresh"
+        # context (LA-localized via next_sunday_03_utc_in_la, DST-aware).
+        assert "first refresh" in body
         assert ("PDT" in body or "PST" in body)
-        assert "UTC" not in body.split("Your first weekly tick lands")[1].split(".")[0]
 
     def test_chip_handles_missing_baseline_row(self, client_full, test_engine):
         """Pre-bootstrap edge case — CostMeterBaseline row absent."""
@@ -311,7 +313,9 @@ class TestHomeChipIncludeInVibesHome:
         assert "This week:" in text
         # The "next tick" string is now computed in PT by the router context;
         # the partial just renders the pre-formatted variable.
-        assert "first weekly tick lands" in text
+        # Partial now renders next-tick info on the "first refresh" branch
+        # (post-UAT chip restructure that always shows cost regardless of tick state).
+        assert "first refresh" in text
         assert "{{ next_tick_local_str }}" in text
         assert 'href="/debug/suggestions"' in text
         assert "min-h-11" in text

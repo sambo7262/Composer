@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 LISTENBRAINZ_SIMILAR_ARTISTS_URL = (
     "https://labs.api.listenbrainz.org/similar-artists/json"
 )
+LISTENBRAINZ_TOP_RECORDINGS_URL = (
+    "https://api.listenbrainz.org/1/popularity/top-recordings-for-artist/{mbid}"
+)
 # Algorithm string locked from the labs UI; same as the smoke test used
 # (Task 1 captured the Four Tet fixture with this exact algorithm string).
 LISTENBRAINZ_DEFAULT_ALGORITHM = (
@@ -81,4 +84,60 @@ async def get_similar_artists(seed_mbid: str, limit: int = 100) -> list[dict]:
         return []
     except Exception:
         logger.exception("ListenBrainz parse error for mbid=%s", seed_mbid)
+        return []
+
+
+async def get_top_recordings_for_artist(
+    artist_mbid: str, limit: int = 5,
+) -> list[dict]:
+    """Fetch top-listened recordings for an artist MBID.
+
+    Used by /discover's tap-to-expand to show "famous tracks" inline. The
+    LB popularity endpoint returns up to ~50 recordings ordered by aggregate
+    listen count across the LB user base; we slice the first ``limit`` for
+    display.
+
+    Returns a list of dicts each with at least ``recording_name`` and
+    ``release_name``. Empty list on any error (best-effort UI enhancement
+    must never break the discover page).
+
+    Endpoint: GET /1/popularity/top-recordings-for-artist/{mbid}
+    """
+    url = LISTENBRAINZ_TOP_RECORDINGS_URL.format(mbid=artist_mbid)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, list):
+                logger.warning(
+                    "ListenBrainz top-recordings non-list for mbid=%s: %r",
+                    artist_mbid, type(data).__name__,
+                )
+                return []
+            return [
+                {
+                    "recording_name": r.get("recording_name") or "",
+                    "release_name": r.get("release_name") or "",
+                    "recording_mbid": r.get("recording_mbid") or "",
+                }
+                for r in data[:limit]
+                if r.get("recording_name")
+            ]
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "ListenBrainz top-recordings HTTP %d for mbid=%s",
+            exc.response.status_code, artist_mbid,
+        )
+        return []
+    except (httpx.TimeoutException, httpx.RequestError):
+        logger.warning(
+            "ListenBrainz top-recordings network error for mbid=%s",
+            artist_mbid,
+        )
+        return []
+    except Exception:
+        logger.exception(
+            "ListenBrainz top-recordings parse error for mbid=%s", artist_mbid,
+        )
         return []

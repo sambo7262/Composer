@@ -1,4 +1,9 @@
-{# Phase 8 Plan 04 (D-D2 / D-E2) — per-vibe horizontal-scroll section.
+{# Phase 8 Plan 04 (D-D2 / D-E2) — per-vibe vertical-list section.
+
+   UAT iter (260516): flipped from horizontal-scroll to vertical scroll.
+   Mobile portrait users scroll DOWN through candidates per vibe, not across.
+   Cards now expand inline with full-width to surface artist name + factual
+   hook without truncation.
 
    The section header uses the vibe's locked-palette color as an inline
    ``border-left`` accent — Tailwind 4 utility classes don't accept
@@ -11,15 +16,15 @@
    candidate cards (D-D4 lifecycle); the candidate list is empty if
    every artist for this vibe has been added/dismissed this week.
 #}
-<section class="mb-6">
+<section class="mb-5">
   <h2 class="text-[15px] font-semibold text-text-primary mb-2 pl-3"
       style="border-left: 4px solid {{ section.vibe.color or '#3a3a3e' }};">
     For your {{ section.vibe.name | e }} vibe
     ({{ section.candidates|length + section.adds_in_flight|length }})
   </h2>
-  <ul class="flex overflow-x-auto snap-x snap-mandatory gap-3 -mx-3 px-3 pb-2 list-none">
+  <ul class="flex flex-col gap-1.5 list-none pl-0">
     {% for add in section.adds_in_flight %}
-      <li class="snap-start min-w-[260px]">
+      <li>
         {% set mb_id = add.mb_id %}
         {% set artist_name = add.artist_name %}
         {% set lidarr_status = add.lidarr_status or "searching" %}
@@ -30,7 +35,7 @@
       </li>
     {% endfor %}
     {% for artist in section.candidates %}
-      <li class="snap-start min-w-[260px]">
+      <li>
         {% include "partials/discover_artist_card.html" %}
       </li>
     {% endfor %}
