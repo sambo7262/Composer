@@ -441,12 +441,24 @@ def _read_seed_artist_name_sync(seed_track_id: int) -> str:
 
 
 def _get_in_library_mbids_sync() -> set:
-    """Pitfall 12 — already-in-composer-library set.
+    """Pitfall 12 / OPS-06 — already-in-composer-library set.
 
     Reads ``Track.plex_artist_mbid`` (added + backfilled in Plan 01). NULL
     rows are skipped — "unknown library presence" is a soft miss, not a
     hard fail; the next bootstrap retries backfill. NO name-string fallback
     — Plan 01 owns the column existence contract.
+
+    OPS-06 INVARIANT (Plan 05 Task 2): reads ONLY from
+    ``composer.tracks``. Does NOT join to ``ManagedPlaylist`` or any
+    playlist-derived view. Tracks in the local DB are valid library
+    signal regardless of which Plex playlist originally surfaced them;
+    legacy v1-generated Plex playlists (no ``Composer · `` prefix)
+    contribute nothing to this set because they never write into
+    ``composer.tracks`` by the sync path. If a future change adds
+    playlist-aware dedup, it MUST gate on
+    ``plex_playlist_service.is_managed_playlist(rating_key)`` to
+    preserve the OPS-06 hands-off invariant. Regression tested by
+    ``tests/test_discovery_service_ops06.py``.
     """
     with Session(get_engine()) as session:
         rows = list(session.exec(
@@ -1819,3 +1831,206 @@ async def get_lidarr_status_for_add(
             status = "searching"
     _lidarr_status_cache[mb_id] = (status, now)
     return status
+
+
+# =====================================================================
+# Phase 8 Plan 05 — /debug/discovery data aggregation.
+#
+# OPS-06 INVARIANT: Plan 05 does NOT modify ``_get_in_library_mbids_sync``
+# (Pitfall 12 / Plan 02). That helper reads ONLY from ``composer.tracks``
+# (the synced Plex library) and does NOT join to ``ManagedPlaylist`` or
+# any playlist-derived view. Tracks in the local DB are valid library
+# signal regardless of which Plex playlist originally surfaced them;
+# legacy v1-generated Plex playlists (no ``Composer · `` prefix) never
+# contribute to the dedup set because the sync path writes the track
+# row independently of playlist membership. If a future change adds
+# playlist-aware dedup it MUST gate on
+# ``plex_playlist_service.is_managed_playlist(rating_key)`` to preserve
+# the OPS-06 hands-off invariant.
+# =====================================================================
+
+
+def _read_debug_discovery_data_sync() -> dict:
+    """Aggregate the five /debug/discovery sections in a single Session.
+
+    Returns a dict shaped for ``pages/debug_discovery.html``:
+
+      - ``candidates``       — last weekly DiscoveryCandidate rows
+                               (with the seed Vibe joined for the
+                               section header / table column)
+      - ``adds``             — DiscoveryAdd lifecycle timeline rows
+      - ``mb_queries``       — last 20 MusicBrainzCache rows
+      - ``lidarr_adds``      — same DiscoveryAdd slice, framed as the
+                               recent-Lidarr-add log
+      - ``lidarr_test_history`` — EventLog rows where source='lidarr'
+      - ``artist_cost_usd``  — SUM(cost_estimate_usd) WHERE
+                               purpose LIKE 'discovery_artist_%'
+      - ``artist_recent_calls`` — last 20 LLMUsage rows for the panel
+      - ``counts``           — None placeholder (per-tick funnel counts
+                               are not persisted in Plan 02; Plan 05
+                               surfaces a friendly placeholder)
+      - ``running_state``    — get_state() snapshot for the manual-tick
+                               button UI (read by the page poll)
+
+    Defensive: never raises. Any read failure on the EventLog branch
+    falls back to an empty list so the rest of the page renders.
+    """
+    # Local imports to keep module-import overhead bounded — these tables
+    # only matter at /debug/discovery render time.
+    from sqlmodel import func
+
+    from app.models.discovery import (
+        DiscoveryAdd, DiscoveryCandidate, MusicBrainzCache,
+    )
+    from app.models.event_log import EventLog
+    from app.models.llm_usage import LLMUsage
+
+    with Session(get_engine()) as session:
+        # 1. Last weekly candidate set with vibe joined.
+        cand_rows = list(session.exec(
+            select(DiscoveryCandidate)
+            .order_by(DiscoveryCandidate.created_at.desc())
+            .limit(200)
+        ).all())
+        vibes_by_id = {
+            v.id: v for v in session.exec(select(Vibe)).all()
+        }
+        candidates = [
+            {
+                "mb_id": c.mb_id,
+                "artist_name": c.artist_name,
+                "seed_vibe": vibes_by_id.get(c.seed_vibe_id),
+                "mb_listener_count": c.mb_listener_count,
+                "popularity_gate_pass": c.popularity_gate_pass,
+                "llm_rank": c.llm_rank,
+                "factual_hook": c.factual_hook,
+                "llm_rationale": c.llm_rationale,
+                "created_at": c.created_at,
+            }
+            for c in cand_rows
+        ]
+
+        # 2. DiscoveryAdd lifecycle timeline.
+        adds = list(session.exec(
+            select(DiscoveryAdd)
+            .order_by(DiscoveryAdd.added_at.desc())
+            .limit(50)
+        ).all())
+
+        # 3. Recent MusicBrainz queries (cache rows as proxy).
+        mb_rows = list(session.exec(
+            select(MusicBrainzCache)
+            .order_by(MusicBrainzCache.cached_at.desc())
+            .limit(20)
+        ).all())
+
+        # 4. Recent Lidarr add_artist (DiscoveryAdd, top 20 of section 2).
+        lidarr_adds = adds[:20]
+
+        # 5. Lidarr connection-test history (best-effort).
+        try:
+            test_history = list(session.exec(
+                select(EventLog)
+                .where(EventLog.source == "lidarr")
+                .order_by(EventLog.received_at.desc())
+                .limit(20)
+            ).all())
+        except Exception:
+            test_history = []
+
+        # Cost panel — artist-only aggregate. ``func.coalesce`` returns
+        # 0.0 when the table is empty so the panel always renders a
+        # number. The SQL parameter is server-controlled (T-08-27).
+        artist_cost_row = session.exec(
+            select(func.coalesce(func.sum(LLMUsage.cost_estimate_usd), 0.0))
+            .where(LLMUsage.purpose.like("discovery_artist_%"))
+        ).first()
+        # SQLModel may return either the scalar directly or a tuple
+        # depending on the SQLAlchemy version — handle both.
+        if isinstance(artist_cost_row, tuple):
+            artist_cost_usd = float(artist_cost_row[0] or 0.0)
+        else:
+            artist_cost_usd = float(artist_cost_row or 0.0)
+
+        artist_recent_calls = list(session.exec(
+            select(LLMUsage)
+            .where(LLMUsage.purpose.like("discovery_artist_%"))
+            .order_by(LLMUsage.called_at.desc())
+            .limit(20)
+        ).all())
+
+        # Per-tick funnel counts are NOT persisted in Plan 02 — the
+        # placeholder None lets the template render a friendly message.
+        counts = None
+
+    return {
+        "candidates": candidates,
+        "adds": adds,
+        "mb_queries": mb_rows,
+        "lidarr_adds": lidarr_adds,
+        "lidarr_test_history": test_history,
+        "artist_cost_usd": artist_cost_usd,
+        "artist_recent_calls": artist_recent_calls,
+        "counts": counts,
+    }
+
+
+async def read_debug_discovery_data() -> dict:
+    """Async accessor — runs the aggregate in a threadpool.
+
+    Adds ``running_state`` keyed off the in-process singleton so the
+    /debug/discovery template can disable / re-style the manual-tick
+    button + power the 5s state-transition poll.
+    """
+    data = await asyncio.to_thread(_read_debug_discovery_data_sync)
+    data["running_state"] = get_state()
+    return data
+
+
+# =====================================================================
+# Phase 8 Plan 05 ADDITION-1 — Manual "Run weekly tick now" trigger.
+#
+# Invokes the FULL ``_weekly_maintenance_tick`` (all 4 steps: prune →
+# suggestions discovery → artist discovery → WeeklyCronState stamp) in
+# a FastAPI BackgroundTask so the HTTP request returns immediately.
+#
+# Gates on ``_status.state == "running"`` — concurrent manual triggers
+# return 409 from the router so the cron doesn't double-run.
+#
+# Best-effort wrapper around the tick: any exception is captured to
+# ``logger.exception`` + ``_status.last_error`` without propagating, so
+# the BackgroundTask doesn't crash the event loop.
+# =====================================================================
+
+
+async def run_manual_weekly_tick() -> None:
+    """Best-effort manual invocation of ``_weekly_maintenance_tick``.
+
+    Called by the ``/api/discovery/run-tick-now`` BackgroundTask. Sets
+    ``_status.state = "running"`` BEFORE the tick fires so a 5s poll on
+    the page can show the in-flight indicator; resets to ``idle`` or
+    ``error`` on completion.
+
+    Failure-mode contract: any exception raised by the tick is logged
+    + recorded on ``_status.last_error``; the function NEVER raises
+    (BackgroundTask exceptions would otherwise propagate into Starlette's
+    middleware chain and surface as opaque 500s on the NEXT request).
+    """
+    global _status
+    _status.state = "running"
+    _status.last_run_at = datetime.now(timezone.utc).isoformat()
+    _status.last_error = None
+    try:
+        # Late import to avoid a circular at module load (sync_scheduler
+        # imports from us indirectly via the lazy imports inside its
+        # functions). The same pattern is used in
+        # :func:`artist_discovery_call_weekly`.
+        from app.services.sync_scheduler import _weekly_maintenance_tick
+        await _weekly_maintenance_tick()
+        _status.state = "idle"
+    except Exception as exc:
+        logger.exception(
+            "run_manual_weekly_tick: weekly tick raised; captured.",
+        )
+        _status.state = "error"
+        _status.last_error = f"{type(exc).__name__}: {str(exc)[:200]}"

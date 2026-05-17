@@ -306,6 +306,36 @@ async def read_discover(request: Request):
     )
 
 
+@router.get("/debug/discovery", response_class=HTMLResponse)
+async def read_debug_discovery(request: Request):
+    """DEBUG-04 / DEBUG-05 — /debug/discovery diagnostic surface.
+
+    Five sections + cost panel + recent-LLM-calls table per
+    CONTEXT §"Claude's Discretion: /debug/discovery page layout":
+
+      1. Last weekly DiscoveryCandidate set with full provenance
+      2. DiscoveryAdd lifecycle timeline
+      3. Recent MusicBrainz queries (via MusicBrainzCache cached_at DESC)
+      4. Recent Lidarr add_artist requests (DiscoveryAdd recent slice)
+      5. Lidarr connection-test history (best-effort from EventLog)
+      + Cost panel — SUM(cost_estimate_usd) WHERE purpose LIKE 'discovery_artist_%'
+      + Last 20 LLMUsage rows for that same purpose-prefix
+
+    Plain HTML per DEBUG-05 — no JS-only rendering. Plan 05 ADDITION-1
+    adds a "Run weekly tick now" button + 5s state poll; both render
+    server-side so a copy-paste of the page is self-contained.
+    """
+    from app.services import discovery_service
+
+    templates = get_templates()
+    data = await discovery_service.read_debug_discovery_data()
+    return templates.TemplateResponse(
+        request,
+        "pages/debug_discovery.html",
+        {"active_page": "settings", **data},
+    )
+
+
 @router.get("/debug", response_class=HTMLResponse)
 async def read_debug_index(request: Request):
     """DEBUG-05 — index page linking to all debug surfaces.
