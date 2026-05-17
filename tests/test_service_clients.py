@@ -91,12 +91,12 @@ class TestLidarrClient:
         from app.services.lidarr_client import test_lidarr_connection
 
         mock_lidarr = MagicMock()
-        mock_lidarr.get_quality_profile.return_value = [
+        mock_lidarr.quality_profile.get.return_value = [
             {"id": 1, "name": "Lossless"},
             {"id": 2, "name": "Standard"},
         ]
-        mock_lidarr.get_metadata_profile.return_value = []
-        mock_lidarr.get_root_folder.return_value = []
+        mock_lidarr.metadata.get.return_value = []
+        mock_lidarr.root_folder.get.return_value = []
         mock_lidarr_cls.return_value = mock_lidarr
 
         result = await test_lidarr_connection("http://lidarr:8686", "api-key-123")

@@ -3,10 +3,16 @@ from __future__ import annotations
 import asyncio
 import logging
 
+# pyarr 6.x renamed LidarrAPI → Lidarr AND restructured into namespaced
+# submodules (quality_profile.get(), artist.lookup(), etc). requirements.txt
+# pins >=6.6,<7.0; production (Docker, Python 3.12) always gets 6.x. The
+# import shim only matters for local dev environments where pyarr 5.x may
+# still be installed (Python <3.12). Tests fully mock the Lidarr class so
+# the 5.x flat-method shape never executes.
 try:
-    from pyarr import Lidarr  # pyarr 6.x — class renamed
-except ImportError:  # pragma: no cover
-    from pyarr import LidarrAPI as Lidarr  # pyarr 5.x — backwards-compat alias
+    from pyarr import Lidarr  # pyarr 6.x
+except ImportError:  # pragma: no cover — local-dev fallback only
+    from pyarr import LidarrAPI as Lidarr  # pyarr 5.x
 
 logger = logging.getLogger(__name__)
 
@@ -18,11 +24,14 @@ def _fetch_lidarr_test_payload(lidarr):
     single GIL-bound thread + a single round-trip to Lidarr. The three
     pyarr calls each open their own HTTP request internally but they all
     share one threadpool slot, which is the point: fewer event-loop hops.
+
+    pyarr 6.x namespaced API: quality_profile.get(), metadata.get(),
+    root_folder.get() (replaces 5.x flat get_quality_profile etc.).
     """
     return (
-        lidarr.get_quality_profile(),
-        lidarr.get_metadata_profile(),
-        lidarr.get_root_folder(),
+        lidarr.quality_profile.get(),
+        lidarr.metadata.get(),
+        lidarr.root_folder.get(),
     )
 
 
@@ -107,10 +116,10 @@ async def add_artist(
     try:
         url = url.rstrip("/")
         lidarr = Lidarr(url, api_key=api_key)
-        # 1) Look up by MBID (Lidarr's lookup_artist accepts "mbid:<MBID>" query).
+        # 1) Look up by MBID via pyarr 6.x artist.lookup (accepts "mbid:<MBID>").
         #    Pitfall 10 — the candidate was already MB-validated upstream, so we
-        #    just need the dict shape pyarr.add_artist requires.
-        candidates = await asyncio.to_thread(lidarr.lookup_artist, f"mbid:{mb_id}")
+        #    just need the dict shape lidarr.artist.add requires.
+        candidates = await asyncio.to_thread(lidarr.artist.lookup, f"mbid:{mb_id}")
         if not candidates:
             return {
                 "success": False,
@@ -125,7 +134,7 @@ async def add_artist(
             candidates[0],
         )
         response = await asyncio.to_thread(
-            lidarr.add_artist,
+            lidarr.artist.add,
             artist=artist_dict,
             root_dir=root_dir,
             quality_profile_id=quality_profile_id,
@@ -158,7 +167,7 @@ async def get_recent_history(
     try:
         url = url.rstrip("/")
         lidarr = Lidarr(url, api_key=api_key)
-        result = await asyncio.to_thread(lidarr.get_history, page_size=page_size)
+        result = await asyncio.to_thread(lidarr.history.get, page_size=page_size)
         return (result or {}).get("records", []) or []
     except Exception:
         logger.exception("get_recent_history failed")

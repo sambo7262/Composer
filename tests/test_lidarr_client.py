@@ -30,9 +30,9 @@ async def test_connection_test_returns_three_lists(mock_lidarr_cls):
     from app.services.lidarr_client import test_lidarr_connection
 
     mock_lidarr = MagicMock()
-    mock_lidarr.get_quality_profile.return_value = [{"id": 1, "name": "FLAC"}]
-    mock_lidarr.get_metadata_profile.return_value = [{"id": 2, "name": "Standard"}]
-    mock_lidarr.get_root_folder.return_value = [{"id": 3, "path": "/music"}]
+    mock_lidarr.quality_profile.get.return_value = [{"id": 1, "name": "FLAC"}]
+    mock_lidarr.metadata.get.return_value = [{"id": 2, "name": "Standard"}]
+    mock_lidarr.root_folder.get.return_value = [{"id": 3, "path": "/music"}]
     mock_lidarr_cls.return_value = mock_lidarr
 
     result = await test_lidarr_connection("http://lidarr", "key")
@@ -127,10 +127,10 @@ async def test_add_artist_passes_both_profile_ids_and_root_dir(mock_lidarr_cls):
     from app.services.lidarr_client import add_artist
 
     mock_lidarr = MagicMock()
-    mock_lidarr.lookup_artist.return_value = [
+    mock_lidarr.artist.lookup.return_value = [
         {"foreignArtistId": "abc-mbid", "artistName": "X"}
     ]
-    mock_lidarr.add_artist.return_value = {"id": 99, "artistName": "X"}
+    mock_lidarr.artist.add.return_value = {"id": 99, "artistName": "X"}
     mock_lidarr_cls.return_value = mock_lidarr
 
     result = await add_artist(
@@ -145,8 +145,8 @@ async def test_add_artist_passes_both_profile_ids_and_root_dir(mock_lidarr_cls):
     assert result["success"] is True
     assert result["lidarr_artist_id"] == 99
 
-    mock_lidarr.add_artist.assert_called_once()
-    kwargs = mock_lidarr.add_artist.call_args.kwargs
+    mock_lidarr.artist.add.assert_called_once()
+    kwargs = mock_lidarr.artist.add.call_args.kwargs
     assert kwargs["artist"] == {"foreignArtistId": "abc-mbid", "artistName": "X"}
     assert kwargs["root_dir"] == "/music"
     assert kwargs["quality_profile_id"] == 1
@@ -163,7 +163,7 @@ async def test_add_artist_drops_when_lookup_empty(mock_lidarr_cls):
     from app.services.lidarr_client import add_artist
 
     mock_lidarr = MagicMock()
-    mock_lidarr.lookup_artist.return_value = []
+    mock_lidarr.artist.lookup.return_value = []
     mock_lidarr_cls.return_value = mock_lidarr
 
     result = await add_artist(
@@ -177,7 +177,7 @@ async def test_add_artist_drops_when_lookup_empty(mock_lidarr_cls):
 
     assert result["success"] is False
     assert "not found" in result["error"]
-    mock_lidarr.add_artist.assert_not_called()
+    mock_lidarr.artist.add.assert_not_called()
 
 
 # ============================================================================
@@ -192,7 +192,7 @@ async def test_get_recent_history_returns_records(mock_lidarr_cls):
     from app.services.lidarr_client import get_recent_history
 
     mock_lidarr = MagicMock()
-    mock_lidarr.get_history.return_value = {
+    mock_lidarr.history.get.return_value = {
         "records": [{"eventType": "trackFileImported", "artistId": 42}]
     }
     mock_lidarr_cls.return_value = mock_lidarr
