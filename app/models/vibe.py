@@ -68,6 +68,12 @@ class Vibe(SQLModel, table=True):
     # NULL until run_phase_08_discovery_bootstrap backfills existing rows
     # on first deploy after Phase 8.
     color: Optional[str] = Field(default=None)
+    # Phase 8 D-A2 — round-robin seed-track rotation. Plan 02 selector
+    # picks the next-id starred track in this vibe after last_seed_track_id
+    # so each Sunday gets a fresh seed; wraps to smallest id when exhausted.
+    last_seed_track_id: Optional[int] = Field(
+        default=None, foreign_key="track.id",
+    )
 
 
 class TrackVibe(SQLModel, table=True):

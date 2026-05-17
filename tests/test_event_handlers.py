@@ -336,8 +336,22 @@ class TestStaticAnalysis:
             "removeItems",
             "editTitle",
             # Phase 8 — pyarr blocking calls (Lidarr class methods).
+            # NB: pyarr 6.x actually exposes `lidarr.artist.lookup` /
+            # `lidarr.artist.add` (i.e. `.lookup` / `.add` attrs on the
+            # `artist` namespace), NOT a flat `lookup_artist` /
+            # `add_artist`. The forbidden name `add_artist` here would
+            # also match `lidarr_client.add_artist` — the OUTER async
+            # wrapper we hand-rolled in Plan 01 — which is precisely
+            # what the wrapping pattern produces. The Plan 01 AST scan
+            # passed because the outer-async wrapper's inner blocking
+            # `lidarr.artist.add` is itself wrapped in `asyncio.to_thread`.
+            # We keep `add_artist` here as a defensive guard against a
+            # future flat-API regression in pyarr, and we DO NOT add
+            # `lookup_artist` — that collides with our own
+            # `musicbrainz_client.lookup_artist` (which is itself a safe
+            # async wrapper, awaited by callers; the AST scan cannot
+            # distinguish the two so we leave the name out).
             "add_artist",
-            "lookup_artist",
             "get_quality_profile",
             "get_metadata_profile",
             "get_root_folder",

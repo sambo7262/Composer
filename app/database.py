@@ -174,6 +174,17 @@ def _migrate_add_columns(engine) -> None:
             logging.getLogger(__name__).info(
                 "Phase 8 migration: added vibe.color column"
             )
+        # Phase 8 D-A2 — additive Vibe.last_seed_track_id column.
+        # Round-robin rotation cursor for discovery_service per-vibe seed
+        # selection (Plan 02). NULL means "never picked a seed yet";
+        # selector wraps to smallest id when exhausted.
+        if "last_seed_track_id" not in vibe_cols:
+            cursor.execute(
+                "ALTER TABLE vibe ADD COLUMN last_seed_track_id INTEGER"
+            )
+            logging.getLogger(__name__).info(
+                "Phase 8 migration: added vibe.last_seed_track_id column"
+            )
     except sqlite3.OperationalError:
         # vibe table doesn't exist yet; SQLModel.create_all will materialise
         # it with the color column from the model definition. No-op here.
