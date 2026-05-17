@@ -1,0 +1,44 @@
+{# Phase 8 Plan 04 (D-D4 / D-C3 / Pitfall 14) — post-Add Lidarr status row.
+
+   Replaces the artist card after a successful Add. Once the artist is
+   fully ingested + vibe-slotted, the backend stops including this row
+   in /discover (D-D4 "REMOVED from /discover" lifecycle is enforced in
+   ``discovery_service._read_active_discover_data_sync``).
+
+   D-C3 / Pitfall 14 — when the underlying Lidarr add has sat in
+   "searching"/"pending" for >2 days, the soft warning chip ("No releases
+   found after Nd") surfaces inline. The router
+   (``api_discovery.py::_compute_stale_context``) computes ``is_stale`` +
+   ``stale_days``; the template renders the chip ONLY when ``is_stale``
+   is truthy. The chip MUST ship with first version (per plan +
+   acceptance gate); it is the only Pitfall 14 surfacing path for
+   long-stalled adds without a separate cron.
+
+   ``hx-trigger="revealed once"`` lazy-loads a fresh status when the row
+   scrolls into view — pairs with the 5-min in-memory cache in
+   ``discovery_service.get_lidarr_status_for_add`` (D-C3).
+#}
+<div id="discover-card-{{ mb_id }}"
+     class="bg-surface-card border border-border rounded-lg px-3 py-2"
+     hx-get="/api/discovery/{{ mb_id }}/status-row"
+     hx-trigger="revealed once"
+     hx-swap="outerHTML">
+  {% if success %}
+    <div class="text-[14px] font-medium text-text-primary truncate">
+      {{ artist_name | e }}
+    </div>
+    <div class="text-[13px] text-text-secondary truncate">
+      Lidarr: {{ lidarr_status | e }}
+    </div>
+    {% if is_stale %}
+      <div class="mt-1 inline-flex items-center gap-1 rounded-full bg-amber-500/15 text-amber-400 text-[11px] px-2 py-0.5"
+           data-stale-warning="true">
+        ⚠ No releases found after {{ stale_days }}d — try a different quality profile?
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="text-[14px] text-error">
+      {{ error | e }}
+    </div>
+  {% endif %}
+</div>

@@ -1,10 +1,36 @@
+{# Phase 8 Plan 04 Task 2 (UI-07 / UI-08 / D-D1) — mobile-first library page.
+
+   Replaces the v1 wide-table-only layout. Mobile portrait renders a
+   card-per-track vertical list (partials/track_card.html); md+ keeps
+   the wide table (partials/track_table.html); both are wrapped inside
+   partials/library_results_wrapper.html so a single HTMX swap covers
+   both breakpoints.
+
+   New surfaces:
+   - Sticky full-width search bar (UI-07 — sticky top of the content
+     area, NOT the page; the bottom_tab_bar already pins the bottom)
+   - Filter chips row: All / Analyzed / Unanalyzed / Rated
+   - Sort dropdown → bottom sheet (mirrors recluster_modal pattern)
+
+   Preserved from v1:
+   - sync_banner + analysis_banner includes — Phase 2/3 surfaces still
+     render at the top so the user can trigger Sync / Analyze without
+     bouncing to settings.
+
+   Mobile-first invariants enforced by tests/test_mobile_first_conventions.py:
+   - No fixed-viewport-height utility classes (use min-h-dvh on body)
+   - alpine-morph on HTMX swaps is body-level (no per-element opt-in)
+   - 44px tap targets (min-h-11) on every tappable element
+#}
 {% extends "base.html" %}
 
-{% block title %}Library - Composer{% endblock %}
+{% block title %}Library · Composer{% endblock %}
 
 {% block content %}
-<div class="pb-12">
-  <h1 class="text-[28px] font-semibold text-text-primary mb-6">Library</h1>
+<div class="pb-12" x-data="{ sortOpen: false }">
+  <h1 class="text-[22px] sm:text-[28px] font-semibold text-text-primary mb-3 sm:mb-6">
+    Library
+  </h1>
 
   {# Sync banner: shows Sync Now button, progress, or last synced status #}
   {% include "partials/sync_banner.html" %}
@@ -12,20 +38,47 @@
   {# Analysis banner: shows analysis progress, controls, and error details #}
   {% include "partials/analysis_banner.html" %}
 
-  {# Search input with HTMX debounce #}
-  <div class="mb-6">
+  {# Phase 8 UI-07 / D-D1 — sticky search bar.
+     Sticky relative to the content scroll container (not the viewport;
+     the bottom_tab_bar pins the bottom). hx-include keeps the active
+     filter + sort values flowing on every search request. #}
+  <div class="sticky top-0 z-10 bg-surface-primary -mx-3 px-3 py-2 mb-3 border-b border-border">
     <input type="search" name="search"
            value="{{ search | default('') }}"
            hx-get="/api/library/tracks"
            hx-trigger="input changed delay:300ms, search"
-           hx-target="#track-table"
+           hx-target="#library-results"
            hx-swap="outerHTML"
-           hx-include="this"
+           hx-include="[name='filter'], [name='sort']"
            placeholder="Search tracks, artists, albums..."
-           class="w-full bg-surface-elevated border border-border rounded-lg px-4 py-2 text-text-primary placeholder-text-secondary focus:border-border-focus focus:ring-1 focus:ring-border-focus text-[15px]">
+           class="w-full min-h-11 bg-surface-elevated border border-border rounded-lg px-4 py-2 text-text-primary placeholder-text-secondary focus:border-border-focus focus:ring-1 focus:ring-border-focus text-[15px]">
   </div>
 
-  {# Track table: loaded with initial data, updated via HTMX #}
-  {% include "partials/track_table.html" %}
+  {# Filter chips row (UI-07). Alpine x-data drives the active state +
+     writes through a hidden input that HTMX picks up via hx-include
+     on the search above. #}
+  {% include "partials/library_filter_chips.html" %}
+
+  {# Sort trigger — opens the bottom sheet (UI-07).
+     sortOpen lives on the wrapper x-data so the bottom sheet (rendered
+     just below) shares the same Alpine scope. #}
+  <div class="flex justify-end mb-3">
+    <button type="button"
+            @click="sortOpen = true"
+            class="inline-flex items-center gap-1 min-h-11 px-3 rounded-md border border-border bg-surface-card text-[13px] text-text-secondary">
+      Sort: {{ sort | default('Title') | capitalize }}
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <polyline points="6 9 12 15 18 9"/>
+      </svg>
+    </button>
+    {% include "partials/library_sort_sheet.html" %}
+  </div>
+
+  {# Results container — single HTMX swap target wrapping mobile cards
+     AND md+ table. Server returns this partial from
+     /api/library/tracks so filter/sort/search handlers each do one
+     hx-swap="outerHTML" against #library-results. #}
+  {% include "partials/library_results_wrapper.html" %}
 </div>
 {% endblock %}

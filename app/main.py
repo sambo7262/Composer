@@ -15,6 +15,7 @@ from app.database import init_db
 from app.routers import (
     api_analysis,
     api_chat,  # Phase 7 — retired (UI-06): every endpoint returns 404 for an explicit signal.
+    api_discovery,  # Phase 8 Plan 04 — /api/discovery/{mb_id}/{add,dismiss,status-row}
     api_health,
     api_library,
     api_rating_sync,
@@ -315,6 +316,7 @@ app.include_router(api_rating_sync.router)  # Phase 5
 app.include_router(api_setup.router)  # Phase 6 — MUST be before pages.router
 app.include_router(api_vibes.router)  # Phase 6 Plan 04 — MUST be before pages.router
 app.include_router(api_suggestions.router)  # Phase 7 Plan 03 (UI-06 / D-10)
+app.include_router(api_discovery.router)  # Phase 8 Plan 04 — discovery surface
 
 # Register feature_chip_text helper as a Jinja2 global so templates can call it.
 from app.services.vibe_helpers import feature_chip_text  # noqa: E402

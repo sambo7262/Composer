@@ -1,0 +1,56 @@
+{# Phase 8 Plan 04 (D-D2 / D-D3 / D-D4 / D-D5) — /discover.
+   Vibe-grouped horizontal-scroll discovery page. Replaces the Phase 7
+   discover_placeholder.html.
+
+   Empty states (CONTEXT D-D2 Claude's Discretion):
+   - Lidarr unconfigured → CTA to /settings
+   - No vibes yet → CTA to /setup wizard
+   - First cron tick not run → "Your first discoveries land Sunday at 03:00 UTC"
+   - Cron ran but no candidates → "try again after next Sunday"
+
+   Renders one ``partials/discover_vibe_section.html`` per active vibe;
+   each section is a horizontal-scroll row of artist cards (D-D2 layout
+   so vibe provenance is visually obvious — matches D-A2 per-vibe seed
+   rotation).
+#}
+{% extends "base.html" %}
+{% set active_page = "discover" %}
+{% block title %}Discover · Composer{% endblock %}
+{% block content %}
+  <div class="pt-2 pb-4">
+    <h1 class="text-[22px] font-semibold text-text-primary mb-3">
+      Discover
+    </h1>
+
+    {% set total_candidates = sections | map(attribute='candidates') | map('length') | sum %}
+    {% set total_in_flight = sections | map(attribute='adds_in_flight') | map('length') | sum %}
+
+    {% if not lidarr_configured %}
+      <p class="text-text-secondary text-[14px] mb-3">
+        Configure Lidarr in
+        <a href="/settings" class="text-accent underline">Settings</a>
+        to enable Discovery.
+      </p>
+    {% elif not vibes_exist %}
+      <p class="text-text-secondary text-[14px] mb-3">
+        Finish the
+        <a href="/setup" class="text-accent underline">setup wizard</a>
+        to enable Discovery.
+      </p>
+    {% elif not has_first_tick %}
+      <p class="text-text-secondary text-[14px] mb-3">
+        Your first discoveries land Sunday at 03:00 UTC.
+      </p>
+    {% elif total_candidates == 0 and total_in_flight == 0 %}
+      <p class="text-text-secondary text-[14px] mb-3">
+        No discoveries this week — try again after next Sunday's cron tick.
+      </p>
+    {% else %}
+      {% for section in sections %}
+        {% if section.candidates or section.adds_in_flight %}
+          {% include "partials/discover_vibe_section.html" %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+  </div>
+{% endblock %}

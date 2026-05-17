@@ -1,0 +1,32 @@
+{# Phase 8 Plan 04 Task 2 (UI-07) — filter chips row.
+
+   Alpine x-data drives the active-chip visual state via class binding.
+   A hidden input with the active value travels alongside the search +
+   sort fields on every HTMX request (hx-include="[name='filter'], …"
+   on the search input picks it up). The chip onclick fires its own
+   HTMX request so the filter swap happens immediately on tap — no
+   "type into the search to apply" friction.
+
+   Mobile-first invariants:
+   - min-h-11 on every chip button (44px tap target)
+   - horizontal scroll on overflow so the row never breaks on narrow
+     viewports
+   - No hover-only state (Pitfall 18) — the active visual uses a class
+     switch driven by Alpine, not :hover.
+#}
+<div x-data="{ filter: '{{ filter | default('all') }}' }"
+     class="flex gap-2 mb-3 overflow-x-auto -mx-3 px-3">
+  <input type="hidden" name="filter" :value="filter">
+  {% for value, label in [('all', 'All'), ('analyzed', 'Analyzed'), ('unanalyzed', 'Unanalyzed'), ('rated', 'Rated')] %}
+    <button type="button"
+            @click="filter = '{{ value }}'"
+            hx-get="/api/library/tracks?filter={{ value }}"
+            hx-target="#library-results"
+            hx-swap="outerHTML"
+            hx-include="[name='search'], [name='sort']"
+            :class="filter === '{{ value }}' ? 'bg-accent text-surface-primary' : 'bg-surface-card text-text-secondary border border-border'"
+            class="min-h-11 px-3 rounded-full text-[13px] whitespace-nowrap">
+      {{ label }}
+    </button>
+  {% endfor %}
+</div>

@@ -1,0 +1,52 @@
+{# Phase 8 Plan 04 Task 2 (UI-07) — sort options bottom sheet.
+
+   Mirrors the recluster_modal.html modal pattern:
+   - Alpine x-show open/closed
+   - @keydown.escape.window dismisses
+   - @click.self on the backdrop dismisses (won't close the sheet itself)
+
+   Bottom-sheet specifics (Pitfall 16):
+   - Anchored to the bottom of the viewport via flex items-end
+   - safe-area-inset-bottom padding so iPhone home-indicator gutter is
+     respected
+   - max-h-[60vh] + overflow-y-auto so the sheet never grows past the
+     viewport on shorter phones
+
+   Hosted inside the library.html `x-data="{ sortOpen: false }"` Alpine
+   scope so `sortOpen` is shared with the trigger button up the tree.
+
+   Each sort option is its own HTMX hx-get so the swap happens before
+   the sheet closes — gives the user the satisfying "ah, sorted"
+   feedback without an extra animation frame.
+#}
+<div x-show="sortOpen" x-cloak
+     @keydown.escape.window="sortOpen = false"
+     class="fixed inset-0 z-50 flex items-end"
+     style="padding-bottom: env(safe-area-inset-bottom);">
+  <div @click="sortOpen = false" class="absolute inset-0 bg-black/60"></div>
+  <div class="relative w-full bg-surface-elevated rounded-t-2xl p-4 max-h-[60vh] overflow-y-auto">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="text-[15px] font-semibold text-text-primary">Sort tracks by</h3>
+      <button type="button"
+              @click="sortOpen = false"
+              class="min-h-11 px-3 text-text-secondary">
+        Done
+      </button>
+    </div>
+    <ul class="list-none space-y-1">
+      {% for value, label in [('title', 'Title'), ('artist', 'Artist'), ('added', 'Added'), ('rating', 'Rating')] %}
+        <li>
+          <button type="button"
+                  hx-get="/api/library/tracks?sort={{ value }}"
+                  hx-target="#library-results"
+                  hx-swap="outerHTML"
+                  hx-include="[name='search'], [name='filter']"
+                  @click="sortOpen = false"
+                  class="w-full min-h-11 px-3 py-2 text-left text-text-primary text-[15px] rounded-md hover:bg-surface-muted">
+            {{ label }}
+          </button>
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>

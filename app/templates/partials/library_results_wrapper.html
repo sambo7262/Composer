@@ -1,0 +1,36 @@
+{# Phase 8 Plan 04 Task 2 (UI-07 / D-D1) — single HTMX swap target.
+
+   Wraps the mobile card list (sub-md) AND the md+ wide table together
+   so search / filter / sort handlers each do exactly one hx-swap against
+   #library-results. Without this wrapper the HTMX swap would need to
+   target two separate IDs depending on breakpoint, which doesn't work
+   when the breakpoint is determined client-side.
+
+   Context: tracks (list of Track ORM rows), search (str), filter (str),
+   sort (str). Receives the full filter/sort/search state so the wrapper
+   can echo it into the rendered controls (the inner partials each pick
+   up what they need).
+
+   Pre-existing track_table.html still ships pagination + empty-state
+   handling for md+ — we don't touch it here. Mobile path uses the new
+   compact track_card.html.
+#}
+<div id="library-results">
+  <ul class="md:hidden list-none space-y-2" id="track-card-list">
+    {% for track in tracks %}
+      {% include "partials/track_card.html" %}
+    {% endfor %}
+    {% if not tracks %}
+      <li class="text-center text-text-secondary text-[14px] py-8">
+        {% if search %}
+          No tracks matching '{{ search | e }}'
+        {% else %}
+          No tracks match the current filter.
+        {% endif %}
+      </li>
+    {% endif %}
+  </ul>
+  <div class="hidden md:block">
+    {% include "partials/track_table.html" %}
+  </div>
+</div>
