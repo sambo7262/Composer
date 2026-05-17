@@ -1049,3 +1049,179 @@ async def test_prune_is_no_op_when_plex_subset_of_mirror(
     assert sorted(t.ratingKey for t in pl.items()) == ["101"]
     assert result.mirror_size == 5
     assert result.final_plex_count == 1
+
+
+# ---------------------------------------------------------------------------
+# 260517-l84 — self-heal when user deletes the Composer · Suggestions Plex
+# playlist out from under us. Mirrors the same heal pattern shipped in
+# suggestions_service.refill_mirror_sql (commit 719c6b7).
+#
+# INVARIANTS pinned by these tests (do NOT regress in future refactors):
+#   1. NotFound detection runs BEFORE _sanitize/raise (sanitize mangles
+#      type(exc) so the predicate would never match downstream).
+#   2. _materialize_suggestions_plex_playlist is lazy-imported INSIDE the
+#      function body (avoid circular import with suggestions_service).
+#   3. The heal branch calls materialize with sorted(mirror_keys) positionally.
+#   4. Empty-mirror case still calls materialize (with []) so the function
+#      contract — "materialize is the single heal entry point" — stays clean;
+#      materialize itself early-returns None per suggestions_service.py:266.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prune_self_heals_when_plex_playlist_vanished(
+    db_with_suggestions, fake_plex_module, monkeypatch
+):
+    """User deleted the Composer · Suggestions Plex playlist (e.g., via
+    Plexamp). The Sunday 03:00 UTC weekly tick MUST self-heal by
+    re-materializing the playlist from current SuggestionsMirror contents
+    instead of raising NotFound (which would leave the user stranded
+    forever — stale plex_rating_key referencing a deleted playlist).
+    """
+    # Register the 3 mirror tracks on the fake so the heal-branch
+    # materialize call could plausibly fetch them — although we
+    # monkeypatch materialize itself below, so they're never actually
+    # fetched on the heal path.
+    fake_plex_module._tracks = {
+        k: FakeTrack(k) for k in ("101", "102", "103")
+    }
+    # CRITICAL: do NOT register playlist key "999" in _playlists — the
+    # fetchItem call inside _get_current_keys must raise. Override the
+    # default KeyError behavior with a proper plexapi NotFound (the
+    # production heal predicate matches on `isinstance(exc, NotFound)`).
+    original_fetch_item = fake_plex_module.fetchItem
+
+    def _fetch_or_404(self, key):
+        if str(key) == "999":
+            from plexapi import exceptions as _plexex
+            raise _plexex.NotFound(
+                "(404) not_found; <html>Plex error page</html>"
+            )
+        return original_fetch_item(self, key)
+
+    monkeypatch.setattr(fake_plex_module, "fetchItem", _fetch_or_404)
+
+    _seed_suggestions_managed_playlist(
+        db_with_suggestions, plex_rating_key="999",
+    )
+    for tid, rk in [(1, "101"), (2, "102"), (3, "103")]:
+        _seed_track_and_mirror(
+            db_with_suggestions, track_id=tid, plex_rating_key=rk,
+            position=tid - 1,
+        )
+    db_with_suggestions.commit()
+
+    # Monkeypatch the heal entry point — captures the call args so we can
+    # verify the heal branch fires with the right shape.
+    from unittest.mock import AsyncMock
+    materialize_mock = AsyncMock(return_value="9001")
+    monkeypatch.setattr(
+        "app.services.suggestions_service._materialize_suggestions_plex_playlist",
+        materialize_mock,
+    )
+
+    from app.services.plex_playlist_service import (
+        prune_suggestions_playlist_to_mirror,
+    )
+
+    # MUST NOT raise — heal branch turns NotFound into a successful return.
+    result = await prune_suggestions_playlist_to_mirror(
+        plex_url="http://plex.local",
+        plex_token="token-X",
+    )
+
+    # Heal branch entered exactly once.
+    assert materialize_mock.await_count == 1, (
+        f"Expected materialize called exactly once; got "
+        f"{materialize_mock.await_count}"
+    )
+    # Production passes (plex_url, plex_token, sorted_mirror) positionally.
+    assert materialize_mock.await_args.args == (
+        "http://plex.local",
+        "token-X",
+        ["101", "102", "103"],
+    ), (
+        f"Expected positional args (plex_url, plex_token, sorted(mirror)); "
+        f"got args={materialize_mock.await_args.args}, "
+        f"kwargs={materialize_mock.await_args.kwargs}"
+    )
+
+    # Result shape: heal path returns mirror-count for both mirror_size
+    # and final_plex_count (newly materialized playlist seeded with the
+    # full mirror — Gotcha #3 in the locked design).
+    assert result.removed == []
+    assert result.still_present_after_remove == []
+    assert result.mirror_size == 3
+    assert result.final_plex_count == 3
+
+
+@pytest.mark.asyncio
+async def test_prune_self_heals_empty_mirror_returns_zero_count(
+    db_with_suggestions, fake_plex_module, monkeypatch, caplog
+):
+    """Edge case: Plex playlist vanished AND SuggestionsMirror is empty.
+
+    The heal branch still calls materialize (with []) so the function
+    contract stays clean — materialize itself early-returns None per
+    suggestions_service.py:266 (empty seed_rating_keys). The function
+    returns PruneResult(mirror_size=0, final_plex_count=0) and logs at
+    INFO that materialize was a no-op.
+    """
+    fake_plex_module._tracks = {}
+
+    original_fetch_item = fake_plex_module.fetchItem
+
+    def _fetch_or_404(self, key):
+        if str(key) == "999":
+            from plexapi import exceptions as _plexex
+            raise _plexex.NotFound(
+                "(404) not_found; <html>Plex error page</html>"
+            )
+        return original_fetch_item(self, key)
+
+    monkeypatch.setattr(fake_plex_module, "fetchItem", _fetch_or_404)
+
+    _seed_suggestions_managed_playlist(
+        db_with_suggestions, plex_rating_key="999",
+    )
+    # NO mirror rows seeded — empty mirror edge case.
+    db_with_suggestions.commit()
+
+    from unittest.mock import AsyncMock
+    materialize_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "app.services.suggestions_service._materialize_suggestions_plex_playlist",
+        materialize_mock,
+    )
+
+    import logging
+    caplog.set_level(logging.INFO, logger="app.services.plex_playlist_service")
+
+    from app.services.plex_playlist_service import (
+        prune_suggestions_playlist_to_mirror,
+    )
+
+    result = await prune_suggestions_playlist_to_mirror(
+        plex_url="http://plex.local",
+        plex_token="token-X",
+    )
+
+    # Heal-branch materialize was called with empty list (sorted([]) == []).
+    assert materialize_mock.await_count == 1
+    assert materialize_mock.await_args.args == (
+        "http://plex.local",
+        "token-X",
+        [],
+    )
+
+    # Zero-count result (the new playlist would have 0 tracks).
+    assert result.removed == []
+    assert result.still_present_after_remove == []
+    assert result.mirror_size == 0
+    assert result.final_plex_count == 0
+
+    # The INFO log explains the empty-mirror path was hit.
+    assert any("mirror is empty" in rec.message for rec in caplog.records), (
+        f"Expected 'mirror is empty' INFO log; got "
+        f"{[r.message for r in caplog.records]}"
+    )

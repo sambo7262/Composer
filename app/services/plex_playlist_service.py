@@ -573,8 +573,70 @@ async def prune_suggestions_playlist_to_mirror(
         playlist.removeItems(items)
         return len(playlist.items())
 
+    # FIRST TRY: read current Plex playlist contents.
+    # On NotFound, self-heal by re-materializing from mirror (260517-l84).
     try:
         current_keys = await asyncio.to_thread(_get_current_keys)
+    except PermissionError:
+        raise
+    except Exception as exc:
+        # Self-heal: user deleted the Composer · Suggestions Plex playlist
+        # out from under us (e.g., via Plexamp). Detect NotFound loosely
+        # (NotFound class, "not found" substring, or "404") — same idiom as
+        # suggestions_service.refill_mirror_sql self-heal (commit 719c6b7).
+        err_str = (type(exc).__name__ + " " + str(exc)).lower()
+        from plexapi import exceptions as _plexex
+        is_not_found = (
+            isinstance(exc, _plexex.NotFound)
+            or "notfound" in err_str
+            or "not found" in err_str
+            or "404" in err_str
+        )
+        if is_not_found:
+            # Lazy import: suggestions_service imports update_playlist_items
+            # from THIS module at top level, so a top-level reverse import
+            # would cycle. Lazy keeps the dependency one-way at import time.
+            from app.services.suggestions_service import (
+                _materialize_suggestions_plex_playlist,
+            )
+            sorted_mirror = sorted(mirror_keys)
+            if not sorted_mirror:
+                logger.info(
+                    "prune_suggestions_playlist_to_mirror: Plex playlist "
+                    "rk=%s vanished AND mirror is empty; skipping "
+                    "materialize, will heal on next refill.",
+                    mp.plex_rating_key,
+                )
+                await _materialize_suggestions_plex_playlist(
+                    plex_url, plex_token, sorted_mirror,
+                )
+                return PruneResult(
+                    removed=[],
+                    still_present_after_remove=[],
+                    mirror_size=0,
+                    final_plex_count=0,
+                )
+            logger.warning(
+                "prune_suggestions_playlist_to_mirror: Plex playlist "
+                "rk=%s vanished (likely user-deleted); re-materializing "
+                "from %d current mirror tracks.",
+                mp.plex_rating_key, len(sorted_mirror),
+            )
+            await _materialize_suggestions_plex_playlist(
+                plex_url, plex_token, sorted_mirror,
+            )
+            return PruneResult(
+                removed=[],
+                still_present_after_remove=[],
+                mirror_size=len(sorted_mirror),
+                final_plex_count=len(sorted_mirror),
+            )
+        # Not a NotFound — preserve existing sanitize-and-re-raise behavior.
+        raise type(exc)(_sanitize(str(exc), plex_token)) from None
+
+    # SECOND TRY: removal branch (unchanged from before — same logic,
+    # same exception handlers, just dedented out of the broader try).
+    try:
         to_remove = sorted(current_keys - mirror_keys)
 
         if not to_remove:
