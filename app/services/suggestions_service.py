@@ -19,10 +19,13 @@ Public API:
     no LLM, no cost breaker). Returns the deficit (target - current_size);
     0 means no refill needed. Symbol name preserved for monkeypatch
     stability in test_event_handlers.py.
-  - refill_mirror_sql(target=30) — Phase 7.1 SUGG-12: SQL-driven refill
-    against ``TrackVibe.distance`` (Phase 6.2 pre-computed). Replaces the
-    deleted Phase 7 LLM-ranking refill. Free, instant, zero LLM tokens
-    consumed on every play.
+  - refill_mirror_sql(target=30) — Phase 7.1 SUGG-12: SQL-driven refill.
+    Surfaces UNRATED tracks ordered by z-score-normalized distance to
+    the per-vibe centroid (via :func:`_read_top_n_unrated_for_vibe_sync`).
+    Rated tracks already live in their vibe playlists; Suggestions is the
+    discovery surface for unrated/unlistened content. Free, instant, zero
+    LLM tokens consumed on every play. Replaces the deleted Phase 7
+    LLM-ranking refill.
   - run_phase_07_suggestions_bootstrap() — lifespan migration entry point;
     gated by MigrationLog(phase_id='7.0-suggestions-bootstrap').
   - get_state() — return the module-level SuggestionsServiceStatus dataclass.
@@ -53,6 +56,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
+import numpy as np
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlmodel import Session, select
@@ -62,6 +66,11 @@ from app.models.vibe import ManagedPlaylist, MigrationLog
 from app.services.plex_playlist_service import update_playlist_items
 
 logger = logging.getLogger(__name__)
+
+# Z-score normalization clamp — mirrors vibe_service._STD_FLOOR so the
+# unrated SQL refill computes distance in the same numeric space as
+# vibe_service._slot_track_inner.
+_STD_FLOOR = 1e-6
 
 SUGGESTIONS_TARGET_SIZE = 30  # SUGG-01 default (configurable in later plan)
 SUGGESTIONS_PLAYLIST_NAME = "Composer · Suggestions"  # Phase 6 D-25 namespace
@@ -629,6 +638,135 @@ def _read_top_n_for_vibe_sync(
         ]
 
 
+def _read_top_n_unrated_for_vibe_sync(
+    vibe_id: int, n: int = TOP_N_PER_VIBE,
+) -> List[dict]:
+    """Companion to :func:`_read_top_n_for_vibe_sync` that returns the N
+    closest-to-centroid UNRATED tracks for the given vibe.
+
+    Why this exists: ``TrackVibe`` rows are only populated for rated
+    tracks (``vibe_service._slot_track_inner`` returns early when
+    ``user_rating in (None, 0, 0.0)``), so the rated helper's query
+    surfaces 5-star library tracks instead of unrated/unlistened content.
+    The Suggestions queue is intended as a discovery surface — rated
+    tracks already have a home in their vibe playlists.
+
+    Distance is computed in z-score normalized space using mean/std of
+    ACTIVE vibe centroids, matching the metric used by
+    ``vibe_service._slot_track_inner``. SQLite does the arithmetic
+    inline via bind params; no temporary tables.
+
+    Exclusion lists mirror the rated helper: mirror dupes,
+    ``hard_track`` / ``hard_artist`` negatives with recovery_pending,
+    and the 14-day SuggestionHistory window.
+    """
+    fourteen_days_ago = (
+        datetime.now(timezone.utc) - timedelta(days=14)
+    ).isoformat()
+
+    with Session(get_engine()) as session:
+        centroid_rows = session.execute(
+            text(
+                """
+                SELECT id, centroid_energy, centroid_tempo,
+                       centroid_danceability, centroid_valence
+                FROM vibe
+                WHERE is_active = 1
+                  AND centroid_energy IS NOT NULL
+                  AND centroid_tempo IS NOT NULL
+                  AND centroid_danceability IS NOT NULL
+                  AND centroid_valence IS NOT NULL
+                """
+            )
+        ).all()
+        if not centroid_rows:
+            return []
+
+        target_idx = next(
+            (i for i, r in enumerate(centroid_rows) if int(r[0]) == vibe_id),
+            None,
+        )
+        if target_idx is None:
+            return []
+
+        matrix = np.array(
+            [[r[1], r[2], r[3], r[4]] for r in centroid_rows], dtype=float
+        )
+        mean = matrix.mean(axis=0)
+        std = matrix.std(axis=0)
+        safe_std = np.where(std < _STD_FLOOR, _STD_FLOOR, std)
+        target_norm = (matrix[target_idx] - mean) / safe_std
+        cn_e, cn_t, cn_d, cn_v = target_norm.tolist()
+
+        rows = session.execute(
+            text(
+                """
+                SELECT t.id, t.plex_rating_key, t.title, t.artist,
+                       (
+                         ((t.energy - :me) / :se - :cn_e)
+                           * ((t.energy - :me) / :se - :cn_e)
+                         + ((t.tempo - :mt) / :st - :cn_t)
+                           * ((t.tempo - :mt) / :st - :cn_t)
+                         + ((t.danceability - :md) / :sd - :cn_d)
+                           * ((t.danceability - :md) / :sd - :cn_d)
+                         + ((t.valence - :mv) / :sv - :cn_v)
+                           * ((t.valence - :mv) / :sv - :cn_v)
+                       ) AS dist_sq
+                FROM track t
+                WHERE t.energy IS NOT NULL
+                  AND t.tempo IS NOT NULL
+                  AND t.danceability IS NOT NULL
+                  AND t.valence IS NOT NULL
+                  AND (t.user_rating IS NULL OR t.user_rating = 0)
+                  AND t.id NOT IN (
+                      SELECT track_id FROM suggestionsmirror
+                  )
+                  AND t.id NOT IN (
+                      SELECT track_id FROM negativesignal
+                      WHERE signal_type = 'hard_track'
+                        AND track_id IS NOT NULL
+                  )
+                  AND t.artist NOT IN (
+                      SELECT artist FROM negativesignal
+                      WHERE signal_type = 'hard_artist'
+                        AND recovery_pending = 1
+                        AND artist IS NOT NULL
+                  )
+                  AND t.id NOT IN (
+                      SELECT track_id FROM suggestionhistory
+                      WHERE surfaced_at >= :fourteen_days_ago
+                  )
+                ORDER BY dist_sq ASC
+                LIMIT :n
+                """
+            ),
+            {
+                "me": float(mean[0]), "se": float(safe_std[0]),
+                "mt": float(mean[1]), "st": float(safe_std[1]),
+                "md": float(mean[2]), "sd": float(safe_std[2]),
+                "mv": float(mean[3]), "sv": float(safe_std[3]),
+                "cn_e": float(cn_e), "cn_t": float(cn_t),
+                "cn_d": float(cn_d), "cn_v": float(cn_v),
+                "fourteen_days_ago": fourteen_days_ago,
+                "n": n,
+            },
+        ).all()
+
+        return [
+            {
+                "track_id": int(r[0]),
+                "plex_rating_key": r[1],
+                "title": r[2],
+                "artist": r[3],
+                "distance": float(
+                    np.sqrt(max(0.0, float(r[4] or 0.0)))
+                ),
+                "vibe_id": vibe_id,
+            }
+            for r in rows
+        ]
+
+
 def _write_sql_refill_results_sync(
     picks: List[dict],
     event_source: str = "sql_refill",
@@ -795,12 +933,15 @@ async def refill_mirror_sql(
         allocations[vid] = base + extra
 
     # Per-vibe top-N + random sample of allocation.
+    # Hot-path refill surfaces UNRATED tracks only — rated tracks already
+    # live in their vibe playlists. The unrated helper computes distance
+    # against the vibe centroid directly (TrackVibe is rated-only by design).
     picks: List[dict] = []
     for vid, n_picks in allocations.items():
         if n_picks <= 0:
             continue
         pool = await asyncio.to_thread(
-            _read_top_n_for_vibe_sync, vid, TOP_N_PER_VIBE,
+            _read_top_n_unrated_for_vibe_sync, vid, TOP_N_PER_VIBE,
         )
         if not pool:
             continue

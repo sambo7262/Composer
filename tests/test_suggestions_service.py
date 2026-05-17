@@ -856,6 +856,195 @@ class TestRefillMirrorSql:
         assert len(log_rows) == 0
 
 
+class TestUnratedSqlRefill:
+    """Hotfix 260516 — SQL refill must surface UNRATED tracks only.
+
+    The Phase 7.1 SUGG-12 SQL refill originally read from ``TrackVibe.distance``,
+    which only contains rated tracks (``vibe_service._slot_track_inner`` skips
+    ``user_rating in (None, 0, 0.0)``). Result: Suggestions filled with 5-star
+    library tracks instead of unrated/unlistened content.
+
+    These tests pin the corrected behavior: tracks with ``user_rating > 0``
+    must be excluded; tracks with ``user_rating IS NULL`` or ``= 0`` must be
+    eligible. Ordering still follows distance-to-centroid (z-score space).
+    """
+
+    def _seed_track_unrated(
+        self, session, *, rk: str, energy: float = 0.5, tempo: float = 120.0,
+        danceability: float = 0.5, valence: float = 0.5,
+        user_rating=None, artist: str = "ArtistU",
+    ):
+        from app.models.track import Track
+        t = Track(
+            plex_rating_key=rk, title=f"Title {rk}", artist=artist,
+            energy=energy, tempo=tempo,
+            danceability=danceability, valence=valence,
+            user_rating=user_rating,
+        )
+        session.add(t)
+        session.commit()
+        session.refresh(t)
+        return t
+
+    def test_rated_track_excluded_from_helper(self, db_phase7):
+        """Rated track (user_rating > 0) MUST NOT appear in the helper result."""
+        from app.services.suggestions_service import (
+            _read_top_n_unrated_for_vibe_sync,
+        )
+
+        v = _seed_vibe(db_phase7, "active")
+        self._seed_track_unrated(db_phase7, rk="rated-1", user_rating=10.0)
+        self._seed_track_unrated(db_phase7, rk="rated-2", user_rating=5.0)
+        unrated_a = self._seed_track_unrated(db_phase7, rk="unrated-a")
+        unrated_b = self._seed_track_unrated(db_phase7, rk="unrated-b", user_rating=0.0)
+
+        rows = _read_top_n_unrated_for_vibe_sync(v.id)
+        picked = {r["track_id"] for r in rows}
+        assert unrated_a.id in picked
+        assert unrated_b.id in picked
+        # Both rated rows are absent.
+        rated_ids = {
+            t.id for t in db_phase7.exec(select(__import__("app.models.track", fromlist=["Track"]).Track)).all()
+            if t.user_rating and t.user_rating > 0
+        }
+        assert rated_ids.isdisjoint(picked)
+
+    def test_refill_mirror_sql_does_not_surface_rated_tracks(self, db_phase7):
+        """End-to-end: refill_mirror_sql with a mix of rated + unrated tracks
+        MUST only insert unrated rows into the mirror."""
+        from app.services import suggestions_service
+        from app.models.suggestions import SuggestionsMirror
+
+        _seed_managed_suggestions(db_phase7)
+        v = _seed_vibe(db_phase7, "active")
+        rated_ids = []
+        unrated_ids = []
+        for i in range(5):
+            t = self._seed_track_unrated(
+                db_phase7, rk=f"rated-{i}", user_rating=10.0,
+            )
+            rated_ids.append(t.id)
+            # Seed TrackVibe so library-share weight resolves > 0
+            # (mimics post-clustering state for rated tracks).
+            from app.models.vibe import TrackVibe
+            db_phase7.add(TrackVibe(
+                track_id=t.id, vibe_id=v.id, distance=0.1,
+                assigned_at=datetime.now(timezone.utc).isoformat(),
+                assigned_by="cluster",
+            ))
+        for i in range(5):
+            t = self._seed_track_unrated(db_phase7, rk=f"unrated-{i}")
+            unrated_ids.append(t.id)
+        db_phase7.commit()
+
+        _run_async(suggestions_service.refill_mirror_sql(target=5))
+
+        mirror_track_ids = {
+            r.track_id for r in db_phase7.exec(select(SuggestionsMirror)).all()
+        }
+        # Mirror must contain ONLY unrated tracks.
+        assert mirror_track_ids.issubset(set(unrated_ids))
+        assert set(rated_ids).isdisjoint(mirror_track_ids)
+
+    def test_ordering_by_centroid_distance(self, db_phase7):
+        """Tracks closer to the vibe centroid (in z-score space) come first.
+
+        Uses two vibes so std > 0 across centroids and z-score math is
+        non-degenerate. Then seeds unrated tracks at varying distances and
+        asserts the helper returns them in ASC distance order.
+        """
+        from app.services.suggestions_service import (
+            _read_top_n_unrated_for_vibe_sync,
+        )
+        # Two vibes give us non-degenerate mean/std across the centroid set.
+        v_lo = _seed_vibe(db_phase7, "low_energy")
+        v_hi = _seed_vibe(db_phase7, "high_energy")
+        # Override the v_hi centroid to be distinct from v_lo's default 0.5.
+        v_hi.centroid_energy = 0.9
+        v_hi.centroid_valence = 0.9
+        db_phase7.add(v_hi)
+        db_phase7.commit()
+
+        # Three unrated tracks with varying proximity to v_lo's centroid
+        # (0.5, 120, 0.5, 0.5).
+        far = self._seed_track_unrated(
+            db_phase7, rk="far", energy=0.9, valence=0.9,
+        )
+        mid = self._seed_track_unrated(
+            db_phase7, rk="mid", energy=0.7, valence=0.7,
+        )
+        near = self._seed_track_unrated(
+            db_phase7, rk="near", energy=0.5, valence=0.5,
+        )
+
+        rows = _read_top_n_unrated_for_vibe_sync(v_lo.id)
+        # All three should be present.
+        order = [r["track_id"] for r in rows]
+        assert near.id in order
+        assert mid.id in order
+        assert far.id in order
+        # And ordered: near < mid < far.
+        assert order.index(near.id) < order.index(mid.id) < order.index(far.id)
+
+    def test_excludes_tracks_missing_audio_features(self, db_phase7):
+        """Tracks with NULL energy/tempo/danceability/valence are excluded
+        (cannot compute distance)."""
+        from app.services.suggestions_service import (
+            _read_top_n_unrated_for_vibe_sync,
+        )
+        from app.models.track import Track
+
+        v = _seed_vibe(db_phase7, "active")
+        # Unrated track with NO audio features yet.
+        t_no_feat = Track(
+            plex_rating_key="no-feat", title="No Features", artist="A",
+            energy=None, tempo=None, danceability=None, valence=None,
+        )
+        db_phase7.add(t_no_feat)
+        # Unrated track WITH features.
+        t_ok = self._seed_track_unrated(db_phase7, rk="ok")
+        db_phase7.commit()
+
+        rows = _read_top_n_unrated_for_vibe_sync(v.id)
+        picked = {r["track_id"] for r in rows}
+        assert t_ok.id in picked
+        assert t_no_feat.id not in picked
+
+    def test_excludes_tracks_in_suggestionsmirror(self, db_phase7):
+        """Existing mirror members are not re-surfaced (dedupe)."""
+        from app.services.suggestions_service import (
+            _read_top_n_unrated_for_vibe_sync,
+        )
+        from app.models.suggestions import SuggestionsMirror
+
+        v = _seed_vibe(db_phase7, "active")
+        t_in_mirror = self._seed_track_unrated(db_phase7, rk="in-mirror")
+        t_eligible = self._seed_track_unrated(db_phase7, rk="eligible")
+        db_phase7.add(SuggestionsMirror(
+            track_id=t_in_mirror.id, position=0,
+            added_at=datetime.now(timezone.utc).isoformat(),
+        ))
+        db_phase7.commit()
+
+        rows = _read_top_n_unrated_for_vibe_sync(v.id)
+        picked = {r["track_id"] for r in rows}
+        assert t_in_mirror.id not in picked
+        assert t_eligible.id in picked
+
+    def test_inactive_vibe_returns_empty(self, db_phase7):
+        """Archived vibes never surface picks (mirrors rated-helper behavior)."""
+        from app.services.suggestions_service import (
+            _read_top_n_unrated_for_vibe_sync,
+        )
+
+        v = _seed_vibe(db_phase7, "archived", is_active=False)
+        self._seed_track_unrated(db_phase7, rk="u1")
+        self._seed_track_unrated(db_phase7, rk="u2")
+
+        rows = _read_top_n_unrated_for_vibe_sync(v.id)
+        assert rows == []
+
+
 class TestNoLegacyLlmRefillRefs:
     """Phase 7.1 D-D1 — guarantee the Phase 7 LLM ranking refill path
     cannot return.
