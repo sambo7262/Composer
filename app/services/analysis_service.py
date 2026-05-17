@@ -284,6 +284,21 @@ async def run_analysis() -> None:
             _analysis_status.state = AnalysisStateEnum.COMPLETED
         _analysis_status.current_track = ""
 
+        # Phase 8 Plan 02 Task 4 — DiscoveryAdd lifecycle hook 2 (DISC-06).
+        # Best-effort post-analysis batch stamp: any DiscoveryAdd whose
+        # artist has had its LAST unanalyzed track flip to
+        # energy IS NOT NULL gets essentia_complete_at stamped here.
+        # Failure must NEVER break the analysis-complete state transition.
+        try:
+            from app.services.discovery_service import (
+                stamp_discovery_adds_essentia_complete,
+            )
+            await stamp_discovery_adds_essentia_complete()
+        except Exception:
+            logger.exception(
+                "DiscoveryAdd hook 2 (essentia_complete) failed; continuing."
+            )
+
     except Exception as exc:
         _analysis_status.state = AnalysisStateEnum.FAILED
         _analysis_status.current_track = ""

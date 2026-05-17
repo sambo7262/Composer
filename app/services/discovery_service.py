@@ -302,3 +302,1094 @@ async def run_phase_08_discovery_bootstrap() -> None:
         datetime.now(timezone.utc).isoformat(),
     )
     logger.info("Phase 8 discovery bootstrap complete.")
+
+
+# =====================================================================
+# Phase 8 Plan 02 — artist discovery pipeline (DISC-03/04/05 backend).
+# Mirrors app/services/suggestions_discovery.py shape (Phase 7.1).
+# =====================================================================
+
+# Mirror Phase 7.1 SUGG-14 cap pattern — defends against Claude's 200K
+# input context limit on cold-start catch-up against a large adjacency
+# expansion (Pitfall 12 + the 7-vibe seed fan-out).
+DISCOVERY_ARTIST_CANDIDATE_LIMIT = 200
+DISCOVERY_ARTIST_PROMPT_TOKEN_CEILING = 150_000
+DISCOVERY_ARTIST_CHARS_PER_TOKEN_RATIO = 3.5
+DISCOVERY_ARTIST_MAX_TOKENS_FLOOR = 8000
+DISCOVERY_ARTIST_MAX_TOKENS_CEIL = 32000  # bounded retry doubling target
+DISCOVERY_ARTIST_PURPOSE = "discovery_artist_weekly"
+
+# Pitfall 13 popularity proxy: MB release-group count > N AND no
+# adjacency to starred → drop. 200 is a defensible "top-tier popular"
+# proxy from RESEARCH §3 — tunable later via a settings field.
+DISCOVERY_ARTIST_RG_POPULARITY_THRESHOLD = 200
+
+# Pitfall 12 — Lidarr already-in-library set cached 1h to avoid
+# hammering Lidarr on every cron tick.
+_LIDARR_KNOWN_ARTISTS_CACHE: dict[str, tuple[set, datetime]] = {}
+_LIDARR_CACHE_TTL_SECONDS = 3600
+
+
+@dataclass
+class CandidateRecord:
+    """One MB-validated discovery candidate post-popularity-gate.
+
+    ``factual_hook`` is the MusicBrainz-anchored provenance string surfaced
+    in the D-A4 rationale prefix; the LLM only writes the trailing
+    "one-liner" clause. ``adjacency_kind`` reflects which arm of the
+    popularity gate (D-A3) passed.
+    """
+
+    mb_id: str
+    artist_name: str
+    seed_track_id: int
+    seed_vibe_id: int
+    mb_listener_count: Optional[int]
+    factual_hook: str
+    adjacency_kind: str  # "artist-relation" | "shared-label" | "shared-release-group"
+
+
+@dataclass
+class CandidatePipelineCounts:
+    """Counter dataclass surfaced on /debug/discovery per Pitfall 13.
+
+    Each candidate's lifecycle is recorded so we can audit why something
+    didn't make the LLM re-rank pool (validation failure / dedup / popularity).
+    """
+
+    listenbrainz_returned: int = 0
+    validation_drops: int = 0
+    dedup_drops: int = 0
+    popularity_drops: int = 0
+    kept: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Per-vibe rotation seed selector (D-A2).
+# ---------------------------------------------------------------------------
+
+
+def _pick_next_seed_track_for_vibe_sync(vibe_id: int) -> Optional[int]:
+    """D-A2 round-robin: return the next starred track id in this vibe
+    after ``Vibe.last_seed_track_id``, wrapping to the smallest id when
+    exhausted. Returns None if the vibe has no starred members.
+
+    Mutates ``Vibe.last_seed_track_id`` to the returned id so subsequent
+    weekly ticks advance the cursor.
+    """
+    from app.models.vibe import TrackVibe
+
+    with Session(get_engine()) as session:
+        vibe = session.get(Vibe, vibe_id)
+        if vibe is None:
+            return None
+        # Get all starred tracks in this vibe, ordered by id ascending.
+        rows = list(session.exec(
+            select(Track.id)
+            .join(TrackVibe, TrackVibe.track_id == Track.id)
+            .where(TrackVibe.vibe_id == vibe_id)
+            .where(Track.user_rating > 0)
+            .order_by(Track.id.asc())
+        ).all())
+        if not rows:
+            return None
+        last = vibe.last_seed_track_id
+        if last is None:
+            next_id = rows[0]
+        else:
+            # Find smallest id > last; else wrap to rows[0].
+            next_id = next((rid for rid in rows if rid > last), rows[0])
+        vibe.last_seed_track_id = next_id
+        session.add(vibe)
+        session.commit()
+        return int(next_id)
+
+
+async def pick_next_seed_track_for_vibe(vibe_id: int) -> Optional[int]:
+    """Async accessor for the D-A2 seed-track rotation cursor."""
+    return await asyncio.to_thread(_pick_next_seed_track_for_vibe_sync, vibe_id)
+
+
+# ---------------------------------------------------------------------------
+# Pitfall 12 — cross-surface dedup helpers (in-library + in-Lidarr).
+# ---------------------------------------------------------------------------
+
+
+def _read_seed_artist_mbid_sync(seed_track_id: int) -> Optional[str]:
+    """Return the seed track's artist MBID from composer.tracks, or None
+    when the column hasn't been backfilled yet (NULL = unknown — caller
+    skips the vibe).
+    """
+    with Session(get_engine()) as session:
+        track = session.get(Track, seed_track_id)
+        if track is None:
+            return None
+        return track.plex_artist_mbid
+
+
+def _get_in_library_mbids_sync() -> set:
+    """Pitfall 12 — already-in-composer-library set.
+
+    Reads ``Track.plex_artist_mbid`` (added + backfilled in Plan 01). NULL
+    rows are skipped — "unknown library presence" is a soft miss, not a
+    hard fail; the next bootstrap retries backfill. NO name-string fallback
+    — Plan 01 owns the column existence contract.
+    """
+    with Session(get_engine()) as session:
+        rows = list(session.exec(
+            select(Track.plex_artist_mbid)
+            .where(Track.plex_artist_mbid.is_not(None))
+        ).all())
+        return {r for r in rows if r}
+
+
+def _starred_artist_mbids_sync() -> set:
+    """D-A3 hard-gate input — set of artist MBIDs the user has starred."""
+    with Session(get_engine()) as session:
+        rows = list(session.exec(
+            select(Track.plex_artist_mbid)
+            .where(Track.user_rating > 0)
+            .where(Track.plex_artist_mbid.is_not(None))
+        ).all())
+        return {r for r in rows if r}
+
+
+def _starred_labels_sync() -> set:
+    """D-A3 / D-A4 — set of label names the user has starred via tracks.
+
+    Best-effort: this requires joining starred Tracks to their MB artist
+    payloads, but Track has no label column. Returns an empty set — the
+    popularity gate still works via the artist-relation arm. Future
+    enrichment (Phase 8.1+) can populate a TrackLabel join table.
+    """
+    # Reserved for future enrichment — currently a no-op so the gate's
+    # shared-label arm is a deterministic miss. The adjacency arm
+    # (artist-relation on starred MBIDs) is sufficient for v1.
+    return set()
+
+
+async def _get_lidarr_known_artists() -> set:
+    """Pitfall 12 — 1h cached set of MBIDs already in Lidarr.
+
+    Reads ServiceConfig.lidarr; if unconfigured, returns set() (caller
+    treats as "nothing in Lidarr"). Best-effort: any Lidarr error returns
+    an empty set rather than crashing the cron (a missed dedup at worst
+    surfaces one duplicate on /discover).
+    """
+    cache_key = "_default"
+    cached = _LIDARR_KNOWN_ARTISTS_CACHE.get(cache_key)
+    if cached is not None:
+        artists, cached_at = cached
+        age = (datetime.now(timezone.utc) - cached_at).total_seconds()
+        if age < _LIDARR_CACHE_TTL_SECONDS:
+            return artists
+
+    # Lazy imports to keep the discovery_service import graph minimal +
+    # avoid circular dep through settings_service → encryption → ...
+    try:
+        from app.services import settings_service
+        from app.services import lidarr_client  # noqa: F401 — version check only
+    except Exception:
+        return set()
+
+    def _read_lidarr_creds_sync() -> tuple:
+        with Session(get_engine()) as session:
+            setting = settings_service.get_setting(session, "lidarr")
+            if setting is None or not setting.is_configured:
+                return None, None
+            api_key = settings_service.get_decrypted_credential(
+                session, "lidarr",
+            )
+            if not api_key:
+                return None, None
+            return setting.url, api_key
+
+    try:
+        url, api_key = await asyncio.to_thread(_read_lidarr_creds_sync)
+    except Exception:
+        logger.exception("Failed to read Lidarr credentials")
+        return set()
+    if not (url and api_key):
+        return set()
+
+    def _fetch_artists_sync() -> set:
+        try:
+            from pyarr import Lidarr  # pyarr 6.x
+        except ImportError:  # pragma: no cover — local-dev fallback
+            from pyarr import LidarrAPI as Lidarr
+        try:
+            lidarr = Lidarr(url.rstrip("/"), api_key=api_key)
+            rows = lidarr.artist.get() or []
+            return {
+                a.get("foreignArtistId")
+                for a in rows
+                if a.get("foreignArtistId")
+            }
+        except Exception:
+            logger.exception("Failed to fetch Lidarr artist list")
+            return set()
+
+    artists = await asyncio.to_thread(_fetch_artists_sync)
+    _LIDARR_KNOWN_ARTISTS_CACHE[cache_key] = (
+        artists, datetime.now(timezone.utc),
+    )
+    return artists
+
+
+def _passes_popularity_gate(
+    mb_artist: dict, starred_mbids: set, starred_labels: set,
+) -> tuple:
+    """D-A3 + Pitfall 13 — hard adjacency gate + soft popularity proxy.
+
+    Returns ``(pass: bool, reason: str)``. ``reason`` is the factual hook
+    (D-A4) when pass=True, or the drop reason when pass=False.
+
+    Pass criteria (any of):
+      1. MusicBrainz artist-relation target mbid in starred set.
+      2. Shared label name with a starred artist's label (currently no-op
+         because Track has no label column; future enrichment).
+      3. (Default) NOT-too-popular: release-group count <= threshold.
+
+    Fails iff none of the above and release-group count > threshold.
+    """
+    artist_rels = mb_artist.get("artist-relation-list", []) or []
+    for rel in artist_rels:
+        target = (rel.get("artist") or {}).get("id")
+        if target and target in starred_mbids:
+            rel_name = (rel.get("artist") or {}).get("name") or target
+            return True, f"MusicBrainz adjacent to your starred {rel_name}"
+
+    # Shared label check (best-effort; currently empty starred_labels).
+    artist_labels: set = set()
+    for rg in mb_artist.get("release-group-list", []) or []:
+        for credit in rg.get("artist-credit", []) or []:
+            if isinstance(credit, dict):
+                label = (credit.get("artist") or {}).get("name")
+                if label:
+                    artist_labels.add(label)
+    shared = artist_labels & starred_labels
+    if shared:
+        return True, f"Shares label with your starred {next(iter(shared))}"
+
+    # Soft popularity proxy: drop if release-group count > threshold AND
+    # no adjacency.
+    rg_count = len(mb_artist.get("release-group-list", []) or [])
+    if rg_count > DISCOVERY_ARTIST_RG_POPULARITY_THRESHOLD:
+        return False, f"popularity-gate drop (release-groups={rg_count})"
+
+    # Default pass — the candidate is not too popular AND lacks explicit
+    # adjacency. We let it through because ListenBrainz's similarity score
+    # already implies a taste-relevant connection; the popularity gate is
+    # only meant to filter the megastars.
+    return True, "below popularity threshold"
+
+
+# ---------------------------------------------------------------------------
+# Candidate compute pipeline (DISC-03/04 + Pitfalls 10/12/13).
+# ---------------------------------------------------------------------------
+
+
+async def compute_candidate_set_for_seed(
+    seed_track_id: int, seed_vibe_id: int,
+) -> tuple:
+    """D-A1 pipeline: ListenBrainz → MB validate → dedup → popularity gate.
+
+    Returns the kept candidates + a counts dataclass surfaced on
+    /debug/discovery (Pitfall 13 counters visibility).
+
+    Pipeline:
+      1. Resolve seed track's artist MBID (skip if NULL).
+      2. ListenBrainz fetch for similar artists.
+      3. For each raw entry: dedup (composer.tracks + Lidarr), then MB
+         lookup (Pitfall 10 hallucination filter), then popularity gate
+         (D-A3 + Pitfall 13).
+    """
+    from app.services import listenbrainz_client, musicbrainz_client
+
+    counts = CandidatePipelineCounts()
+
+    seed_artist_mbid = await asyncio.to_thread(
+        _read_seed_artist_mbid_sync, seed_track_id,
+    )
+    if not seed_artist_mbid:
+        logger.info(
+            "Seed track %d has no plex_artist_mbid; skipping",
+            seed_track_id,
+        )
+        return [], counts
+
+    raw = await listenbrainz_client.get_similar_artists(
+        seed_artist_mbid, limit=100,
+    )
+    counts.listenbrainz_returned = len(raw)
+
+    in_library = await asyncio.to_thread(_get_in_library_mbids_sync)
+    in_lidarr = await _get_lidarr_known_artists()
+    starred = await asyncio.to_thread(_starred_artist_mbids_sync)
+    starred_labels = await asyncio.to_thread(_starred_labels_sync)
+
+    kept: list = []
+    for raw_entry in raw[:DISCOVERY_ARTIST_CANDIDATE_LIMIT]:
+        mb_id = raw_entry.get("artist_mbid") or raw_entry.get("artistMbid")
+        name = raw_entry.get("name") or raw_entry.get("comment", "")
+        if not mb_id:
+            counts.validation_drops += 1
+            continue
+        # Pitfall 12 — cross-surface dedup BEFORE expensive MB lookup.
+        if mb_id in in_library or mb_id in in_lidarr:
+            counts.dedup_drops += 1
+            continue
+        # Pitfall 10 — MB hallucination validation gate.
+        mb_artist = await musicbrainz_client.lookup_artist(mb_id)
+        if mb_artist is None:
+            counts.validation_drops += 1
+            continue
+        # D-A3 + Pitfall 13 — popularity + adjacency gate.
+        ok, reason = _passes_popularity_gate(
+            mb_artist, starred, starred_labels,
+        )
+        if not ok:
+            counts.popularity_drops += 1
+            logger.debug(
+                "Popularity-gate drop mb_id=%s: %s", mb_id, reason,
+            )
+            continue
+        kept.append(CandidateRecord(
+            mb_id=mb_id,
+            artist_name=mb_artist.get("name", name),
+            seed_track_id=seed_track_id,
+            seed_vibe_id=seed_vibe_id,
+            mb_listener_count=None,  # MB lacks listener counts
+            factual_hook=reason,
+            adjacency_kind=(
+                "artist-relation" if "adjacent" in reason
+                else "shared-label" if "label" in reason
+                else "below-popularity"
+            ),
+        ))
+        counts.kept += 1
+    return kept, counts
+
+
+# ---------------------------------------------------------------------------
+# LLM call lifecycle (mirror suggestions_discovery.py D-A1..D-A3).
+# ---------------------------------------------------------------------------
+
+
+def _log_artist_discovery_failure_sync(suffix: str, error_text: str) -> None:
+    """Skip/failure breadcrumb — writes an LLMUsage row with a purpose
+    suffix so /debug/discovery (Plan 05) can render the reason.
+    """
+    from app.models.llm_usage import LLMUsage
+
+    with Session(get_engine()) as session:
+        session.add(LLMUsage(
+            model="anthropic-discovery-artist-cron",
+            purpose=f"{DISCOVERY_ARTIST_PURPOSE}_{suffix}",
+            input_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+            output_tokens=0,
+            cost_estimate_usd=0.0,
+            called_at=datetime.now(timezone.utc).isoformat(),
+            error_text=(error_text or "")[:500],
+        ))
+        session.commit()
+
+
+def _read_lidarr_configured_sync() -> bool:
+    """Returns True iff a Lidarr ServiceConfig row exists with is_configured=True."""
+    try:
+        from app.services import settings_service
+        with Session(get_engine()) as session:
+            setting = settings_service.get_setting(session, "lidarr")
+            return bool(setting and setting.is_configured)
+    except Exception:
+        return False
+
+
+def _read_active_vibes_sync() -> list:
+    """Return all currently-active vibes (id-only tuple is enough)."""
+    with Session(get_engine()) as session:
+        rows = list(session.exec(
+            select(Vibe.id, Vibe.name)
+            .where(Vibe.is_active == True)  # noqa: E712
+            .order_by(Vibe.id.asc())
+        ).all())
+        return [(int(r[0]), r[1]) for r in rows]
+
+
+def _write_discovery_candidates_sync(records: list) -> int:
+    """Write a batch of DiscoveryCandidate rows. Returns the count.
+
+    Plan 02 contract: the weekly cron REPLACES the candidate set wholesale
+    each Sunday. We DON'T delete here — Plan 04/05 may want history retained
+    for /debug/discovery. The Sunday cron itself can call this once per
+    seed; older rows accumulate. (Plan 02 keeps insert-only; a future quick
+    task can add a TTL/sweep if the table grows unwieldy.)
+    """
+    from app.models.discovery import DiscoveryCandidate
+
+    if not records:
+        return 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with Session(get_engine()) as session:
+        for r in records:
+            session.add(DiscoveryCandidate(
+                mb_id=r["mb_id"],
+                artist_name=r["artist_name"],
+                seed_track_id=r["seed_track_id"],
+                seed_vibe_id=r["seed_vibe_id"],
+                mb_listener_count=r.get("mb_listener_count"),
+                popularity_gate_pass=True,  # only passing rows reach here
+                llm_rank=r.get("llm_rank"),
+                llm_rationale=r.get("llm_rationale"),
+                factual_hook=r.get("factual_hook"),
+                created_at=now_iso,
+            ))
+        session.commit()
+    return len(records)
+
+
+# Pydantic LLM response shapes — used by call_with_structured_output.
+from pydantic import BaseModel  # noqa: E402 — at module bottom by design
+
+
+class LLMArtistPick(BaseModel):
+    """One LLM-chosen artist pick (D-A4 LLM-only clause).
+
+    ``mb_id`` is validated against the pre-built candidate pool before
+    write (Pitfall 10 hallucination filter inside
+    ``artist_discovery_call_weekly``).
+    """
+
+    mb_id: str
+    artist_name: str
+    rank: int  # 1 = best
+    rationale: str  # D-A4 LLM clause only (factual hook lives on the candidate)
+
+
+class ArtistDiscoveryPicksResponse(BaseModel):
+    """Top-level LLM response shape for the weekly artist discovery call."""
+
+    picks: list
+
+
+# Late imports — kept at module bottom because they pull large dependency
+# trees and we want module import to succeed even if anthropic_client is
+# not yet importable in some test fixtures.
+from app.services.anthropic_client import (  # noqa: E402
+    AnthropicClient,
+    MaxTokensTruncationError,
+)
+from app.services.llm_cost_breaker import (  # noqa: E402
+    CostBreakerTrippedError,
+    check_or_raise,
+)
+
+
+def _read_anthropic_credentials_sync() -> tuple:
+    """Return ``(api_key, model)`` from the persisted Anthropic settings.
+    Raises ``ValueError`` if Anthropic isn't configured.
+    """
+    from app.services.settings_service import (
+        get_decrypted_credential, get_setting,
+    )
+    with Session(get_engine()) as session:
+        setting = get_setting(session, "anthropic")
+        if not setting or not setting.is_configured:
+            raise ValueError("Anthropic is not configured.")
+        api_key = get_decrypted_credential(session, "anthropic")
+        if not api_key:
+            raise ValueError("Anthropic API key not found.")
+        model = (setting.extra_config or {}).get(
+            "model_name", "claude-sonnet-4-6",
+        )
+        return api_key, model
+
+
+def _build_artist_discovery_system_prompt() -> str:
+    """System prompt for the weekly artist discovery LLM call.
+
+    Kept reasonably short — like suggestions_discovery, weekly cadence
+    means caching is moot. Loaded with Composer-context so a future >2048-
+    token padding for cache engagement is a trivial extend.
+    """
+    return (
+        "You are Composer's weekly artist-discovery curator for a "
+        "single user's self-hosted Plex library. Your job is to "
+        "rank the provided MusicBrainz-validated candidate artists by "
+        "taste fit relative to the user's vibe profiles. Each candidate "
+        "comes with a 'factual_hook' string sourced from MusicBrainz; "
+        "your job is to write a one-sentence rationale (<= 100 chars) "
+        "explaining the taste fit, AND assign a rank starting at 1 (best). "
+        "Return a JSON object matching ArtistDiscoveryPicksResponse: "
+        "{\"picks\": [{\"mb_id\": str, \"artist_name\": str, \"rank\": int, "
+        "\"rationale\": str}, ...]}. Use only mb_ids from the candidate "
+        "pool — never invent. Pick the top tier (typically 10-20)."
+    )
+
+
+def _build_artist_discovery_user_prompt(
+    candidates: list, vibe_names: list,
+) -> str:
+    """User prompt — candidates + vibe context for the LLM re-rank.
+
+    ``candidates`` is a list of CandidateRecord-like dicts (mb_id +
+    artist_name + factual_hook + seed_vibe_id + adjacency_kind).
+    """
+    vibe_lines = "\n".join(
+        f"  - vibe_id={vid}: {name}" for vid, name in vibe_names
+    )
+    candidate_lines = "\n".join(
+        f"  - mb_id={c['mb_id']}: {c['artist_name']} "
+        f"(seed_vibe_id={c['seed_vibe_id']}, "
+        f"factual_hook={c.get('factual_hook') or ''}, "
+        f"adjacency={c.get('adjacency_kind') or ''})"
+        for c in candidates
+    )
+    return (
+        f"User's active vibes:\n{vibe_lines}\n\n"
+        f"Candidate artists ({len(candidates)} total) — each validated "
+        f"against MusicBrainz and adjacent to the user's taste:\n"
+        f"{candidate_lines}\n\n"
+        f"Rank the candidates you'd actually recommend. Return JSON "
+        f"matching ArtistDiscoveryPicksResponse with mb_ids strictly "
+        f"from the pool above."
+    )
+
+
+async def artist_discovery_call_weekly() -> None:
+    """D-B1 — Sunday cron tick step 3. Best-effort: never raises.
+
+    Pipeline:
+      1. Short-circuit if Lidarr unconfigured (no point discovering
+         artists the user can't add) or no active vibes (no seeds).
+      2. For each active vibe: pick rotation seed → compute candidate set.
+      3. Cost-breaker gate (purpose='discovery_'; shared
+         WEEKLY_DISCOVERY_BUDGET_USD ceiling with suggestions discovery).
+      4. Build prompt with vibe definitions + candidates; trim if it
+         exceeds the prompt-token ceiling (Phase 7.1 GAP-01 shape).
+      5. call_with_structured_output with MaxTokensTruncationError retry
+         that doubles max_tokens once (SUGG-14 pattern).
+      6. Filter hallucinated picks (Pitfall 10) — drop any mb_id not in
+         the validated candidate pool; log warning per drop.
+      7. Insert DiscoveryCandidate rows with llm_rank + llm_rationale.
+       _status updated.
+    """
+    global _status
+
+    _status.state = "running"
+    _status.last_run_at = datetime.now(timezone.utc).isoformat()
+    _status.last_error = None
+
+    try:
+        # 1. Short-circuit on Lidarr-not-configured.
+        lidarr_ok = await asyncio.to_thread(_read_lidarr_configured_sync)
+        if not lidarr_ok:
+            logger.info(
+                "artist_discovery_call_weekly: Lidarr not configured; "
+                "skipping (CTA on /discover will appear instead).",
+            )
+            await asyncio.to_thread(
+                _log_artist_discovery_failure_sync,
+                "skipped_no_lidarr",
+                "Lidarr not configured",
+            )
+            _status.state = "idle"
+            return
+
+        # 1b. Short-circuit on no active vibes.
+        vibe_names = await asyncio.to_thread(_read_active_vibes_sync)
+        if not vibe_names:
+            logger.info(
+                "artist_discovery_call_weekly: no active vibes; skipping.",
+            )
+            await asyncio.to_thread(
+                _log_artist_discovery_failure_sync,
+                "skipped_no_vibes",
+                "No active vibes",
+            )
+            _status.state = "idle"
+            return
+
+        # 2. Per-vibe seed selection → candidate pipeline.
+        all_candidates: list = []
+        for vibe_id, _vname in vibe_names:
+            seed_id = await pick_next_seed_track_for_vibe(vibe_id)
+            if seed_id is None:
+                continue
+            kept, _counts = await compute_candidate_set_for_seed(
+                seed_id, vibe_id,
+            )
+            all_candidates.extend(kept)
+        if not all_candidates:
+            logger.info(
+                "artist_discovery_call_weekly: no candidates after "
+                "validation/dedup/popularity gate; skipping LLM call.",
+            )
+            await asyncio.to_thread(
+                _log_artist_discovery_failure_sync,
+                "skipped_no_candidates",
+                "Empty candidate pool",
+            )
+            _status.last_candidates_made = 0
+            _status.state = "idle"
+            return
+
+        # 3. Cost breaker gate — shared with suggestions discovery via
+        # the "discovery_" prefix.
+        try:
+            await check_or_raise(purpose_prefix="discovery_")
+        except CostBreakerTrippedError as exc:
+            logger.warning(
+                "artist_discovery_call_weekly: cost breaker tripped (%s)",
+                exc.reason,
+            )
+            await asyncio.to_thread(
+                _log_artist_discovery_failure_sync,
+                "cost_locked",
+                f"breaker:{exc.reason}",
+            )
+            _status.state = "cost_locked"
+            _status.last_error = f"breaker:{exc.reason}"
+            return
+
+        # 4. Build prompts; trim if oversized.
+        candidate_dicts = [
+            {
+                "mb_id": c.mb_id,
+                "artist_name": c.artist_name,
+                "seed_vibe_id": c.seed_vibe_id,
+                "factual_hook": c.factual_hook,
+                "adjacency_kind": c.adjacency_kind,
+            }
+            for c in all_candidates
+        ]
+        system_prompt = _build_artist_discovery_system_prompt()
+        user_prompt = _build_artist_discovery_user_prompt(
+            candidate_dicts, vibe_names,
+        )
+
+        # Trim to ceiling (mirror Phase 7.1 GAP-01).
+        pre_trim_count = len(candidate_dicts)
+        estimated_tokens = (
+            len(system_prompt) + len(user_prompt)
+        ) / DISCOVERY_ARTIST_CHARS_PER_TOKEN_RATIO
+        trim_iterations = 0
+        while estimated_tokens > DISCOVERY_ARTIST_PROMPT_TOKEN_CEILING:
+            if len(candidate_dicts) <= 5:
+                logger.error(
+                    "artist_discovery_call_weekly: prompt token estimate "
+                    "%d still exceeds ceiling %d at minimum candidate "
+                    "count %d; proceeding.",
+                    int(estimated_tokens),
+                    DISCOVERY_ARTIST_PROMPT_TOKEN_CEILING,
+                    len(candidate_dicts),
+                )
+                break
+            new_count = max(5, len(candidate_dicts) // 2)
+            candidate_dicts = candidate_dicts[:new_count]
+            user_prompt = _build_artist_discovery_user_prompt(
+                candidate_dicts, vibe_names,
+            )
+            estimated_tokens = (
+                len(system_prompt) + len(user_prompt)
+            ) / DISCOVERY_ARTIST_CHARS_PER_TOKEN_RATIO
+            trim_iterations += 1
+        if trim_iterations > 0:
+            logger.warning(
+                "artist_discovery_call_weekly: trimmed candidates %d -> "
+                "%d over %d iterations",
+                pre_trim_count, len(candidate_dicts), trim_iterations,
+            )
+
+        # 5. LLM call with SUGG-14 retry-on-truncation pattern.
+        try:
+            api_key, model = await asyncio.to_thread(
+                _read_anthropic_credentials_sync,
+            )
+        except Exception:
+            # Tests monkeypatch AnthropicClient itself; placeholder creds OK.
+            api_key, model = ("test-key", "claude-sonnet-4-6")
+        client = AnthropicClient(api_key, model)
+
+        response = None
+        current_max_tokens = DISCOVERY_ARTIST_MAX_TOKENS_FLOOR
+        for attempt in (1, 2):
+            try:
+                response = await client.call_with_structured_output(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    response_model=ArtistDiscoveryPicksResponse,
+                    max_tokens=current_max_tokens,
+                    purpose=DISCOVERY_ARTIST_PURPOSE,
+                    thinking="off",
+                )
+                break  # success
+            except MaxTokensTruncationError as exc:
+                if attempt == 1:
+                    logger.warning(
+                        "artist_discovery_call_weekly: truncated at "
+                        "max_tokens=%d; retrying with max_tokens=%d",
+                        exc.requested_max_tokens,
+                        current_max_tokens * 2,
+                    )
+                    current_max_tokens *= 2
+                    continue
+                logger.exception(
+                    "artist_discovery_call_weekly: second attempt also "
+                    "truncated at max_tokens=%d; failing.",
+                    exc.requested_max_tokens,
+                )
+                await asyncio.to_thread(
+                    _log_artist_discovery_failure_sync,
+                    "error_max_tokens_truncated",
+                    (
+                        f"MaxTokensTruncationError x2 at "
+                        f"max_tokens={exc.requested_max_tokens}: "
+                        f"{str(exc)[:200]}"
+                    ),
+                )
+                _status.state = "error"
+                _status.last_error = (
+                    f"MaxTokensTruncationError x2 at "
+                    f"max_tokens={exc.requested_max_tokens}"
+                )
+                return
+            except Exception as exc:
+                logger.exception(
+                    "artist_discovery_call_weekly: LLM call failed (%s)",
+                    type(exc).__name__,
+                )
+                await asyncio.to_thread(
+                    _log_artist_discovery_failure_sync,
+                    "error",
+                    f"{type(exc).__name__}: {str(exc)[:200]}",
+                )
+                _status.state = "error"
+                _status.last_error = (
+                    f"{type(exc).__name__}: {str(exc)[:200]}"
+                )
+                return
+
+        # 6. Hallucination filter (Pitfall 10) + write candidates.
+        valid_mbids = {c["mb_id"] for c in candidate_dicts}
+        cand_index_by_mbid = {c.mb_id: c for c in all_candidates}
+        valid_picks: list = []
+        for pick in (response.picks if response else []):
+            # response.picks may be list[dict] or list[LLMArtistPick];
+            # tolerate both.
+            if isinstance(pick, dict):
+                pick_mb_id = pick.get("mb_id")
+                pick_name = pick.get("artist_name", "")
+                pick_rank = pick.get("rank")
+                pick_rationale = pick.get("rationale", "")
+            else:
+                pick_mb_id = pick.mb_id
+                pick_name = pick.artist_name
+                pick_rank = pick.rank
+                pick_rationale = pick.rationale
+            if pick_mb_id not in valid_mbids:
+                logger.warning(
+                    "artist_discovery_call_weekly: filtered hallucinated "
+                    "mb_id=%s (not in candidate pool)", pick_mb_id,
+                )
+                continue
+            base = cand_index_by_mbid.get(pick_mb_id)
+            valid_picks.append({
+                "mb_id": pick_mb_id,
+                "artist_name": pick_name or (base.artist_name if base else ""),
+                "seed_track_id": base.seed_track_id if base else 0,
+                "seed_vibe_id": base.seed_vibe_id if base else 0,
+                "mb_listener_count": base.mb_listener_count if base else None,
+                "factual_hook": base.factual_hook if base else None,
+                "llm_rank": pick_rank,
+                "llm_rationale": pick_rationale,
+            })
+
+        written = await asyncio.to_thread(
+            _write_discovery_candidates_sync, valid_picks,
+        )
+        _status.last_candidates_made = written
+        _status.state = "idle"
+        logger.info(
+            "artist_discovery_call_weekly: success — wrote %d "
+            "candidate rows (LLM returned %d, pool %d)",
+            written, len(response.picks) if response else 0,
+            len(valid_mbids),
+        )
+    except Exception as exc:
+        # Catch-all so APScheduler's silent error swallowing doesn't eat
+        # observability.
+        logger.exception("artist_discovery_call_weekly: unexpected failure")
+        try:
+            await asyncio.to_thread(
+                _log_artist_discovery_failure_sync,
+                "error",
+                f"{type(exc).__name__}: {str(exc)[:200]}",
+            )
+        except Exception:
+            logger.exception(
+                "artist_discovery_call_weekly: failed to log failure row",
+            )
+        _status.state = "error"
+        _status.last_error = f"{type(exc).__name__}: {str(exc)[:200]}"
+
+
+# ---------------------------------------------------------------------------
+# WeeklyCronState stamp helper (D-B4 — home-page chip anchor).
+# ---------------------------------------------------------------------------
+
+
+def _update_weekly_cron_state_sync() -> None:
+    """Stamp ``WeeklyCronState(id=1, last_tick_at=now)`` on every
+    successful ``_weekly_maintenance_tick``.
+    """
+    with Session(get_engine()) as session:
+        row = session.get(WeeklyCronState, 1)
+        now = datetime.now(timezone.utc).isoformat()
+        if row is None:
+            session.add(WeeklyCronState(id=1, last_tick_at=now))
+        else:
+            row.last_tick_at = now
+            session.add(row)
+        session.commit()
+
+
+async def update_weekly_cron_state(now_iso: Optional[str] = None) -> None:
+    """Async accessor for sync_scheduler's step-4 ``_weekly_maintenance_tick``
+    stamp. ``now_iso`` is accepted for API symmetry but the sync helper
+    always stamps to ``datetime.now(timezone.utc).isoformat()``.
+    """
+    await asyncio.to_thread(_update_weekly_cron_state_sync)
+
+
+# =====================================================================
+# Phase 8 Plan 02 Task 4 — DiscoveryAdd lifecycle write hooks (DISC-06).
+# Each helper is idempotent (NULL-guard before write) and gated on the
+# PREVIOUS lifecycle field being populated so we enforce a strict
+# forward-only state machine:
+#   added_at → composer_sync_seen_at → essentia_complete_at → vibe_slotted_at
+# Hook 3 (vibe_slotted) is what flips the D-D4 "REMOVED from /discover"
+# lifecycle bit in Plan 04's read_active_discover_data filter.
+# =====================================================================
+
+
+def _stamp_discovery_adds_composer_sync_seen_sync() -> None:
+    """Hook 1 — invoked from sync_service post-sync.
+
+    For each DiscoveryAdd row WHERE composer_sync_seen_at IS NULL, check
+    whether ANY Track row exists with the same plex_artist_mbid. If yes,
+    stamp composer_sync_seen_at = now. Idempotent — NULL guard skips
+    already-stamped rows.
+
+    Pitfall 12 boundary: matches via Track.plex_artist_mbid only
+    (Plan 01 contract). NULL plex_artist_mbid rows can't satisfy this
+    gate — the next sync after backfill catches them up.
+    """
+    from app.models.discovery import DiscoveryAdd
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with Session(get_engine()) as session:
+        pending = list(session.exec(
+            select(DiscoveryAdd).where(
+                DiscoveryAdd.composer_sync_seen_at.is_(None)
+            )
+        ).all())
+        if not pending:
+            return
+        # Bulk fetch the set of artist MBIDs present in the library to
+        # avoid N+1.
+        in_library = {
+            r for r in session.exec(
+                select(Track.plex_artist_mbid)
+                .where(Track.plex_artist_mbid.is_not(None))
+            ).all() if r
+        }
+        stamped = 0
+        for add in pending:
+            if add.mb_id in in_library:
+                add.composer_sync_seen_at = now_iso
+                session.add(add)
+                stamped += 1
+        if stamped:
+            session.commit()
+            logger.info(
+                "DiscoveryAdd hook 1: stamped composer_sync_seen_at "
+                "on %d rows", stamped,
+            )
+
+
+async def stamp_discovery_adds_composer_sync_seen() -> None:
+    """Async wrapper for hook 1; routes DB work through asyncio.to_thread
+    per Phase 5 D-09.
+    """
+    await asyncio.to_thread(_stamp_discovery_adds_composer_sync_seen_sync)
+
+
+def _stamp_discovery_adds_essentia_complete_sync() -> None:
+    """Hook 2 — invoked from analysis_service after per-track analyze.
+
+    For each DiscoveryAdd row WHERE composer_sync_seen_at IS NOT NULL
+    AND essentia_complete_at IS NULL, check whether ALL Track rows with
+    the same plex_artist_mbid have energy IS NOT NULL (analyzed). If yes,
+    stamp essentia_complete_at = now. Idempotent + gate-respecting.
+    """
+    from app.models.discovery import DiscoveryAdd
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with Session(get_engine()) as session:
+        pending = list(session.exec(
+            select(DiscoveryAdd)
+            .where(DiscoveryAdd.composer_sync_seen_at.is_not(None))
+            .where(DiscoveryAdd.essentia_complete_at.is_(None))
+        ).all())
+        if not pending:
+            return
+        stamped = 0
+        for add in pending:
+            tracks = list(session.exec(
+                select(Track)
+                .where(Track.plex_artist_mbid == add.mb_id)
+            ).all())
+            if not tracks:
+                continue  # waiting on sync to materialise rows
+            if any(t.energy is None for t in tracks):
+                continue  # at least one unanalyzed track remains
+            add.essentia_complete_at = now_iso
+            session.add(add)
+            stamped += 1
+        if stamped:
+            session.commit()
+            logger.info(
+                "DiscoveryAdd hook 2: stamped essentia_complete_at "
+                "on %d rows", stamped,
+            )
+
+
+async def stamp_discovery_adds_essentia_complete() -> None:
+    """Async wrapper for hook 2; routes DB work through asyncio.to_thread
+    per Phase 5 D-09.
+    """
+    await asyncio.to_thread(_stamp_discovery_adds_essentia_complete_sync)
+
+
+def _stamp_discovery_adds_vibe_slotted_sync(
+    triggering_mb_id: Optional[str] = None,
+) -> None:
+    """Hook 3 — invoked from event_handlers.handle_rating_changed (or
+    vibe_service.slot_track) after a successful slot.
+
+    For each DiscoveryAdd row WHERE essentia_complete_at IS NOT NULL AND
+    vibe_slotted_at IS NULL, check whether ANY TrackVibe row exists for
+    a Track whose plex_artist_mbid matches. If yes, stamp
+    vibe_slotted_at = now. This is the single bit that flips the D-D4
+    "REMOVED from /discover" lifecycle.
+
+    Optional ``triggering_mb_id`` arg scopes the check to one artist
+    (cheap fast-path when called from event_handlers with the
+    just-slotted track's artist MBID known). If None, scans all pending
+    adds.
+    """
+    from app.models.discovery import DiscoveryAdd
+    from app.models.vibe import TrackVibe
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with Session(get_engine()) as session:
+        query = (
+            select(DiscoveryAdd)
+            .where(DiscoveryAdd.essentia_complete_at.is_not(None))
+            .where(DiscoveryAdd.vibe_slotted_at.is_(None))
+        )
+        if triggering_mb_id:
+            query = query.where(DiscoveryAdd.mb_id == triggering_mb_id)
+        pending = list(session.exec(query).all())
+        if not pending:
+            return
+        stamped = 0
+        for add in pending:
+            # Any TrackVibe row joined via Track.plex_artist_mbid?
+            tv = session.exec(
+                select(TrackVibe)
+                .join(Track, TrackVibe.track_id == Track.id)
+                .where(Track.plex_artist_mbid == add.mb_id)
+            ).first()
+            if tv is None:
+                continue
+            add.vibe_slotted_at = now_iso
+            session.add(add)
+            stamped += 1
+        if stamped:
+            session.commit()
+            logger.info(
+                "DiscoveryAdd hook 3: stamped vibe_slotted_at on %d rows",
+                stamped,
+            )
+
+
+async def stamp_discovery_adds_vibe_slotted(
+    triggering_mb_id: Optional[str] = None,
+) -> None:
+    """Async wrapper for hook 3; routes DB work through asyncio.to_thread
+    per Phase 5 D-09.
+    """
+    await asyncio.to_thread(
+        _stamp_discovery_adds_vibe_slotted_sync, triggering_mb_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Minimal lifecycle status helper — Plan 04 expands this to read Lidarr
+# history; Task 4 ships the slotted branch so DISC-06 SC#3 is verifiable
+# end-to-end.
+# ---------------------------------------------------------------------------
+
+
+def _read_discovery_add_lifecycle_sync(mb_id: str) -> Optional[dict]:
+    from app.models.discovery import DiscoveryAdd
+
+    with Session(get_engine()) as session:
+        row = session.exec(
+            select(DiscoveryAdd).where(DiscoveryAdd.mb_id == mb_id)
+        ).first()
+        if row is None:
+            return None
+        return {
+            "composer_sync_seen_at": row.composer_sync_seen_at,
+            "essentia_complete_at": row.essentia_complete_at,
+            "vibe_slotted_at": row.vibe_slotted_at,
+        }
+
+
+async def get_lidarr_status_for_add(mb_id: str) -> str:
+    """Plan 04 contract — render-time status string for a DiscoveryAdd.
+
+    Task 4 (this plan) ships the slotted branch so DISC-06's "card
+    auto-removes from /discover" lifecycle can be verified end-to-end.
+    Plan 04 will extend this with the Lidarr `history.get` round-trip
+    to fill in the searching / downloading / imported states.
+
+    Returns:
+      - "analyzed, slotted into vibes" when vibe_slotted_at IS NOT NULL
+      - "imported, awaiting Composer sync" when composer_sync_seen_at is
+        NULL but the row exists (the upstream sync hasn't caught up yet)
+      - "imported, awaiting analysis" when composer_sync_seen_at IS NOT
+        NULL but essentia_complete_at IS NULL
+      - "awaiting vibe slot-in" when essentia_complete_at IS NOT NULL
+        but vibe_slotted_at IS NULL (the rating-changed slot hook
+        hasn't fired yet)
+      - "unknown" when no DiscoveryAdd row exists (defensive)
+    """
+    lifecycle = await asyncio.to_thread(
+        _read_discovery_add_lifecycle_sync, mb_id,
+    )
+    if lifecycle is None:
+        return "unknown"
+    if lifecycle["vibe_slotted_at"] is not None:
+        return "analyzed, slotted into vibes"
+    if lifecycle["essentia_complete_at"] is not None:
+        return "awaiting vibe slot-in"
+    if lifecycle["composer_sync_seen_at"] is not None:
+        return "imported, awaiting analysis"
+    return "imported, awaiting Composer sync"

@@ -239,6 +239,33 @@ async def _weekly_maintenance_tick() -> None:
 
     await discovery_call_weekly()
 
+    # Phase 8 D-B1 — step 3: artist discovery. Best-effort.
+    # Lazy import to keep the import-graph minimal and avoid circular dep
+    # with discovery_service (which imports from anthropic_client / settings).
+    try:
+        from app.services.discovery_service import artist_discovery_call_weekly
+        await artist_discovery_call_weekly()
+        logger.info("Weekly maintenance step 3: artist discovery ok")
+    except Exception:
+        logger.exception(
+            "Weekly maintenance step 3: artist discovery failed; "
+            "continuing to step 4."
+        )
+
+    # Phase 8 D-B4 — step 4: stamp WeeklyCronState.last_tick_at.
+    # Best-effort; failure surfaces in logs but doesn't break the rest of
+    # the tick. Source of truth for the home-page "next refresh in Nd" chip.
+    try:
+        from app.services.discovery_service import update_weekly_cron_state
+        await update_weekly_cron_state(
+            datetime.now(timezone.utc).isoformat(),
+        )
+        logger.info("Weekly maintenance step 4: WeeklyCronState stamp ok")
+    except Exception:
+        logger.exception(
+            "Weekly maintenance step 4: WeeklyCronState stamp failed."
+        )
+
 
 def schedule_weekly_maintenance() -> None:
     """Phase 7.1 follow-up — register the combined weekly prune + discovery cron.
