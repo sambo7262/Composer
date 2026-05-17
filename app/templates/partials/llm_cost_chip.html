@@ -1,0 +1,40 @@
+{# Phase 8 D-B4 / UI-10 — runaway-cost trip wire chip for the vibes home.
+
+   Anchored to the later of CostMeterBaseline.deploy_at (set at Phase 8
+   deploy by run_phase_08_discovery_bootstrap) and WeeklyCronState.last_tick_at
+   (updated on every successful _weekly_maintenance_tick). LLMUsage rows
+   older than CostMeterBaseline.deploy_at are EXCLUDED permanently from this
+   chip so historical / testing data doesn't pollute the canary. The
+   /debug/suggestions cost meter card remains unfiltered (full history).
+
+   Context required (set by app.routers.pages._compute_home_chip_context):
+     - this_week_cost_usd: float (post-baseline + post-last-tick sum)
+     - days_until_refresh: int | None (None when has_first_tick is False)
+     - breaker_paused: bool (llm_cost_breaker tripped within the last 60s)
+     - has_first_tick: bool (False when WeeklyCronState.last_tick_at IS NULL)
+
+   Tap target is min-h-11 (44px — UI-08 mobile-first). Tap navigates to
+   /debug/suggestions for the per-purpose breakdown card. #}
+<div class="mb-3">
+  <a href="/debug/suggestions"
+     class="inline-flex items-center gap-2 min-h-11 rounded-full
+            border border-border bg-surface-card px-3 py-1.5
+            text-[13px] text-text-secondary no-underline">
+    {% if has_first_tick %}
+      <span class="text-text-primary font-medium">
+        This week: ${{ "%.2f"|format(this_week_cost_usd) }}
+      </span>
+      {% if days_until_refresh is not none %}
+        <span class="text-text-muted">·</span>
+        <span>next refresh in {{ days_until_refresh }}d</span>
+      {% endif %}
+      {% if breaker_paused %}
+        <span class="text-error font-medium ml-1">· paused</span>
+      {% endif %}
+    {% else %}
+      <span class="text-text-secondary">
+        Your first weekly tick lands Sunday at 03:00 UTC.
+      </span>
+    {% endif %}
+  </a>
+</div>

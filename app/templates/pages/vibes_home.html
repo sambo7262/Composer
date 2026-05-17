@@ -2,6 +2,11 @@
 {% set active_page = "vibes" %}
 {% block title %}Vibes · Composer{% endblock %}
 {% block content %}
+  {# Phase 8 UI-10 / D-B4 — home-page weekly LLM cost chip. Renders at the
+     very top of the vibes home so a runaway weekly Anthropic spend (e.g.
+     a regression that puts an LLM call back in a hot per-event loop) is
+     visible without the user needing to deep-link into /debug/suggestions. #}
+  {% include "partials/llm_cost_chip.html" %}
   <div class="pt-2 pb-4">
     <h1 class="text-[22px] font-semibold text-text-primary mb-3">
       Your vibes
