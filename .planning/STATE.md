@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-05-08)
 Phase: 08
 Plan: Not started
 Status: Executing Phase 08
-Last activity: 2026-05-17
+Last activity: 2026-05-17 - Completed quick task 260517-l84: fix(suggestions) self-heal in weekly prune
 
 ### v2.0 Phase Snapshot
 
@@ -188,6 +188,7 @@ Recent decisions affecting current work:
 | 260514-cdl | Phase 7 bootstrap deadlock hotfix: drop `if removed:` gate in `handle_track_played` so `maybe_schedule_refill` always runs after drain (deficit check inside preserves no-churn intent); empty-mirror regression test added | 2026-05-14 | 8594589 | [260514-cdl-fix-phase-7-suggestions-bootstrap-deadlo](./quick/260514-cdl-fix-phase-7-suggestions-bootstrap-deadlo/) |
 | 260514-e6w | Phase 7 suggestions_rank max_tokens hotfix: bump 2000→8000 via `SUGGESTIONS_RANK_MAX_TOKENS` constant at 4 call sites (NAS UAT confirmed truncation aborting refill); 2 regression tests (constant pin + AST forbid-literal). Temporary patch — proper architectural fix in `.planning/notes/phase-07-followup-cost-architecture.md` (Option C). | 2026-05-14 | 482d52e | [260514-e6w-fix-phase-7-suggestions-rank-max-tokens-](./quick/260514-e6w-fix-phase-7-suggestions-rank-max-tokens-/) |
 | 260516-gym | Phase 7.1 follow-up: weekly Plex Suggestions playlist prune via Sun 03:00 UTC `_weekly_maintenance_tick` (prune → discovery in one cron tick). `prune_suggestions_playlist_to_mirror` in `plex_playlist_service.py` removes Plex tracks no longer in `SuggestionsMirror`; hard-asserts `kind='suggestions'` before mutation; preserves GAP-03 int-cast invariant; D-C2 catch-up gate runs prune before catch-up discovery. 5 new tests (4 prune + 1 scheduler) using `StrictFakePlexServer` from GAP-03. | 2026-05-16 | (see merge) | [260516-gym-weekly-suggestions-playlist-prune](./quick/260516-gym-weekly-suggestions-playlist-prune/) |
+| 260517-l84 | fix(suggestions): self-heal in weekly prune when Composer · Suggestions Plex playlist vanishes. NAS UAT 2026-05-17 15:04:26 showed prune crashing with `plexapi.NotFound(404)` on `mp.plex_rating_key=77830` (user-deleted in Plexamp), scheduler swallowing it, and `discovery_call_weekly` writing picks to mirror but never recreating the Plex playlist. Fix splits the single try in `prune_suggestions_playlist_to_mirror` into two: first wraps the playlist `fetchItem` and on NotFound lazy-imports `_materialize_suggestions_plex_playlist` (avoids circular), recreates the playlist from `sorted(mirror_keys)`, returns healed `PruneResult`; second wraps the removal branch unchanged. 2 regression tests added (non-empty mirror + empty-mirror edge case). 81/81 tests pass, zero changes to `sync_scheduler.py` or `suggestions_service.py`. | 2026-05-17 | 4fbc060 | [260517-l84-fix-suggestions-self-heal-in-weekly-prun](./quick/260517-l84-fix-suggestions-self-heal-in-weekly-prun/) |
 
 ## Session Continuity
 
