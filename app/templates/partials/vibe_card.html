@@ -4,8 +4,15 @@
    HTMX swap from /api/vibes/{id}/find-candidates (Plan 02 endpoint).
 
    T-07-03-01..02 — name + description rendered with `| e` for explicit XSS
-   escape. #}
-<li class="bg-surface-card border border-border rounded-lg p-3 min-h-11">
+   escape.
+
+   Phase 8 UI-09 / D-E2 — vibe color accent (left border). Inline style
+   because Tailwind 4 utility classes don't accept dynamic hex values
+   without arbitrary-value syntax. Fallback to a neutral border color when
+   v.color is None — defensive only; run_phase_08_discovery_bootstrap
+   backfills the column on first deploy. #}
+<li class="bg-surface-card border border-border border-l-4 rounded-lg p-3 min-h-11"
+    style="border-left-color: {{ v.color or '#3a3a3e' }};">
   <h2 class="text-[16px] font-semibold text-text-primary truncate">
     {{ v.name | e }}
   </h2>

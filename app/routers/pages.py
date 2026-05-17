@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from math import ceil
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -81,6 +82,92 @@ async def home(request: Request, session: Session = Depends(get_session)):
         )
 
 
+def _compute_home_chip_context(session: Session) -> dict:
+    """Phase 8 D-B4 / UI-10 — home-page LLM cost chip context.
+
+    Returns a dict with four keys: ``this_week_cost_usd`` (float),
+    ``days_until_refresh`` (int | None), ``breaker_paused`` (bool), and
+    ``has_first_tick`` (bool). Read by ``partials/llm_cost_chip.html``.
+
+    Filter shape (matches CONTEXT D-B4 "Integration Points line 272"):
+    sum(LLMUsage.cost_estimate_usd) WHERE called_at >=
+        max(CostMeterBaseline.deploy_at, WeeklyCronState.last_tick_at).
+    The baseline floor is permanent — pre-deploy historical / testing rows
+    are excluded forever. The last_tick_at floor moves on every successful
+    weekly cron tick so the chip shows ONLY the post-tick spend (mirrors
+    the "this week" framing).
+
+    Defensive: missing CostMeterBaseline or WeeklyCronState rows fall back
+    to the pre-first-tick state (chip shows the friendly message).
+    """
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    from app.models.discovery import CostMeterBaseline, WeeklyCronState
+    from app.models.llm_usage import LLMUsage
+
+    baseline = session.get(CostMeterBaseline, 1)
+    weekly = session.get(WeeklyCronState, 1)
+
+    has_first_tick = weekly is not None and weekly.last_tick_at is not None
+
+    # Lexicographic ISO 8601 ordering matches chronological ordering — same
+    # invariant used by the /settings 7-day window query.
+    baseline_iso = baseline.deploy_at if baseline else "1970-01-01T00:00:00+00:00"
+    if has_first_tick:
+        floor = max(weekly.last_tick_at, baseline_iso)
+    else:
+        floor = baseline_iso
+
+    row = session.exec(
+        select(func.coalesce(func.sum(LLMUsage.cost_estimate_usd), 0.0))
+        .where(LLMUsage.called_at >= floor)  # type: ignore[arg-type]
+    ).first()
+    if isinstance(row, tuple):
+        row = row[0]
+    this_week_cost_usd = float(row or 0.0)
+
+    days_until_refresh: Optional[int] = None
+    if has_first_tick:
+        try:
+            last_dt = _dt.fromisoformat(weekly.last_tick_at)
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=_tz.utc)
+            age = _dt.now(_tz.utc) - last_dt
+            remaining = _td(days=7) - age
+            days_until_refresh = max(0, int(remaining.total_seconds() // 86400))
+        except ValueError:
+            days_until_refresh = None
+
+    # Cost-breaker state: tripped within the last 60s = paused (mirrors the
+    # /settings cost-meter card check).
+    breaker_paused = False
+    try:
+        from app.services.llm_cost_breaker import get_state as _breaker_state
+
+        breaker = _breaker_state()
+        if breaker.last_tripped_at:
+            try:
+                tripped_dt = _dt.fromisoformat(breaker.last_tripped_at)
+                if tripped_dt.tzinfo is None:
+                    tripped_dt = tripped_dt.replace(tzinfo=_tz.utc)
+                if (_dt.now(_tz.utc) - tripped_dt).total_seconds() < 60:
+                    breaker_paused = True
+            except ValueError:
+                pass
+    except Exception:
+        logger.exception(
+            "_compute_home_chip_context: breaker state read failed; "
+            "rendering chip without paused modifier"
+        )
+
+    return {
+        "this_week_cost_usd": this_week_cost_usd,
+        "days_until_refresh": days_until_refresh,
+        "breaker_paused": breaker_paused,
+        "has_first_tick": has_first_tick,
+    }
+
+
 @router.get("/vibes", response_class=HTMLResponse)
 async def read_vibes_home(
     request: Request, session: Session = Depends(get_session),
@@ -91,6 +178,11 @@ async def read_vibes_home(
     Each card shows name + track count + optional description, plus a
     SUGG-10 "Find candidates" CTA when track_count < 25 (the CONTEXT
     discretion threshold).
+
+    Phase 8 UI-10 / D-B4 — also computes the home-page LLM cost chip
+    context (this_week_cost_usd, days_until_refresh, breaker_paused,
+    has_first_tick). The chip is the runaway-cost trip wire; details
+    stay on /debug/suggestions.
     """
     from app.models.vibe import TrackVibe
 
@@ -114,11 +206,19 @@ async def read_vibes_home(
             "name": v.name,
             "description": v.description,
             "track_count": int(n),
+            "color": v.color,  # Phase 8 UI-09 — surface color to vibe_card.
         }))
+
+    chip_context = _compute_home_chip_context(session)
+
     return templates.TemplateResponse(
         request,
         "pages/vibes_home.html",
-        {"active_page": "vibes", "vibes": enriched},
+        {
+            "active_page": "vibes",
+            "vibes": enriched,
+            **chip_context,
+        },
     )
 
 
@@ -534,14 +634,35 @@ def _count_rated(session: Session) -> int:
 
 
 def _decode_draft(state: SetupState):
-    """Deserialize SetupState.draft_proposals_json -> VibeProposalSet | None."""
+    """Deserialize SetupState.draft_proposals_json -> VibeProposalSet | None.
+
+    Phase 8 UI-09 / D-E2: hydrate each proposal's ``proposed_color`` from
+    the locked palette so the wizard preview matches the post-finalize
+    accent. Index-based assignment (palette[(i+1) % len]) — the +1 mirrors
+    the deterministic ``assign_vibe_color(vibe_id)`` mapping the
+    Vibe-creation paths will use on commit. Best-effort: a color-hydration
+    failure must NEVER break wizard rendering.
+    """
     if not state.draft_proposals_json:
         return None
     try:
         from app.services.vibe_clusterer import VibeProposalSet
-        return VibeProposalSet.model_validate_json(state.draft_proposals_json)
+        proposals_set = VibeProposalSet.model_validate_json(
+            state.draft_proposals_json
+        )
     except Exception:
         return None
+    try:
+        from app.services.discovery_service import assign_vibe_color
+        for i, p in enumerate(proposals_set.proposals):
+            if getattr(p, "proposed_color", None) is None:
+                p.proposed_color = assign_vibe_color(i + 1)
+    except Exception:
+        logger.exception(
+            "_decode_draft: proposed_color hydration failed; rendering "
+            "without per-proposal color preview"
+        )
+    return proposals_set
 
 
 @router.get("/setup", response_class=HTMLResponse)

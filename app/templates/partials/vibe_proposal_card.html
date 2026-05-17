@@ -1,8 +1,15 @@
 {# Phase 6 Plan 03 — vibe proposal card (D-11).
 Click-to-edit name + description + chip + 5 seed tracks + members disclosure +
 silhouette score line.
+
+Phase 8 UI-09 / D-E2 — preview the color the vibe will inherit on commit
+(left-border accent). Uses the `proposal.proposed_color` attribute populated
+by the setup_step3 / refine handlers; falls back to a neutral hex when the
+attribute is absent (legacy callers / refinement intermediate state).
 #}
-<div class="bg-surface-card rounded-lg p-4 border border-border" x-data>
+<div class="bg-surface-card rounded-lg p-4 border border-border border-l-4"
+     style="border-left-color: {{ proposal.proposed_color | default('#3a3a3e') }};"
+     x-data>
   {% include "partials/vibe_name_input.html" %}
   <input type="text"
          name="vibe_description_{{ proposal_index }}"

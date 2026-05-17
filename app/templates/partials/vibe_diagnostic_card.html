@@ -1,7 +1,13 @@
 {# Phase 6 Plan 04 (D-36) — per-vibe diagnostic card.
    Mirrors the dl/grid pattern used in pages/debug_events.html "Configured" section.
-   Iterated by pages/debug_vibes.html for each active Vibe. #}
-<section class="bg-surface-card rounded-lg p-4 border border-border">
+   Iterated by pages/debug_vibes.html for each active Vibe.
+
+   Phase 8 UI-09 / D-E2 — left-border color accent uses Vibe.color
+   (inline style; Tailwind 4 dynamic hex restriction). Falls back to a
+   neutral hex when color is NULL (defensive — backfilled at lifespan
+   migration). #}
+<section class="bg-surface-card rounded-lg p-4 border border-border border-l-4"
+         style="border-left-color: {{ vibe.color or '#3a3a3e' }};">
   <h3 class="text-[20px] font-semibold text-text-primary mb-3">{{ vibe.name }}</h3>
   <dl class="grid grid-cols-[120px_1fr] gap-y-1 text-[13px]">
     <dt class="text-text-secondary">Description</dt>

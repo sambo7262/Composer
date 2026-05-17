@@ -6,7 +6,26 @@
    Re-cluster button is non-destructive at this point because the refinement
    loop on /setup/propose can still bail before any Plex mutation, so it
    uses the accent style (not the error/destructive style).
+
+   Phase 8 UI-09 / D-E2 — when this modal renders preview pills for the
+   existing vibes (future enhancement), each pill reads `{{ vibe.color }}`
+   via inline `style="background-color: {{ vibe.color }}33; color: {{ vibe.color }};"`.
+   The modal currently has no per-vibe iteration; the iteration target
+   (`vibes` context list) is reserved here so the existing-vs-new color
+   preservation rule (D-22 stickiness) stays explicit.
 #}
+{% if vibes %}
+  {# Reserved iteration block — renders preview pills using vibe.color when
+     a future enhancement passes `vibes` into this modal's context. #}
+  <template x-if="false">
+    {% for vibe in vibes %}
+      <span class="text-[11px] rounded-full px-2 py-0.5 whitespace-nowrap"
+            style="background-color: {{ (vibe.color or '#3a3a3e') }}33; color: {{ vibe.color or '#e8e8ed' }};">
+        {{ vibe.name | e }}
+      </span>
+    {% endfor %}
+  </template>
+{% endif %}
 <div x-data="{ open: false }"
      x-show="open"
      @open-recluster.window="open = true"
