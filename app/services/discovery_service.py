@@ -441,12 +441,24 @@ def _read_seed_artist_name_sync(seed_track_id: int) -> str:
 
 
 def _get_in_library_mbids_sync() -> set:
-    """Pitfall 12 — already-in-composer-library set.
+    """Pitfall 12 / OPS-06 — already-in-composer-library set.
 
     Reads ``Track.plex_artist_mbid`` (added + backfilled in Plan 01). NULL
     rows are skipped — "unknown library presence" is a soft miss, not a
     hard fail; the next bootstrap retries backfill. NO name-string fallback
     — Plan 01 owns the column existence contract.
+
+    OPS-06 INVARIANT (Plan 05 Task 2): reads ONLY from
+    ``composer.tracks``. Does NOT join to ``ManagedPlaylist`` or any
+    playlist-derived view. Tracks in the local DB are valid library
+    signal regardless of which Plex playlist originally surfaced them;
+    legacy v1-generated Plex playlists (no ``Composer · `` prefix)
+    contribute nothing to this set because they never write into
+    ``composer.tracks`` by the sync path. If a future change adds
+    playlist-aware dedup, it MUST gate on
+    ``plex_playlist_service.is_managed_playlist(rating_key)`` to
+    preserve the OPS-06 hands-off invariant. Regression tested by
+    ``tests/test_discovery_service_ops06.py``.
     """
     with Session(get_engine()) as session:
         rows = list(session.exec(
