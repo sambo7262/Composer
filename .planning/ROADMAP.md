@@ -278,8 +278,8 @@ Plans:
 
 Plans:
 - [x] 08-01-PLAN.md — Foundational: Lidarr connection-test extension (D-E1 / DISC-07) + library-sync cron reliability fix (D-E3 / DISC-08) + Phase 8 schema migration (Vibe.color, 6 new discovery tables, run_phase_08_discovery_bootstrap)
-- [ ] 08-02-PLAN.md — Discovery pipeline backend: ListenBrainz smoke-test + listenbrainz/musicbrainz clients + discovery_service.artist_discovery_call_weekly piggybacking _weekly_maintenance_tick (DISC-03/04/05/06)
-- [ ] 08-03-PLAN.md — Vibe color propagation across surfaces (UI-09) + home-page weekly LLM cost chip (UI-10)
+- [x] 08-02-PLAN.md — Discovery pipeline backend: ListenBrainz smoke-test + listenbrainz/musicbrainz clients + discovery_service.artist_discovery_call_weekly piggybacking _weekly_maintenance_tick (DISC-03/04/05/06)
+- [x] 08-03-PLAN.md — Vibe color propagation across surfaces (UI-09) + home-page weekly LLM cost chip (UI-10)
 - [ ] 08-04-PLAN.md — /discover page (vibe-grouped horizontal-scroll + tap-to-expand + Add-to-Lidarr + Dismiss + status-row lifecycle) + library mobile-first rewrite (DISC-03/05 + UI-07/08)
 - [ ] 08-05-PLAN.md — /debug/discovery diagnostic page (DEBUG-04) + OPS-06 legacy-playlist hands-off regression guard
 **UI hint**: yes
