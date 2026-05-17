@@ -38,7 +38,7 @@ async def test_lidarr_connection(url: str, api_key: str) -> dict:
         # Strip trailing slash if present
         url = url.rstrip("/")
         logger.info("Testing Lidarr connection at %s", url)
-        lidarr = Lidarr(host_url=url, api_key=api_key)
+        lidarr = Lidarr(url, api_key=api_key)
         quality_profiles, metadata_profiles, root_folders = await asyncio.to_thread(
             _fetch_lidarr_test_payload, lidarr,
         )
@@ -106,7 +106,7 @@ async def add_artist(
     """
     try:
         url = url.rstrip("/")
-        lidarr = Lidarr(host_url=url, api_key=api_key)
+        lidarr = Lidarr(url, api_key=api_key)
         # 1) Look up by MBID (Lidarr's lookup_artist accepts "mbid:<MBID>" query).
         #    Pitfall 10 — the candidate was already MB-validated upstream, so we
         #    just need the dict shape pyarr.add_artist requires.
@@ -157,7 +157,7 @@ async def get_recent_history(
     """
     try:
         url = url.rstrip("/")
-        lidarr = Lidarr(host_url=url, api_key=api_key)
+        lidarr = Lidarr(url, api_key=api_key)
         result = await asyncio.to_thread(lidarr.get_history, page_size=page_size)
         return (result or {}).get("records", []) or []
     except Exception:
