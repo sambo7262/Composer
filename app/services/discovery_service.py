@@ -1184,6 +1184,25 @@ async def artist_discovery_call_weekly() -> None:
                 "llm_rationale": pick_rationale,
             })
 
+        # QUICK FIX (260517-lyw): dedupe by mb_id BEFORE write. The same
+        # artist can surface from multiple vibe-seed expansions because
+        # the LLM picks once per vibe context. Without this, the writer
+        # creates N duplicate DiscoveryCandidate rows for the same mb_id,
+        # and /discover renders N identical cards firing identical
+        # `hx-trigger="revealed once"` requests (ListenBrainz 429 cascade).
+        #
+        # Tiebreak rule (MUST match _dedupe_discovery_candidates_sync):
+        #   1. Lowest COALESCE(llm_rank, 9999) wins.
+        #   2. On a tie, stable iteration order wins (first pick kept).
+        by_mbid: dict = {}
+        for p in valid_picks:
+            existing = by_mbid.get(p["mb_id"])
+            if existing is None or (
+                (p.get("llm_rank") or 9999) < (existing.get("llm_rank") or 9999)
+            ):
+                by_mbid[p["mb_id"]] = p
+        valid_picks = list(by_mbid.values())
+
         written = await asyncio.to_thread(
             _write_discovery_candidates_sync, valid_picks,
         )
