@@ -1,0 +1,37 @@
+{# Phase 8 Plan 04 Task 2 (UI-07 / UI-08 / D-D1) — compact track card.
+
+   Mirrors the Phase 7 suggestions_row.html 12-line item shape:
+   - 14px title + 13px artist (· album) line
+   - Right-aligned rating badge (when user_rating > 0)
+   - Tiny analysis indicator (● analyzed / ○ not analyzed)
+
+   user_rating is Plex's raw 0-10 scale (Phase 5 D-15 / Pitfall 2 —
+   stars_from_user_rating converts at display boundaries; the chip here
+   divides by 2 since the half-star granularity is what users expect on
+   a small mobile chip).
+
+   Tap target: the whole li has min-h-11 so even a non-interactive row
+   matches the 44px floor (preserves rhythm with future tap-to-open
+   detail panels — same pattern as suggestions_row.html before the
+   x-data hookup).
+#}
+<li class="bg-surface-card border border-border rounded-lg px-3 py-2 flex items-center gap-3 min-h-11">
+  <div class="flex-1 min-w-0">
+    <div class="text-[14px] font-medium text-text-primary truncate">
+      {{ track.title | e }}
+    </div>
+    <div class="text-[13px] text-text-secondary truncate">
+      {{ track.artist | e }}{% if track.album %} · {{ track.album | e }}{% endif %}
+    </div>
+  </div>
+  {% if track.user_rating and track.user_rating > 0 %}
+    <span class="text-[11px] rounded-full px-2 py-0.5 bg-accent/20 text-accent whitespace-nowrap">
+      {{ (track.user_rating / 2) | round(1) }}★
+    </span>
+  {% endif %}
+  {% if track.energy is not none %}
+    <span class="text-[11px] text-text-muted whitespace-nowrap" title="Analyzed">●</span>
+  {% else %}
+    <span class="text-[11px] text-text-muted whitespace-nowrap" title="Not analyzed">○</span>
+  {% endif %}
+</li>

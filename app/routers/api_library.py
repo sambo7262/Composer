@@ -19,6 +19,13 @@ ALLOWED_ORDERS = {"asc", "desc"}
 # T-02-07: Cap per_page to prevent DoS
 MAX_PER_PAGE = 100
 
+# Phase 8 Plan 04 (UI-07 / D-D1) — extended filter + sort allowlists.
+# Mobile-first surfaces (filter chips + sort bottom sheet) need a wider
+# vocabulary than the v1 wide-table-header sort links. Unknown values
+# clamp to the defaults — mirrors the Phase 2 T-02-05 pattern.
+ALLOWED_FILTERS = {"all", "analyzed", "unanalyzed", "rated"}
+ALLOWED_SORTS = {"title", "artist", "added", "rating"}
+
 
 def get_templates():
     """Lazy import to avoid circular dependency with app.main."""
@@ -35,26 +42,43 @@ async def get_tracks(
     search: str = Query(default=""),
     sort: str = Query(default="title"),
     order: str = Query(default="asc"),
+    filter: str = Query(default="all"),
 ):
-    """Return paginated, searchable, sortable track list as HTML partial.
+    """Return paginated, searchable, sortable, filterable track list.
 
     T-02-05: sort validated against allowlist, order validated against asc/desc.
     T-02-07: per_page capped at 100, page >= 1.
+    T-08-21 (Phase 8 Plan 04): ``filter`` validated against ALLOWED_FILTERS,
+    ``sort`` accepts an extended vocabulary (title/artist/added/rating).
+    Unknown values clamp to safe defaults.
+
+    Returns ``partials/library_results_wrapper.html`` — the Phase 8
+    single HTMX swap target that wraps both the sub-md card list AND
+    the md+ wide table together.
     """
     templates = get_templates()
 
-    # Validate sort column against allowlist (T-02-05)
-    if sort not in ALLOWED_SORT_COLUMNS:
+    # Phase 8 (T-08-21): filter allowlist — unknown clamps to "all"
+    if filter not in ALLOWED_FILTERS:
+        filter = "all"
+
+    # Phase 8: sort allowlist extended for mobile sort sheet vocabulary.
+    # Mobile sort vocabulary ("added"/"rating") is preferred when explicitly
+    # passed; legacy wide-table sort vocabulary
+    # ("album"/"genre"/"year") stays accepted for back-compat. Anything
+    # else clamps to "title".
+    legacy_sort = sort in ALLOWED_SORT_COLUMNS
+    new_sort = sort in ALLOWED_SORTS
+    if not (legacy_sort or new_sort):
         sort = "title"
 
-    # Validate order (T-02-05)
     if order not in ALLOWED_ORDERS:
         order = "asc"
 
     # Build base query
     query = select(Track)
 
-    # Apply search filter (T-02-05: uses parameterized ilike, no raw SQL)
+    # Apply search filter (T-02-05: parameterized ilike, no raw SQL)
     search = search.strip()
     if search:
         search_pattern = f"%{search}%"
@@ -66,16 +90,36 @@ async def get_tracks(
             )
         )
 
+    # Phase 8 — filter chip vocabulary
+    if filter == "analyzed":
+        query = query.where(Track.energy.is_not(None))  # type: ignore[union-attr]
+    elif filter == "unanalyzed":
+        query = query.where(Track.energy.is_(None))  # type: ignore[union-attr]
+    elif filter == "rated":
+        query = query.where(Track.user_rating > 0)  # type: ignore[arg-type]
+
     # Count total results
     count_query = select(func.count()).select_from(query.subquery())
     total = session.exec(count_query).one()
 
-    # Apply sorting
-    sort_column = getattr(Track, sort, Track.title)
-    if order == "desc":
-        query = query.order_by(col(sort_column).desc())
+    # Apply sorting — mobile vocabulary maps to specific columns + orders
+    # so the user gets the intuitive ordering on tap (newest-added first,
+    # highest-rated first). The legacy wide-table headers pass an
+    # explicit ``order`` so they continue to flip asc/desc on toggle.
+    if sort == "rating":
+        # Phase 8 mobile vocabulary — rating sort is always DESC so the
+        # top-rated tracks bubble up; null user_ratings sort last.
+        query = query.order_by(
+            col(Track.user_rating).desc().nullslast(),
+        )
+    elif sort == "added":
+        query = query.order_by(col(Track.added_at).desc().nullslast())
     else:
-        query = query.order_by(col(sort_column).asc())
+        sort_column = getattr(Track, sort, Track.title)
+        if order == "desc":
+            query = query.order_by(col(sort_column).desc())
+        else:
+            query = query.order_by(col(sort_column).asc())
 
     # Apply pagination
     offset = (page - 1) * per_page
@@ -99,21 +143,15 @@ async def get_tracks(
         "search": search,
         "sort": sort,
         "order": order,
+        "filter": filter,
     }
 
-    # Check if HTMX request -- return partial only
-    if request.headers.get("HX-Request"):
-        return templates.TemplateResponse(
-            request,
-            "partials/track_table.html",
-            context,
-        )
-
-    # Full page request -- redirect to /library or return full page
-    # For API endpoint, return the partial (full page is served by /library route)
+    # Phase 8 — single swap target. The wrapper renders BOTH the mobile
+    # card list AND the md+ wide table so one outerHTML swap covers both
+    # breakpoints (no need to do a viewport-aware client-side decision).
     return templates.TemplateResponse(
         request,
-        "partials/track_table.html",
+        "partials/library_results_wrapper.html",
         context,
     )
 
