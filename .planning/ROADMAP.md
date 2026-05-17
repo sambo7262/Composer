@@ -36,7 +36,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 6.2: LLM-Direct Vibe Assignment** (INSERTED) — Replace k-means membership decisions with LLM-direct zero-shot assignment per user-typed vibe; two-pass design (confidence-graded assign + boundary peer-review); audio features become a tiebreaker for obscure tracks (completed 2026-05-12)
 - [ ] **Phase 7: Suggestions Queue + v1 Chat Retirement** — Continuous Composer · Suggestions playlist drains as the user listens and refills with taste-aware picks; v1 mood-chat retires; vibes home becomes the new landing page
 - [ ] **Phase 7.1: Suggestions Cost Architecture: SQL refill + weekly discovery** (INSERTED) — Replace per-event LLM refill (~$0.05/play, trips $0.42 daily breaker after 8 plays) with SQL hot path against Phase 6 TrackVibe scores + one weekly LLM "discovery" call; drops steady-state cost from ~$150/mo to ~$0.20/mo
-- [ ] **Phase 8: Lidarr Discovery + Polish** — Taste-aware artist discovery with one-click add to Lidarr; auto-ingest of new arrivals; legacy screens responsive on mobile
+- [x] **Phase 8: Lidarr Discovery + Polish** — Taste-aware artist discovery with one-click add to Lidarr; auto-ingest of new arrivals; legacy screens responsive on mobile (completed 2026-05-17)
 - [ ] **Phase 9 (OPTIONAL): Feed the Engine** — Bulk rating, play-rated nudge, Surprise Me; cuttable without affecting any other phase
 
 ## Phase Details
