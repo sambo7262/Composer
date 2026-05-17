@@ -74,7 +74,7 @@ def client_full(test_engine) -> Generator[TestClient, None, None]:
 
 
 class TestAssignVibeColorOnCreation:
-    def test_assign_color_called_on_new_vibe_commit(self, test_engine):
+    def test_assign_color_called_on_new_vibe_commit(self, db_with_phase7):
         """Vibe-creation paths invoke assign_vibe_color after the row has an id.
         The function must come from app.services.discovery_service (Plan 01),
         and the new Vibe row should land with color set to the palette slot.
@@ -91,23 +91,23 @@ class TestAssignVibeColorOnCreation:
         # Seed an unprimed vibe (color=NULL — mimics the freshly-committed
         # post-insert state in the wizard / recluster commit handler).
         now = datetime.now(timezone.utc).isoformat()
-        with Session(test_engine) as s:
-            v = Vibe(name="Late Night", created_at=now)
-            s.add(v)
-            s.commit()
-            s.refresh(v)
-            new_id = v.id
+        v = Vibe(name="Late Night", created_at=now)
+        db_with_phase7.add(v)
+        db_with_phase7.commit()
+        db_with_phase7.refresh(v)
+        new_id = v.id
 
         ensure_vibe_color_on_creation(new_id)
 
-        with Session(test_engine) as s:
-            row = s.get(Vibe, new_id)
-            assert row is not None
-            assert row.color is not None, "color should be auto-assigned"
-            assert row.color == assign_vibe_color(new_id)
-            assert row.color in VIBE_COLOR_PALETTE
+        # Re-read via the same engine the helper used.
+        db_with_phase7.expire_all()
+        row = db_with_phase7.get(Vibe, new_id)
+        assert row is not None
+        assert row.color is not None, "color should be auto-assigned"
+        assert row.color == assign_vibe_color(new_id)
+        assert row.color in VIBE_COLOR_PALETTE
 
-    def test_recluster_preserves_existing_vibe_colors(self, test_engine):
+    def test_recluster_preserves_existing_vibe_colors(self, db_with_phase7):
         """Calling ensure_vibe_color_on_creation on a vibe whose color is
         already set is a NO-OP (D-22 stickiness rule extended to colors).
         """
@@ -115,18 +115,17 @@ class TestAssignVibeColorOnCreation:
         from app.services.vibe_service import ensure_vibe_color_on_creation
 
         now = datetime.now(timezone.utc).isoformat()
-        with Session(test_engine) as s:
-            v = Vibe(name="Sunday", color="#3b82f6", created_at=now)
-            s.add(v)
-            s.commit()
-            s.refresh(v)
-            vid = v.id
+        v = Vibe(name="Sunday", color="#3b82f6", created_at=now)
+        db_with_phase7.add(v)
+        db_with_phase7.commit()
+        db_with_phase7.refresh(v)
+        vid = v.id
 
         ensure_vibe_color_on_creation(vid)
 
-        with Session(test_engine) as s:
-            row = s.get(Vibe, vid)
-            assert row.color == "#3b82f6"
+        db_with_phase7.expire_all()
+        row = db_with_phase7.get(Vibe, vid)
+        assert row.color == "#3b82f6"
 
 
 # ============================================================================

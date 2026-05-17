@@ -8,6 +8,14 @@
      /api/setup/propose/init or /api/setup/propose/refine is in-flight via
      document.body htmx:beforeRequest / htmx:afterRequest events. #}
   {% include "partials/llm_progress_card.html" %}
+
+  {# Phase 8 UI-09 / D-E2 — wizard proposal cards get a color preview before
+     the Vibe row is committed. Each proposal carries a `proposed_color`
+     attribute (assigned by the proposal-rendering handler via
+     discovery_service.assign_vibe_color(index+1)). The actual Vibe.color
+     is written on commit via app.services.vibe_service.ensure_vibe_color_on_creation
+     so the preview matches what the user will see on the home page after
+     finalize. vibe_proposal_card.html reads `proposal.proposed_color`. #}
   <h1 class="text-[28px] font-semibold mb-2">Find your vibes</h1>
   <p class="text-[14px] text-text-secondary mb-4">
     {% if draft_proposals and draft_proposals.proposals %}

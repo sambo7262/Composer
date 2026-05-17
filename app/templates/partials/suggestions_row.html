@@ -34,9 +34,12 @@
       </div>
     </div>
     {% if s.vibe %}
-      <span class="text-[11px] text-text-secondary
-                   bg-surface-elevated rounded-full px-2 py-0.5
-                   whitespace-nowrap">
+      {# Phase 8 UI-09 / D-E2 — tinted chip backed by the vibe color. The
+         `33` hex alpha suffix gives ~20% opacity background; foreground
+         text inherits the full saturation. Fallback to the neutral
+         elevated surface when s.vibe.color is None. #}
+      <span class="text-[11px] rounded-full px-2 py-0.5 whitespace-nowrap"
+            style="background-color: {{ (s.vibe.color or '#3a3a3e') }}33; color: {{ s.vibe.color or '#e8e8ed' }};">
         {{ s.vibe.name | e }}
       </span>
     {% endif %}

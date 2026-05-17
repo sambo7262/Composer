@@ -715,6 +715,37 @@ async def maybe_reslot_pending_track(track_id: int) -> None:
         await asyncio.to_thread(_set_pending_slot_in_sync, track_id, False)
 
 
+# ---------------------------------------------------------------------------
+# Phase 8 UI-09 / D-E2 — vibe color creation helper.
+# ---------------------------------------------------------------------------
+
+def ensure_vibe_color_on_creation(vibe_id: int) -> None:
+    """Phase 8 D-E2 — populate ``Vibe.color`` from the locked palette.
+
+    Called by the two Vibe-creation sites in the codebase
+    (wizard finalize in :mod:`app.routers.api_setup` and re-cluster commit
+    in :mod:`app.routers.api_vibes`) AFTER the new row has been committed
+    so ``vibe.id`` is available for
+    :func:`app.services.discovery_service.assign_vibe_color`.
+
+    Idempotent: if the row already has a color (re-cluster reusing an
+    existing vibe id, manual seed, etc.), this is a no-op. This implements
+    the D-22 "manual-override preservation" rule extended to colors —
+    existing colors survive re-cluster.
+    """
+    from app.services.discovery_service import assign_vibe_color
+
+    with Session(get_engine()) as session:
+        row = session.get(Vibe, vibe_id)
+        if row is None:
+            return
+        if row.color:
+            return  # D-22 stickiness — preserve existing color
+        row.color = assign_vibe_color(vibe_id)
+        session.add(row)
+        session.commit()
+
+
 async def reslot_all_rated_tracks() -> int:
     """D-36 manual recovery — re-slot every Track with user_rating > 0.
 

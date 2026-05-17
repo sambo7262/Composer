@@ -609,6 +609,22 @@ async def finalize(request: Request, session: Session = Depends(get_session)):
         try:
             async with sema:
                 vibe_id = await asyncio.to_thread(_insert_vibe_sync, prop)
+                # Phase 8 UI-09 / D-E2 — populate Vibe.color from the locked
+                # palette so the home / suggestions / debug surfaces have an
+                # accent the first time the vibe is rendered. Best-effort: a
+                # color-write failure must NEVER break wizard finalize.
+                try:
+                    from app.services.vibe_service import (
+                        ensure_vibe_color_on_creation,
+                    )
+                    await asyncio.to_thread(
+                        ensure_vibe_color_on_creation, vibe_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "ensure_vibe_color_on_creation failed for vibe_id=%s",
+                        vibe_id,
+                    )
                 playlist_name = f"Composer · {prop.name}"
                 # WR-06 fix: create_playlist already inserts the
                 # ManagedPlaylist row WITH vibe_id baked in (see

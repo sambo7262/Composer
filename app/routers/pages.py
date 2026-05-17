@@ -534,14 +534,35 @@ def _count_rated(session: Session) -> int:
 
 
 def _decode_draft(state: SetupState):
-    """Deserialize SetupState.draft_proposals_json -> VibeProposalSet | None."""
+    """Deserialize SetupState.draft_proposals_json -> VibeProposalSet | None.
+
+    Phase 8 UI-09 / D-E2: hydrate each proposal's ``proposed_color`` from
+    the locked palette so the wizard preview matches the post-finalize
+    accent. Index-based assignment (palette[(i+1) % len]) — the +1 mirrors
+    the deterministic ``assign_vibe_color(vibe_id)`` mapping the
+    Vibe-creation paths will use on commit. Best-effort: a color-hydration
+    failure must NEVER break wizard rendering.
+    """
     if not state.draft_proposals_json:
         return None
     try:
         from app.services.vibe_clusterer import VibeProposalSet
-        return VibeProposalSet.model_validate_json(state.draft_proposals_json)
+        proposals_set = VibeProposalSet.model_validate_json(
+            state.draft_proposals_json
+        )
     except Exception:
         return None
+    try:
+        from app.services.discovery_service import assign_vibe_color
+        for i, p in enumerate(proposals_set.proposals):
+            if getattr(p, "proposed_color", None) is None:
+                p.proposed_color = assign_vibe_color(i + 1)
+    except Exception:
+        logger.exception(
+            "_decode_draft: proposed_color hydration failed; rendering "
+            "without per-proposal color preview"
+        )
+    return proposals_set
 
 
 @router.get("/setup", response_class=HTMLResponse)

@@ -661,6 +661,22 @@ async def recluster_commit(
                             new_vibe_id = await asyncio.to_thread(
                                 _insert_vibe_sync, prop
                             )
+                            # Phase 8 UI-09 / D-E2 — populate Vibe.color so
+                            # post-recluster surfaces have an accent. Idempotent
+                            # via ensure_vibe_color_on_creation (preserves any
+                            # existing color per D-22 stickiness).
+                            try:
+                                from app.services.vibe_service import (
+                                    ensure_vibe_color_on_creation,
+                                )
+                                await asyncio.to_thread(
+                                    ensure_vibe_color_on_creation, new_vibe_id,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "ensure_vibe_color_on_creation failed for "
+                                    "vibe_id=%s", new_vibe_id,
+                                )
                             playlist_name = f"Composer · {prop.name}"
                             new_pl_key = await create_playlist(
                                 plex_url, plex_token,
@@ -737,6 +753,19 @@ async def recluster_commit(
                             new_vibe_id = await asyncio.to_thread(
                                 _insert_vibe_sync, prop
                             )
+                            # Phase 8 UI-09 / D-E2 — color accent on split target.
+                            try:
+                                from app.services.vibe_service import (
+                                    ensure_vibe_color_on_creation,
+                                )
+                                await asyncio.to_thread(
+                                    ensure_vibe_color_on_creation, new_vibe_id,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "ensure_vibe_color_on_creation failed for "
+                                    "vibe_id=%s", new_vibe_id,
+                                )
                             playlist_name = f"Composer · {prop.name}"
                             new_pl_key = await create_playlist(
                                 plex_url, plex_token,
@@ -782,6 +811,19 @@ async def recluster_commit(
                         new_vibe_id = await asyncio.to_thread(
                             _insert_vibe_sync, prop
                         )
+                        # Phase 8 UI-09 / D-E2 — color accent on net-new vibe.
+                        try:
+                            from app.services.vibe_service import (
+                                ensure_vibe_color_on_creation,
+                            )
+                            await asyncio.to_thread(
+                                ensure_vibe_color_on_creation, new_vibe_id,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "ensure_vibe_color_on_creation failed for "
+                                "vibe_id=%s", new_vibe_id,
+                            )
                         playlist_name = f"Composer · {prop.name}"
                         new_pl_key = await create_playlist(
                             plex_url, plex_token,

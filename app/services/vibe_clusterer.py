@@ -128,6 +128,12 @@ class VibeProposal(BaseModel):
     # Phase 6.2 D-17 — per-track Pass-2 confidence chip data. Empty list
     # when no track in this proposal went through boundary review.
     pass2_tracks: List[dict] = Field(default_factory=list)
+    # Phase 8 UI-09 / D-E2 — preview of the color the vibe will inherit on
+    # commit. Populated by the proposal-rendering handler via
+    # :func:`app.services.discovery_service.assign_vibe_color` with the
+    # proposal's index+1 so the wizard card matches what /vibes will show
+    # after finalize. ``None`` for legacy / pre-Phase-8 cached proposals.
+    proposed_color: Optional[str] = None
 
 
 class LLMVibeProposal(BaseModel):
