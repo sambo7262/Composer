@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 from sqlmodel import Session
@@ -215,7 +217,14 @@ async def test_lidarr(
     url: str = Form(...),
     api_key: str = Form(...),
 ):
-    """Test Lidarr connection. Returns HTMX partial with result."""
+    """Test Lidarr connection. Returns HTMX partial with result.
+
+    Phase 8 D-E1 (DISC-07) — the connection test now renders THREE dropdowns
+    (quality profile, metadata profile, root folder) when successful. The
+    metadata_profile_id is mandatory for add_artist() per Pitfall 14 (the
+    v1 bug fix); root_folder_path is conditionally shown only when Lidarr
+    returns >1 root.
+    """
     result = await test_lidarr_connection(url, api_key)
     templates = get_templates()
 
@@ -225,9 +234,9 @@ async def test_lidarr(
         {
             "service": "lidarr",
             "success": result["success"],
-            "options": result.get("profiles", []),
-            "option_label": "Quality Profile",
-            "option_name": "profile",
+            "quality_profiles": result.get("quality_profiles", []),
+            "metadata_profiles": result.get("metadata_profiles", []),
+            "root_folders": result.get("root_folders", []),
             "error": result.get("error"),
             "url": url,
             "api_key": api_key,
@@ -238,16 +247,36 @@ async def test_lidarr(
 @router.post("/lidarr/save", response_class=HTMLResponse)
 async def save_lidarr(
     request: Request,
-    url: str = Form(...),
-    api_key: str = Form(...),
-    profile_id: str = Form(...),
-    profile_name: str = Form(...),
+    url: Annotated[str, Form()],
+    api_key: Annotated[str, Form()],
+    quality_profile_id: Annotated[str, Form()],
+    quality_profile_name: Annotated[str, Form()],
+    metadata_profile_id: Annotated[str, Form()],
+    metadata_profile_name: Annotated[str, Form()],
+    root_folder_path: Annotated[str, Form()],
     session: Session = Depends(get_session),
 ):
-    """Save Lidarr configuration."""
+    """Save Lidarr configuration.
+
+    Phase 8 D-E1 (DISC-07) — persists 5 extras keys (quality + metadata
+    profile id/name pairs + root folder path). Pitfall 14: discovery_service.
+    add_artist() reads all of these at call time. Back-compat 'profile_id'/
+    'profile_name' keys mirror the quality_* values so any legacy reader
+    keeps working.
+    """
     save_setting(
         session, "lidarr", url, api_key,
-        {"profile_id": profile_id, "profile_name": profile_name},
+        {
+            "quality_profile_id": quality_profile_id,
+            "quality_profile_name": quality_profile_name,
+            "metadata_profile_id": metadata_profile_id,
+            "metadata_profile_name": metadata_profile_name,
+            "root_folder_path": root_folder_path,
+            # Back-compat — keep legacy keys populated for any reader that
+            # hasn't migrated to the quality_profile_* names yet.
+            "profile_id": quality_profile_id,
+            "profile_name": quality_profile_name,
+        },
     )
     setting = get_setting(session, "lidarr")
     templates = get_templates()
