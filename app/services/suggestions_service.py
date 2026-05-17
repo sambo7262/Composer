@@ -1019,12 +1019,51 @@ async def refill_mirror_sql(
                 await update_playlist_items(
                     plex_url, plex_token, mp.plex_rating_key, rating_keys,
                 )
-            except Exception:
-                logger.exception(
-                    "refill_mirror_sql: Plex update_playlist_items failed; "
-                    "mirror state is the truth — Plex will reconcile on "
-                    "next refill."
+            except Exception as exc:
+                # Self-heal (260517-shp): when the user deletes the Plex
+                # playlist out from under us, fetchItem raises NotFound
+                # and the previous best-effort log left the user stranded
+                # forever (stale plex_rating_key references a deleted
+                # playlist; every future refill fails). Detect that case
+                # and re-materialize a new Plex playlist + update the
+                # ManagedPlaylist row in place.
+                #
+                # We match on "not found" loosely (NotFound from plexapi,
+                # 404 from raw HTTP) so a server-side rename also recovers.
+                # PermissionError is intentionally NOT recovered — that
+                # means is_managed_playlist returned False, which is an
+                # OPS-06 / Pitfall 20 invariant violation.
+                err_str = (type(exc).__name__ + " " + str(exc)).lower()
+                from plexapi import exceptions as _plexex
+                is_not_found = (
+                    isinstance(exc, _plexex.NotFound)
+                    or "notfound" in err_str
+                    or "not found" in err_str
+                    or "404" in err_str
                 )
+                if is_not_found and not isinstance(exc, PermissionError):
+                    logger.warning(
+                        "refill_mirror_sql: Plex playlist rk=%s vanished "
+                        "(likely user-deleted); re-materializing and "
+                        "updating ManagedPlaylist row.",
+                        mp.plex_rating_key,
+                    )
+                    try:
+                        await _materialize_suggestions_plex_playlist(
+                            plex_url, plex_token, rating_keys,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "refill_mirror_sql: re-materialize after "
+                            "vanish-detect ALSO failed; mirror state is "
+                            "the truth — next refill will retry."
+                        )
+                else:
+                    logger.exception(
+                        "refill_mirror_sql: Plex update_playlist_items "
+                        "failed (not a vanish); mirror state is the "
+                        "truth — Plex will reconcile on next refill."
+                    )
 
     _status = SuggestionsServiceStatus(
         state="idle",
