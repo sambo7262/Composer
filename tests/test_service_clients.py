@@ -95,7 +95,7 @@ class TestLidarrClient:
             {"id": 1, "name": "Lossless"},
             {"id": 2, "name": "Standard"},
         ]
-        mock_lidarr.metadata.get.return_value = []
+        mock_lidarr.http_utils.request.return_value = []
         mock_lidarr.root_folder.get.return_value = []
         mock_lidarr_cls.return_value = mock_lidarr
 

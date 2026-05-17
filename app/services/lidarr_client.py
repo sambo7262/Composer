@@ -25,12 +25,20 @@ def _fetch_lidarr_test_payload(lidarr):
     pyarr calls each open their own HTTP request internally but they all
     share one threadpool slot, which is the point: fewer event-loop hops.
 
-    pyarr 6.x namespaced API: quality_profile.get(), metadata.get(),
-    root_folder.get() (replaces 5.x flat get_quality_profile etc.).
+    Endpoints:
+      - /api/v1/qualityprofile  → release-quality filter (FLAC, MP3, …) via
+        ``lidarr.quality_profile.get()``.
+      - /api/v1/metadataprofile → release-type filter (Standard, None, …)
+        via the shared ``http_utils.request("metadataprofile")``. pyarr 6.x
+        exposes a ``metadata_profile`` wrapper on Readarr but NOT on Lidarr,
+        so we hit the endpoint directly. (Lidarr's ``.metadata`` namespace
+        returns notification *consumers* like Emby/Plex/Kodi — wrong shape.)
+      - /api/v1/rootfolder      → library destinations via
+        ``lidarr.root_folder.get()``.
     """
     return (
         lidarr.quality_profile.get(),
-        lidarr.metadata.get(),
+        lidarr.http_utils.request("metadataprofile"),
         lidarr.root_folder.get(),
     )
 

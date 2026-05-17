@@ -31,7 +31,7 @@ async def test_connection_test_returns_three_lists(mock_lidarr_cls):
 
     mock_lidarr = MagicMock()
     mock_lidarr.quality_profile.get.return_value = [{"id": 1, "name": "FLAC"}]
-    mock_lidarr.metadata.get.return_value = [{"id": 2, "name": "Standard"}]
+    mock_lidarr.http_utils.request.return_value = [{"id": 2, "name": "Standard"}]
     mock_lidarr.root_folder.get.return_value = [{"id": 3, "path": "/music"}]
     mock_lidarr_cls.return_value = mock_lidarr
 
