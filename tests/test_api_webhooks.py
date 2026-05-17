@@ -159,3 +159,127 @@ class TestPlexWebhookEndpoint:
         response = client.get("/api/webhooks/plex/last-test")
         assert response.status_code == 200
         assert "webhook-test-indicator" in response.text
+
+
+# ============================================================================
+# media.stop partial-play drain — SUGG-03 extension (UAT 2026-05-17)
+# ============================================================================
+#
+# Plex sends media.scrobble only at ~90% completion. To make Suggestions
+# refill on skips and partial plays, media.stop also fires TrackPlayedEvent
+# when ratio (viewedOffset / duration) is in [0.30, 0.85). Below 0.30 =
+# accidental tap (no drain). Above 0.85 = media.scrobble handles it
+# (avoid double-counting view_count).
+
+
+class TestMediaStopPartialPlay:
+    def _post_stop(self, client, offset_ms, duration_ms, rating_key="42"):
+        body = {
+            "event": "media.stop",
+            "Metadata": {
+                "ratingKey": rating_key,
+                "duration": duration_ms,
+                "viewOffset": offset_ms,
+            },
+        }
+        return client.post(
+            "/api/webhooks/plex", files={"payload": (None, json.dumps(body))},
+        )
+
+    def _captured_events(self, client, offset_ms, duration_ms, monkeypatch):
+        """Patch the event bus and return whatever was put on it for one POST."""
+        from app.services import event_bus
+        from app.routers import api_webhooks
+
+        captured = []
+
+        class _CapBus:
+            def put_nowait(self, ev):
+                captured.append(ev)
+
+        monkeypatch.setattr(api_webhooks, "get_event_bus", lambda: _CapBus())
+        resp = self._post_stop(client, offset_ms, duration_ms)
+        assert resp.status_code == 200
+        return captured
+
+    def test_partial_play_50_percent_fires_drain(self, client, monkeypatch):
+        """ratio=0.50 → TrackPlayedEvent fired (source='webhook' so dedupe
+        still merges any same-bucket scrobble collision)."""
+        from app.models.events import TrackPlayedEvent
+
+        captured = self._captured_events(
+            client, offset_ms=120_000, duration_ms=240_000, monkeypatch=monkeypatch,
+        )
+        played = [e for e in captured if isinstance(e, TrackPlayedEvent)]
+        assert len(played) == 1
+        assert played[0].source == "webhook"
+        assert played[0].plex_rating_key == "42"
+
+    def test_partial_play_30_percent_boundary_fires(self, client, monkeypatch):
+        """ratio=0.30 (lower bound, inclusive) → drain fires."""
+        from app.models.events import TrackPlayedEvent
+
+        captured = self._captured_events(
+            client, offset_ms=30_000, duration_ms=100_000, monkeypatch=monkeypatch,
+        )
+        played = [e for e in captured if isinstance(e, TrackPlayedEvent)]
+        assert len(played) == 1
+
+    def test_skip_under_30_percent_does_not_fire(self, client, monkeypatch):
+        """ratio=0.25 → accidental-tap zone, no drain."""
+        from app.models.events import TrackPlayedEvent
+
+        captured = self._captured_events(
+            client, offset_ms=25_000, duration_ms=100_000, monkeypatch=monkeypatch,
+        )
+        played = [e for e in captured if isinstance(e, TrackPlayedEvent)]
+        assert played == []
+
+    def test_above_85_percent_does_not_fire_from_stop(self, client, monkeypatch):
+        """ratio=0.90 → media.scrobble's responsibility, no fire from media.stop
+        to avoid double-counting view_count.
+        """
+        from app.models.events import TrackPlayedEvent
+
+        captured = self._captured_events(
+            client, offset_ms=90_000, duration_ms=100_000, monkeypatch=monkeypatch,
+        )
+        played = [e for e in captured if isinstance(e, TrackPlayedEvent)]
+        assert played == []
+
+    def test_missing_duration_does_not_crash(self, client, monkeypatch):
+        """Missing or zero duration → ratio undefined → no fire (no crash)."""
+        from app.models.events import TrackPlayedEvent
+        from app.routers import api_webhooks
+
+        captured = []
+
+        class _CapBus:
+            def put_nowait(self, ev):
+                captured.append(ev)
+
+        monkeypatch.setattr(api_webhooks, "get_event_bus", lambda: _CapBus())
+        body = {
+            "event": "media.stop",
+            "Metadata": {"ratingKey": "42", "viewOffset": 30_000},
+            # No duration field at all.
+        }
+        resp = client.post(
+            "/api/webhooks/plex", files={"payload": (None, json.dumps(body))},
+        )
+        assert resp.status_code == 200
+        assert [e for e in captured if isinstance(e, TrackPlayedEvent)] == []
+
+    def test_zero_duration_does_not_divide_by_zero(self, client, monkeypatch):
+        """duration=0 from a buggy/early Plex event → no crash, no fire."""
+        from app.routers import api_webhooks
+
+        captured = []
+
+        class _CapBus:
+            def put_nowait(self, ev):
+                captured.append(ev)
+
+        monkeypatch.setattr(api_webhooks, "get_event_bus", lambda: _CapBus())
+        resp = self._post_stop(client, offset_ms=30_000, duration_ms=0)
+        assert resp.status_code == 200

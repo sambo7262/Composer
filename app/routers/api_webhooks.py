@@ -126,6 +126,55 @@ async def plex_webhook(
                 raw_payload=raw_payload_str,
             )
         )
+    elif event_type == "media.stop":
+        # SUGG-03 extension (UAT 2026-05-17): drain on partial play.
+        # Plex sends media.scrobble only at ~90% completion; media.stop
+        # fires on every stop event including skip-mid-track. We fire
+        # TrackPlayedEvent when ratio (viewedOffset / duration) is in
+        # [0.30, 0.85): the user heard enough to decide and moved on.
+        # Below 0.30 = accidental tap / unwanted track (no drain — the
+        # mirror keeps the row, future skip-tracking work in SUGG-08/09
+        # can record a soft-negative). Above 0.85 = media.scrobble will
+        # fire the play event on its own; firing here too would
+        # double-count view_count.
+        viewed_offset = metadata.get("viewOffset") or metadata.get("viewedOffset")
+        duration = metadata.get("duration")
+        try:
+            offset_ms = int(viewed_offset) if viewed_offset is not None else None
+            duration_ms = int(duration) if duration is not None else None
+        except (TypeError, ValueError):
+            offset_ms = None
+            duration_ms = None
+        ratio: Optional[float] = None
+        if offset_ms is not None and duration_ms and duration_ms > 0:
+            ratio = offset_ms / duration_ms
+        if ratio is not None and 0.30 <= ratio < 0.85:
+            last_viewed = metadata.get("lastViewedAt") or received_at
+            logger.info(
+                "media.stop ratio=%.2f ratingKey=%s — firing partial-play drain",
+                ratio, rating_key,
+            )
+            # Reuse the existing 'webhook' source so the TrackPlayedEvent
+            # Literal stays narrow + EventLog dedupe still drops a same-bucket
+            # scrobble/stop collision (Plex sends both for completed plays;
+            # the 0.30-0.85 band excludes that case, but defense-in-depth).
+            # The webhook log line above already records this came from
+            # media.stop with the exact ratio for observability.
+            bus.put_nowait(
+                TrackPlayedEvent(
+                    plex_rating_key=str(rating_key) if rating_key else None,
+                    last_viewed_at=str(last_viewed),
+                    source="webhook",
+                    received_at=received_at,
+                    raw_payload=raw_payload_str,
+                )
+            )
+        else:
+            logger.debug(
+                "media.stop ratio=%s ratingKey=%s — outside partial-play band, ignoring",
+                f"{ratio:.2f}" if ratio is not None else "unknown",
+                rating_key,
+            )
     elif event_type == "library.new":
         section_id = metadata.get("librarySectionID")
         try:
