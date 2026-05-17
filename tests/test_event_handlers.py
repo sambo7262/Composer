@@ -314,6 +314,15 @@ class TestStaticAnalysis:
             services_dir / "plex_playlist_service.py",
             services_dir / "vibe_service.py",
             services_dir / "suggestions_service.py",  # Phase 7 Plan 01
+            # Phase 8 additions — Plan 01 creates discovery_service.py +
+            # extends lidarr_client.py. Plan 02 adds musicbrainz_client.py /
+            # listenbrainz_client.py / api_discovery.py. Files that don't
+            # yet exist are skipped by the path.exists() guard below.
+            services_dir / "discovery_service.py",
+            services_dir / "lidarr_client.py",
+            services_dir / "musicbrainz_client.py",
+            services_dir / "listenbrainz_client.py",
+            Path(__file__).parent.parent / "app" / "routers" / "api_discovery.py",
         ]
 
         forbidden_names = {
@@ -326,6 +335,15 @@ class TestStaticAnalysis:
             "addItems",
             "removeItems",
             "editTitle",
+            # Phase 8 — pyarr blocking calls (Lidarr class methods).
+            "add_artist",
+            "lookup_artist",
+            "get_quality_profile",
+            "get_metadata_profile",
+            "get_root_folder",
+            "get_history",
+            # MusicBrainz blocking calls (musicbrainzngs).
+            "get_artist_by_id",
         }
 
         def call_is_to_thread(call: ast.Call) -> bool:

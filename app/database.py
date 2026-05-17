@@ -163,6 +163,45 @@ def _migrate_add_columns(engine) -> None:
         # Phase 5/6/7 DBs.
         pass
 
+    # Phase 8 D-E2 — additive Vibe.color column.
+    # Hex string like "#3b82f6"; backfilled in run_phase_08_discovery_bootstrap
+    # using the locked Tailwind 4 -500 palette (orange-500 LAST per D-E2).
+    try:
+        cursor.execute("PRAGMA table_info(vibe)")
+        vibe_cols = {row[1] for row in cursor.fetchall()}
+        if "color" not in vibe_cols:
+            cursor.execute("ALTER TABLE vibe ADD COLUMN color TEXT")
+            logging.getLogger(__name__).info(
+                "Phase 8 migration: added vibe.color column"
+            )
+    except sqlite3.OperationalError:
+        # vibe table doesn't exist yet; SQLModel.create_all will materialise
+        # it with the color column from the model definition. No-op here.
+        pass
+
+    # Phase 8 Pitfall 12 — additive Track.plex_artist_mbid column.
+    # MusicBrainz Artist Identifier (36-char UUID); backfilled best-effort in
+    # run_phase_08_discovery_bootstrap via plex_client. Used by Plan 02's
+    # _get_in_library_mbids_sync as the SINGLE source of truth for the
+    # cross-surface dedup gate (Pitfall 12 is locked mandatory from day one).
+    # Pre-backfill rows are NULL — the dedup gate treats NULL as "unknown",
+    # so the worst case is a duplicate appearing once on /discover until the
+    # backfill catches up.
+    try:
+        cursor.execute("PRAGMA table_info(track)")
+        track_cols = {row[1] for row in cursor.fetchall()}
+        if "plex_artist_mbid" not in track_cols:
+            cursor.execute(
+                "ALTER TABLE track ADD COLUMN plex_artist_mbid TEXT"
+            )
+            logging.getLogger(__name__).info(
+                "Phase 8 migration: added track.plex_artist_mbid column"
+            )
+    except sqlite3.OperationalError:
+        # track table doesn't exist yet; SQLModel.create_all will materialise
+        # it with the field from the model definition once Plan 01 lands.
+        pass
+
     # Phase 6 Plan 04 (D-36) — ix_slotinlog_timestamp for the
     # "Last 20 slot-in decisions" diagnostic feed (ORDER BY timestamp DESC LIMIT 20).
     # SQLModel ships a column-level index=True via the model definition; this
@@ -225,6 +264,17 @@ def init_db() -> None:
         RefillTriggerLog,
         SuggestionHistory,
         SuggestionsMirror,
+    )
+    # Phase 8 — register discovery models (DiscoveryCandidate, DiscoveryAdd,
+    # DiscoveryDismissed, MusicBrainzCache, CostMeterBaseline, WeeklyCronState)
+    # so SQLModel.metadata.create_all materialises the tables on fresh DBs.
+    from app.models.discovery import (  # noqa: F401
+        CostMeterBaseline,
+        DiscoveryAdd,
+        DiscoveryCandidate,
+        DiscoveryDismissed,
+        MusicBrainzCache,
+        WeeklyCronState,
     )
 
     engine = get_engine()

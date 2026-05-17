@@ -63,6 +63,11 @@ class Vibe(SQLModel, table=True):
     created_at: str
     centroid_recomputed_at: Optional[str] = None
     is_active: bool = Field(default=True)  # D-28 — re-cluster archival audit
+    # Phase 8 D-E2 — hex like "#3b82f6"; auto-assigned at creation time from
+    # the Tailwind 4 -500 palette (discovery_service.VIBE_COLOR_PALETTE).
+    # NULL until run_phase_08_discovery_bootstrap backfills existing rows
+    # on first deploy after Phase 8.
+    color: Optional[str] = Field(default=None)
 
 
 class TrackVibe(SQLModel, table=True):

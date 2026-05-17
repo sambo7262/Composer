@@ -255,6 +255,14 @@ async def lifespan(app: FastAPI):
     # wizard finalize hook (D-01).
     from app.services.suggestions_service import run_phase_07_suggestions_bootstrap
     await run_phase_07_suggestions_bootstrap()
+    # Phase 8 D-B4 + D-E2 + Pitfall 12 — discovery bootstrap. Stamps
+    # CostMeterBaseline.deploy_at (home cost chip baseline), seeds
+    # WeeklyCronState(id=1, last_tick_at=NULL), backfills Vibe.color from
+    # the locked Tailwind 4 -500 palette, and best-effort backfills
+    # Track.plex_artist_mbid via plex_client. Idempotent via MigrationLog
+    # gate (phase_id='8.0-discovery-bootstrap').
+    from app.services.discovery_service import run_phase_08_discovery_bootstrap
+    await run_phase_08_discovery_bootstrap()
     # Phase 5: queue → dispatcher → scheduler order is mandatory.
     get_event_bus()
     await start_dispatcher()
