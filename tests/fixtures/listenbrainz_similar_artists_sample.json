@@ -1,0 +1,47 @@
+[
+  {
+    "artist_mbid": "a74b1b7f-71a5-4011-9441-d0b5e4122711",
+    "name": "Radiohead",
+    "comment": "",
+    "type": "Group",
+    "gender": null,
+    "score": 5660,
+    "reference_mbid": "f6f2326f-6b25-4170-b89d-e235b25508e8"
+  },
+  {
+    "artist_mbid": "d700b3f5-45af-4d02-95ed-57d301bda93e",
+    "name": "Mogwai",
+    "comment": "Scottish post-rock band",
+    "type": "Group",
+    "gender": null,
+    "score": 3794,
+    "reference_mbid": "f6f2326f-6b25-4170-b89d-e235b25508e8"
+  },
+  {
+    "artist_mbid": "4236acde-2ce2-441c-a3d4-38d55f1b5474",
+    "name": "Explosions in the Sky",
+    "comment": "Texas post-rock",
+    "type": "Group",
+    "gender": null,
+    "score": 3215,
+    "reference_mbid": "f6f2326f-6b25-4170-b89d-e235b25508e8"
+  },
+  {
+    "artist_mbid": "87c5dedd-371d-4a53-9f7f-80522fb7f3cb",
+    "name": "Björk",
+    "comment": "",
+    "type": "Person",
+    "gender": "Female",
+    "score": 2839,
+    "reference_mbid": "f6f2326f-6b25-4170-b89d-e235b25508e8"
+  },
+  {
+    "artist_mbid": "6d7b7cd4-254b-4c25-83f6-dd20f98ceacd",
+    "name": "M83",
+    "comment": "",
+    "type": "Group",
+    "gender": null,
+    "score": 2782,
+    "reference_mbid": "f6f2326f-6b25-4170-b89d-e235b25508e8"
+  }
+]
