@@ -580,6 +580,31 @@ async def _slot_track_inner(rating_key: str) -> SlotInResult:
     except Exception:
         logger.exception("SlotInLog insert failed; slot succeeded")
 
+    # Phase 8 Plan 02 Task 4 — DiscoveryAdd lifecycle hook 3 (DISC-06).
+    # Best-effort: stamp vibe_slotted_at on any pending DiscoveryAdd whose
+    # mb_id matches the just-slotted track's plex_artist_mbid. This is
+    # the single bit that flips the D-D4 "REMOVED from /discover"
+    # lifecycle. We use Option A (slot_track is the single call site that
+    # covers rating-change handlers, re-cluster commit, and wizard
+    # finalisation). Lazy import + try/except mirrors the SlotInLog hook
+    # immediately above — log-write failure must NEVER break the slot path.
+    try:
+        from app.services.discovery_service import (
+            stamp_discovery_adds_vibe_slotted,
+        )
+        # ``track.plex_artist_mbid`` may be NULL if Plex didn't expose
+        # an MBID for this artist; in that case we pass triggering_mb_id=None
+        # so the helper scans all pending adds (cheap — typically <10
+        # in flight). The helper's gate (essentia_complete_at IS NOT
+        # NULL) keeps the scan well-bounded.
+        await stamp_discovery_adds_vibe_slotted(
+            triggering_mb_id=track.plex_artist_mbid,
+        )
+    except Exception:
+        logger.exception(
+            "DiscoveryAdd hook 3 (vibe_slotted) failed; slot succeeded"
+        )
+
     return SlotInResult(
         track_id=track.id,
         rating_key=rating_key,

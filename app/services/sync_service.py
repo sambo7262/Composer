@@ -216,6 +216,21 @@ async def run_sync() -> None:
         _sync_status.last_synced = now
         await asyncio.to_thread(_update_sync_state_sync, total or 0)
 
+        # Phase 8 Plan 02 Task 4 — DiscoveryAdd lifecycle hook 1 (DISC-06).
+        # Stamp composer_sync_seen_at on any DiscoveryAdd whose artist
+        # now appears in composer.tracks via Track.plex_artist_mbid.
+        # Best-effort: a hook failure must NEVER block the sync→analysis
+        # chain.
+        try:
+            from app.services.discovery_service import (
+                stamp_discovery_adds_composer_sync_seen,
+            )
+            await stamp_discovery_adds_composer_sync_seen()
+        except Exception:
+            logger.exception(
+                "DiscoveryAdd hook 1 (composer_sync_seen) failed; continuing."
+            )
+
         # D-01: Auto-trigger analysis of un-analyzed tracks after sync completes
         try:
             from app.services.analysis_service import trigger_post_sync_analysis

@@ -1163,3 +1163,233 @@ async def update_weekly_cron_state(now_iso: Optional[str] = None) -> None:
     always stamps to ``datetime.now(timezone.utc).isoformat()``.
     """
     await asyncio.to_thread(_update_weekly_cron_state_sync)
+
+
+# =====================================================================
+# Phase 8 Plan 02 Task 4 — DiscoveryAdd lifecycle write hooks (DISC-06).
+# Each helper is idempotent (NULL-guard before write) and gated on the
+# PREVIOUS lifecycle field being populated so we enforce a strict
+# forward-only state machine:
+#   added_at → composer_sync_seen_at → essentia_complete_at → vibe_slotted_at
+# Hook 3 (vibe_slotted) is what flips the D-D4 "REMOVED from /discover"
+# lifecycle bit in Plan 04's read_active_discover_data filter.
+# =====================================================================
+
+
+def _stamp_discovery_adds_composer_sync_seen_sync() -> None:
+    """Hook 1 — invoked from sync_service post-sync.
+
+    For each DiscoveryAdd row WHERE composer_sync_seen_at IS NULL, check
+    whether ANY Track row exists with the same plex_artist_mbid. If yes,
+    stamp composer_sync_seen_at = now. Idempotent — NULL guard skips
+    already-stamped rows.
+
+    Pitfall 12 boundary: matches via Track.plex_artist_mbid only
+    (Plan 01 contract). NULL plex_artist_mbid rows can't satisfy this
+    gate — the next sync after backfill catches them up.
+    """
+    from app.models.discovery import DiscoveryAdd
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with Session(get_engine()) as session:
+        pending = list(session.exec(
+            select(DiscoveryAdd).where(
+                DiscoveryAdd.composer_sync_seen_at.is_(None)
+            )
+        ).all())
+        if not pending:
+            return
+        # Bulk fetch the set of artist MBIDs present in the library to
+        # avoid N+1.
+        in_library = {
+            r for r in session.exec(
+                select(Track.plex_artist_mbid)
+                .where(Track.plex_artist_mbid.is_not(None))
+            ).all() if r
+        }
+        stamped = 0
+        for add in pending:
+            if add.mb_id in in_library:
+                add.composer_sync_seen_at = now_iso
+                session.add(add)
+                stamped += 1
+        if stamped:
+            session.commit()
+            logger.info(
+                "DiscoveryAdd hook 1: stamped composer_sync_seen_at "
+                "on %d rows", stamped,
+            )
+
+
+async def stamp_discovery_adds_composer_sync_seen() -> None:
+    """Async wrapper for hook 1; routes DB work through asyncio.to_thread
+    per Phase 5 D-09.
+    """
+    await asyncio.to_thread(_stamp_discovery_adds_composer_sync_seen_sync)
+
+
+def _stamp_discovery_adds_essentia_complete_sync() -> None:
+    """Hook 2 — invoked from analysis_service after per-track analyze.
+
+    For each DiscoveryAdd row WHERE composer_sync_seen_at IS NOT NULL
+    AND essentia_complete_at IS NULL, check whether ALL Track rows with
+    the same plex_artist_mbid have energy IS NOT NULL (analyzed). If yes,
+    stamp essentia_complete_at = now. Idempotent + gate-respecting.
+    """
+    from app.models.discovery import DiscoveryAdd
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with Session(get_engine()) as session:
+        pending = list(session.exec(
+            select(DiscoveryAdd)
+            .where(DiscoveryAdd.composer_sync_seen_at.is_not(None))
+            .where(DiscoveryAdd.essentia_complete_at.is_(None))
+        ).all())
+        if not pending:
+            return
+        stamped = 0
+        for add in pending:
+            tracks = list(session.exec(
+                select(Track)
+                .where(Track.plex_artist_mbid == add.mb_id)
+            ).all())
+            if not tracks:
+                continue  # waiting on sync to materialise rows
+            if any(t.energy is None for t in tracks):
+                continue  # at least one unanalyzed track remains
+            add.essentia_complete_at = now_iso
+            session.add(add)
+            stamped += 1
+        if stamped:
+            session.commit()
+            logger.info(
+                "DiscoveryAdd hook 2: stamped essentia_complete_at "
+                "on %d rows", stamped,
+            )
+
+
+async def stamp_discovery_adds_essentia_complete() -> None:
+    """Async wrapper for hook 2; routes DB work through asyncio.to_thread
+    per Phase 5 D-09.
+    """
+    await asyncio.to_thread(_stamp_discovery_adds_essentia_complete_sync)
+
+
+def _stamp_discovery_adds_vibe_slotted_sync(
+    triggering_mb_id: Optional[str] = None,
+) -> None:
+    """Hook 3 — invoked from event_handlers.handle_rating_changed (or
+    vibe_service.slot_track) after a successful slot.
+
+    For each DiscoveryAdd row WHERE essentia_complete_at IS NOT NULL AND
+    vibe_slotted_at IS NULL, check whether ANY TrackVibe row exists for
+    a Track whose plex_artist_mbid matches. If yes, stamp
+    vibe_slotted_at = now. This is the single bit that flips the D-D4
+    "REMOVED from /discover" lifecycle.
+
+    Optional ``triggering_mb_id`` arg scopes the check to one artist
+    (cheap fast-path when called from event_handlers with the
+    just-slotted track's artist MBID known). If None, scans all pending
+    adds.
+    """
+    from app.models.discovery import DiscoveryAdd
+    from app.models.vibe import TrackVibe
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with Session(get_engine()) as session:
+        query = (
+            select(DiscoveryAdd)
+            .where(DiscoveryAdd.essentia_complete_at.is_not(None))
+            .where(DiscoveryAdd.vibe_slotted_at.is_(None))
+        )
+        if triggering_mb_id:
+            query = query.where(DiscoveryAdd.mb_id == triggering_mb_id)
+        pending = list(session.exec(query).all())
+        if not pending:
+            return
+        stamped = 0
+        for add in pending:
+            # Any TrackVibe row joined via Track.plex_artist_mbid?
+            tv = session.exec(
+                select(TrackVibe)
+                .join(Track, TrackVibe.track_id == Track.id)
+                .where(Track.plex_artist_mbid == add.mb_id)
+            ).first()
+            if tv is None:
+                continue
+            add.vibe_slotted_at = now_iso
+            session.add(add)
+            stamped += 1
+        if stamped:
+            session.commit()
+            logger.info(
+                "DiscoveryAdd hook 3: stamped vibe_slotted_at on %d rows",
+                stamped,
+            )
+
+
+async def stamp_discovery_adds_vibe_slotted(
+    triggering_mb_id: Optional[str] = None,
+) -> None:
+    """Async wrapper for hook 3; routes DB work through asyncio.to_thread
+    per Phase 5 D-09.
+    """
+    await asyncio.to_thread(
+        _stamp_discovery_adds_vibe_slotted_sync, triggering_mb_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Minimal lifecycle status helper — Plan 04 expands this to read Lidarr
+# history; Task 4 ships the slotted branch so DISC-06 SC#3 is verifiable
+# end-to-end.
+# ---------------------------------------------------------------------------
+
+
+def _read_discovery_add_lifecycle_sync(mb_id: str) -> Optional[dict]:
+    from app.models.discovery import DiscoveryAdd
+
+    with Session(get_engine()) as session:
+        row = session.exec(
+            select(DiscoveryAdd).where(DiscoveryAdd.mb_id == mb_id)
+        ).first()
+        if row is None:
+            return None
+        return {
+            "composer_sync_seen_at": row.composer_sync_seen_at,
+            "essentia_complete_at": row.essentia_complete_at,
+            "vibe_slotted_at": row.vibe_slotted_at,
+        }
+
+
+async def get_lidarr_status_for_add(mb_id: str) -> str:
+    """Plan 04 contract — render-time status string for a DiscoveryAdd.
+
+    Task 4 (this plan) ships the slotted branch so DISC-06's "card
+    auto-removes from /discover" lifecycle can be verified end-to-end.
+    Plan 04 will extend this with the Lidarr `history.get` round-trip
+    to fill in the searching / downloading / imported states.
+
+    Returns:
+      - "analyzed, slotted into vibes" when vibe_slotted_at IS NOT NULL
+      - "imported, awaiting Composer sync" when composer_sync_seen_at is
+        NULL but the row exists (the upstream sync hasn't caught up yet)
+      - "imported, awaiting analysis" when composer_sync_seen_at IS NOT
+        NULL but essentia_complete_at IS NULL
+      - "awaiting vibe slot-in" when essentia_complete_at IS NOT NULL
+        but vibe_slotted_at IS NULL (the rating-changed slot hook
+        hasn't fired yet)
+      - "unknown" when no DiscoveryAdd row exists (defensive)
+    """
+    lifecycle = await asyncio.to_thread(
+        _read_discovery_add_lifecycle_sync, mb_id,
+    )
+    if lifecycle is None:
+        return "unknown"
+    if lifecycle["vibe_slotted_at"] is not None:
+        return "analyzed, slotted into vibes"
+    if lifecycle["essentia_complete_at"] is not None:
+        return "awaiting vibe slot-in"
+    if lifecycle["composer_sync_seen_at"] is not None:
+        return "imported, awaiting analysis"
+    return "imported, awaiting Composer sync"
