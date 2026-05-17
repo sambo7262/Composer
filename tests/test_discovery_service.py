@@ -632,10 +632,69 @@ def test_artist_discovery_call_weekly_skips_on_no_vibes(
     assert len(no_vibes_rows) == 1
 
 
+def test_artist_discovery_call_weekly_breaker_uses_artist_prefix(
+    db_with_phase7, monkeypatch,
+):
+    """Regression — the back-to-back suggestions_discovery → artist_discovery
+    pair inside _weekly_maintenance_tick must NOT trip the 30s debounce
+    against each other. The breaker call MUST scope to "discovery_artist_"
+    (not the broad "discovery_") so suggestions' `discovery_weekly` purpose
+    string doesn't share counters with artist's `discovery_artist_weekly`.
+    """
+    from app.services import discovery_service, listenbrainz_client, musicbrainz_client
+
+    captured_prefix = {"value": None}
+
+    async def _capture_prefix(purpose_prefix="suggestions_"):
+        captured_prefix["value"] = purpose_prefix
+        # Don't raise — we want to verify only the prefix value.
+
+    monkeypatch.setattr(discovery_service, "check_or_raise", _capture_prefix)
+
+    _seed_lidarr_configured(db_with_phase7)
+    _seed_vibe(db_with_phase7, 1)
+    _make_track_with_artist_mbid(db_with_phase7, 1, "seed-mbid")
+    _seed_starred_tracks_in_vibe(db_with_phase7, 1, [1])
+
+    async def _fake_lb(seed_mbid, limit=100):
+        return [{"artist_mbid": "x", "name": "X", "score": 100}]
+    monkeypatch.setattr(listenbrainz_client, "get_similar_artists", _fake_lb)
+
+    async def _fake_lookup(mb_id):
+        return {
+            "id": "x", "name": "X",
+            "artist-relation-list": [], "release-group-list": [],
+        }
+    monkeypatch.setattr(musicbrainz_client, "lookup_artist", _fake_lookup)
+
+    async def _no_lidarr():
+        return set()
+    monkeypatch.setattr(discovery_service, "_get_lidarr_known_artists", _no_lidarr)
+
+    # Stub Anthropic so we don't actually call out.
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def call_with_structured_output(self, **kw):
+            class _Resp:
+                picks = []
+            return _Resp()
+    monkeypatch.setattr(discovery_service, "AnthropicClient", _FakeClient)
+
+    _run_async(discovery_service.artist_discovery_call_weekly())
+
+    assert captured_prefix["value"] == "discovery_artist_", (
+        f"Expected 'discovery_artist_' but check_or_raise was called with "
+        f"{captured_prefix['value']!r}. Sharing the 'discovery_' prefix with "
+        f"suggestions_discovery means every Sunday tick trips debounce_30s."
+    )
+
+
 def test_artist_discovery_call_weekly_invokes_cost_breaker_before_llm(
     db_with_phase7, monkeypatch,
 ):
-    """check_or_raise(purpose_prefix='discovery_') tripping → state='cost_locked',
+    """check_or_raise tripping → state='cost_locked',
     LLMUsage row with purpose '_cost_locked', no Anthropic call.
     """
     from app.models.llm_usage import LLMUsage

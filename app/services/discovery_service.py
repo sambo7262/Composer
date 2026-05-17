@@ -1005,10 +1005,18 @@ async def artist_discovery_call_weekly() -> None:
             _status.state = "idle"
             return
 
-        # 3. Cost breaker gate — shared with suggestions discovery via
-        # the "discovery_" prefix.
+        # 3. Cost breaker gate — SCOPED to "discovery_artist_" so the
+        # back-to-back suggestions_discovery → artist_discovery pair inside
+        # _weekly_maintenance_tick doesn't trip the 30s debounce against
+        # each other. Daily-quota / burst counters are still meaningful
+        # per-purpose (50 calls/day of *artist* discovery, not 50 calls of
+        # any discovery), which matches the operator intent.
+        # (Previously used "discovery_" which matched both
+        # suggestions_discovery's `discovery_weekly` and artist's
+        # `discovery_artist_weekly` purpose strings — every Sunday tick
+        # would silently trip after the suggestions LLM call landed.)
         try:
-            await check_or_raise(purpose_prefix="discovery_")
+            await check_or_raise(purpose_prefix="discovery_artist_")
         except CostBreakerTrippedError as exc:
             logger.warning(
                 "artist_discovery_call_weekly: cost breaker tripped (%s)",
