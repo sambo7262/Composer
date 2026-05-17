@@ -674,3 +674,246 @@ class TestLifespanRegistersDiscoveryCallWeekly:
             )
 
         SQLModel.metadata.drop_all(test_engine)
+
+
+# ============================================================================
+# Phase 8 D-E3 / DISC-08 — library-sync CronTrigger anchored at 03:00 UTC +
+# coalesce=True + misfire_grace_time>=3600 + max_instances=1.
+# Plus the lifespan missed-tick catch-up gate.
+# ============================================================================
+
+
+class TestScheduleSyncCronTrigger:
+    """schedule_sync(24/12/6) MUST register a CronTrigger anchored to wall-clock
+    UTC (not an IntervalTrigger). Non-standard hours fall back to IntervalTrigger.
+    """
+
+    def test_library_sync_uses_cron_trigger_at_03_utc(self):
+        from apscheduler.triggers.cron import CronTrigger
+
+        scheduler = sync_scheduler.get_scheduler()
+        sync_scheduler.schedule_sync(24)
+        job = scheduler.get_job("library_sync")
+        assert job is not None
+        assert isinstance(job.trigger, CronTrigger)
+        hour_field = next(
+            (f for f in job.trigger.fields if f.name == "hour"), None,
+        )
+        minute_field = next(
+            (f for f in job.trigger.fields if f.name == "minute"), None,
+        )
+        assert hour_field is not None and "3" in str(hour_field)
+        assert minute_field is not None and "0" in str(minute_field)
+
+    def test_library_sync_uses_cron_trigger_at_12h(self):
+        from apscheduler.triggers.cron import CronTrigger
+
+        scheduler = sync_scheduler.get_scheduler()
+        sync_scheduler.schedule_sync(12)
+        job = scheduler.get_job("library_sync")
+        assert isinstance(job.trigger, CronTrigger)
+        hour_field = next(
+            (f for f in job.trigger.fields if f.name == "hour"), None,
+        )
+        # CronTrigger renders multiple hours as "3,15" (or similar). Just
+        # check both 3 and 15 appear in the field's rendered form.
+        rendered = str(hour_field)
+        assert "3" in rendered and "15" in rendered
+
+    def test_library_sync_uses_cron_trigger_at_6h(self):
+        from apscheduler.triggers.cron import CronTrigger
+
+        scheduler = sync_scheduler.get_scheduler()
+        sync_scheduler.schedule_sync(6)
+        job = scheduler.get_job("library_sync")
+        assert isinstance(job.trigger, CronTrigger)
+        hour_field = next(
+            (f for f in job.trigger.fields if f.name == "hour"), None,
+        )
+        rendered = str(hour_field)
+        for h in ("3", "9", "15", "21"):
+            assert h in rendered, f"hour {h} missing from rendered cron field {rendered!r}"
+
+    def test_library_sync_falls_back_to_interval_trigger(self):
+        """Non-standard interval (e.g. 7h) → IntervalTrigger fallback."""
+        from apscheduler.triggers.interval import IntervalTrigger
+
+        scheduler = sync_scheduler.get_scheduler()
+        sync_scheduler.schedule_sync(7)
+        job = scheduler.get_job("library_sync")
+        assert isinstance(job.trigger, IntervalTrigger)
+
+    def test_library_sync_job_has_coalesce_and_misfire_grace(self):
+        scheduler = sync_scheduler.get_scheduler()
+        sync_scheduler.schedule_sync(24)
+        job = scheduler.get_job("library_sync")
+        assert job.coalesce is True
+        assert job.misfire_grace_time is not None
+        assert job.misfire_grace_time >= 3600
+        assert job.max_instances == 1
+
+
+class TestStartSchedulerLibrarySyncCatchUp:
+    """Phase 8 D-E3 / DISC-08 — library-sync missed-tick catch-up gate. Fires
+    a delayed run_sync() when the last completed sync is older than
+    interval_hours + 1h grace.
+    """
+
+    @pytest.mark.asyncio
+    @patch("app.services.sync_scheduler.get_setting")
+    @patch("app.services.sync_scheduler.run_sync", new_callable=AsyncMock)
+    def test_catch_up_fires_when_stale(
+        self, mock_run_sync, mock_get_setting, fresh_db, monkeypatch,
+    ):
+        """50h ago > 24h + 1h grace → catch-up scheduled."""
+        from datetime import datetime, timedelta, timezone
+
+        from app.models.track import SyncState
+        from app.services import suggestions_discovery
+
+        mock_setting = MagicMock()
+        mock_setting.extra_config = {"sync_interval_hours": 24}
+        mock_get_setting.return_value = mock_setting
+
+        # Seed SyncState with a stale last_sync_completed.
+        stale_iso = (
+            datetime.now(timezone.utc) - timedelta(hours=50)
+        ).isoformat()
+        fresh_db.add(
+            SyncState(last_sync_completed=stale_iso, total_tracks=100)
+        )
+        fresh_db.commit()
+
+        captured: list = []
+        real_create_task = asyncio.create_task
+
+        def capture_task(coro, *a, **kw):
+            captured.append(getattr(coro, "__name__", "anon"))
+            return real_create_task(coro, *a, **kw)
+
+        monkeypatch.setattr(asyncio, "create_task", capture_task)
+
+        async def _stub_discovery():
+            return None
+
+        monkeypatch.setattr(
+            suggestions_discovery, "discovery_call_weekly", _stub_discovery,
+        )
+
+        asyncio.get_event_loop().run_until_complete(
+            sync_scheduler.start_scheduler()
+        )
+
+        # Filter out the unrelated first-run/discovery auto-tasks.
+        library_catch_up = [
+            n for n in captured
+            if "catch_up_sync" in n.lower() or "delayed_catch_up_sync" in n.lower()
+        ]
+        assert library_catch_up, (
+            f"Expected library_sync catch-up task; captured={captured}"
+        )
+
+    @pytest.mark.asyncio
+    @patch("app.services.sync_scheduler.get_setting")
+    @patch("app.services.sync_scheduler.run_sync", new_callable=AsyncMock)
+    def test_catch_up_does_not_fire_when_fresh(
+        self, mock_run_sync, mock_get_setting, fresh_db, monkeypatch,
+    ):
+        from datetime import datetime, timedelta, timezone
+
+        from app.models.track import SyncState
+        from app.services import suggestions_discovery
+
+        mock_setting = MagicMock()
+        mock_setting.extra_config = {"sync_interval_hours": 24}
+        mock_get_setting.return_value = mock_setting
+
+        recent_iso = (
+            datetime.now(timezone.utc) - timedelta(hours=1)
+        ).isoformat()
+        fresh_db.add(
+            SyncState(last_sync_completed=recent_iso, total_tracks=100)
+        )
+        fresh_db.commit()
+
+        captured: list = []
+        real_create_task = asyncio.create_task
+
+        def capture_task(coro, *a, **kw):
+            captured.append(getattr(coro, "__name__", "anon"))
+            return real_create_task(coro, *a, **kw)
+
+        monkeypatch.setattr(asyncio, "create_task", capture_task)
+
+        async def _stub_discovery():
+            return None
+
+        monkeypatch.setattr(
+            suggestions_discovery, "discovery_call_weekly", _stub_discovery,
+        )
+
+        asyncio.get_event_loop().run_until_complete(
+            sync_scheduler.start_scheduler()
+        )
+
+        library_catch_up = [
+            n for n in captured
+            if "catch_up_sync" in n.lower() or "delayed_catch_up_sync" in n.lower()
+        ]
+        assert library_catch_up == [], (
+            f"Fresh last_sync should NOT trigger catch-up; got={library_catch_up}"
+        )
+
+    @pytest.mark.asyncio
+    @patch("app.services.sync_scheduler.get_setting")
+    @patch("app.services.sync_scheduler.run_sync", new_callable=AsyncMock)
+    @patch("app.services.sync_scheduler.is_service_configured")
+    def test_catch_up_handles_null_last_synced(
+        self,
+        mock_is_configured,
+        mock_run_sync,
+        mock_get_setting,
+        fresh_db,
+        monkeypatch,
+    ):
+        """No SyncState row → first-run auto-sync path takes precedence; the
+        catch-up gate does NOT also schedule a SECOND catch-up.
+        """
+        from app.services import suggestions_discovery
+
+        mock_setting = MagicMock()
+        mock_setting.extra_config = {"sync_interval_hours": 24}
+        mock_get_setting.return_value = mock_setting
+        mock_is_configured.return_value = True
+
+        captured: list = []
+        real_create_task = asyncio.create_task
+
+        def capture_task(coro, *a, **kw):
+            captured.append(getattr(coro, "__name__", "anon"))
+            return real_create_task(coro, *a, **kw)
+
+        monkeypatch.setattr(asyncio, "create_task", capture_task)
+
+        async def _stub_discovery():
+            return None
+
+        monkeypatch.setattr(
+            suggestions_discovery, "discovery_call_weekly", _stub_discovery,
+        )
+
+        asyncio.get_event_loop().run_until_complete(
+            sync_scheduler.start_scheduler()
+        )
+
+        # The first-run auto-sync ("_delayed_auto_sync") fires; the catch-up
+        # gate ("_delayed_catch_up_sync") MUST NOT also fire.
+        library_catch_up = [
+            n for n in captured
+            if "delayed_catch_up_sync" in n.lower()
+        ]
+        assert library_catch_up == [], (
+            f"NULL last_sync should defer to first-run path, "
+            f"NOT schedule a second catch-up; got={library_catch_up}"
+        )
+

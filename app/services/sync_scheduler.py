@@ -30,20 +30,49 @@ def get_scheduler() -> AsyncIOScheduler:
 def schedule_sync(interval_hours: int) -> None:
     """Schedule (or reschedule) the recurring library sync job.
 
+    Phase 8 D-E3 / DISC-08 — switched from IntervalTrigger to CronTrigger
+    anchored at 03:00 UTC for the standard cadences (24h / 12h / 6h).
+    Rationale: APScheduler's MemoryJobStore does NOT persist next_run_time
+    across process restarts, so IntervalTrigger compounds drift on every
+    container restart (NAS UAT 2026-05-16 confirmed: 48h stale on a 24h
+    schedule). CronTrigger anchors to wall-clock so the schedule is stable
+    across redeploys; coalesce=True + misfire_grace_time=3600 collapses
+    missed ticks into ONE catch-up at boot; max_instances=1 prevents
+    concurrent runs.
+
+    Non-standard interval_hours values (anything other than 24/12/6) fall
+    back to IntervalTrigger for back-compat with custom configurations.
+
     Uses replace_existing=True to ensure only one sync job exists (T-02-10).
     """
     scheduler = get_scheduler()
     # Remove existing job if present
     if scheduler.get_job("library_sync"):
         scheduler.remove_job("library_sync")
+
+    if interval_hours == 24:
+        trigger = CronTrigger(hour=3, minute=0, timezone="UTC")
+    elif interval_hours == 12:
+        trigger = CronTrigger(hour="3,15", minute=0, timezone="UTC")
+    elif interval_hours == 6:
+        trigger = CronTrigger(hour="3,9,15,21", minute=0, timezone="UTC")
+    else:
+        trigger = IntervalTrigger(hours=interval_hours)
+
     scheduler.add_job(
         _trigger_sync,
-        trigger=IntervalTrigger(hours=interval_hours),
+        trigger=trigger,
         id="library_sync",
         replace_existing=True,
-        name=f"Library sync every {interval_hours}h",
+        coalesce=True,
+        misfire_grace_time=3600,
+        max_instances=1,
+        name=f"Library sync ({interval_hours}h cadence)",
     )
-    logger.info("Scheduled library sync every %d hours", interval_hours)
+    logger.info(
+        "Scheduled library sync (%dh cadence) with trigger=%s",
+        interval_hours, type(trigger).__name__,
+    )
 
 
 async def _trigger_sync() -> None:
@@ -303,6 +332,55 @@ async def start_scheduler() -> None:
         schedule_sync(interval_hours)
         # Polling stays opt-in even on error path.
         logger.exception("Error loading sync settings, using default %dh interval", interval_hours)
+
+    # ====================================================================
+    # Phase 8 D-E3 / DISC-08 — library-sync missed-tick catch-up gate.
+    # Mirrors Phase 7.1 D-C2 (discovery catch-up below) but for the
+    # library_sync schedule. Placed AFTER the first-run auto-sync block
+    # above (so first-run on a virgin SyncState takes precedence) and
+    # BEFORE the discovery catch-up gate (so library state is fresh by
+    # the time discovery catch-up fires).
+    #
+    # NAS UAT 2026-05-16: container restarts can leave the schedule 48h+
+    # stale even on a 24h cadence (MemoryJobStore loses next_run_time on
+    # process exit). Combined with the CronTrigger swap in schedule_sync,
+    # this gate makes the daily sync observably reliable.
+    # ====================================================================
+    try:
+        engine = get_engine()
+        with Session(engine) as session:
+            sync_info = get_last_sync_info(session)
+            last_done = sync_info.get("last_sync_completed")
+        if last_done is not None:
+            try:
+                last_dt = datetime.fromisoformat(last_done)
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                age = datetime.now(timezone.utc) - last_dt
+                threshold = timedelta(hours=interval_hours) + timedelta(hours=1)
+                if age > threshold:
+                    logger.warning(
+                        "library_sync stale: last completed %s ago "
+                        "(> %s + 1h grace); scheduling catch-up sync in 15s",
+                        age, timedelta(hours=interval_hours),
+                    )
+
+                    async def _delayed_catch_up_sync():
+                        await asyncio.sleep(15)
+                        await run_sync()
+
+                    asyncio.create_task(_delayed_catch_up_sync())
+            except ValueError:
+                logger.warning(
+                    "library_sync catch-up: malformed "
+                    "last_sync_completed=%r; skipping gate",
+                    last_done,
+                )
+    except Exception:
+        logger.exception(
+            "Failed to evaluate library_sync catch-up gate; "
+            "scheduler startup continues"
+        )
 
     # ====================================================================
     # Phase 7.1 D-C2 (W9) — discovery startup catch-up gate.
