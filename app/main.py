@@ -264,6 +264,12 @@ async def lifespan(app: FastAPI):
     # gate (phase_id='8.0-discovery-bootstrap').
     from app.services.discovery_service import run_phase_08_discovery_bootstrap
     await run_phase_08_discovery_bootstrap()
+    # QUICK FIX (260517-lyw): one-shot collapse of pre-existing duplicate
+    # DiscoveryCandidate rows (same mb_id, multiple rows from cross-vibe
+    # LLM picks before write-time dedup was added). Idempotent via
+    # MigrationLog gate (phase_id='8.1-discovery-dedupe-mb-id').
+    from app.services.discovery_service import run_phase_08_1_discovery_dedupe_mb_id
+    await run_phase_08_1_discovery_dedupe_mb_id()
     # Phase 5: queue → dispatcher → scheduler order is mandatory.
     get_event_bus()
     await start_dispatcher()
