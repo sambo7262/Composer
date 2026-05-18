@@ -162,6 +162,53 @@ def _count_mirror_rows_sync() -> int:
         )
 
 
+def _read_all_mirror_rating_keys_sync() -> list[str]:
+    """Return every SuggestionsMirror row's Track.plex_rating_key, ordered
+    by ``sm.added_at ASC, sm.id ASC`` (oldest-first).
+
+    Used by ``discovery_call_weekly``'s NotFound self-heal branch
+    (260517-nkt): when Plex returns NotFound on the update_playlist_items
+    push, the playlist was deleted user-side and we must re-materialize
+    from the FULL current mirror (post-write, post-evict), not just the
+    new picks. Mirrors the data shape consumed by
+    ``_materialize_suggestions_plex_playlist``.
+    """
+    with Session(get_engine()) as session:
+        rows = session.execute(
+            text(
+                """
+                SELECT t.plex_rating_key
+                FROM suggestionsmirror sm
+                JOIN track t ON t.id = sm.track_id
+                ORDER BY sm.added_at ASC, sm.id ASC
+                """
+            )
+        ).all()
+        return [str(r[0]) for r in rows if r[0] is not None]
+
+
+def _read_plex_keys_for_track_ids_sync(track_ids: list[int]) -> list[str]:
+    """Return Track.plex_rating_key values for the given track ids,
+    preserving the input order.
+
+    Used by ``discovery_call_weekly`` to derive the rating keys to push
+    to Plex from the LLM-returned ``DiscoveryPick`` objects (which carry
+    ``track_id`` only). Missing track ids (or NULL plex_rating_key) are
+    skipped silently — caller can detect via length comparison if needed.
+    """
+    if not track_ids:
+        return []
+    with Session(get_engine()) as session:
+        rows = session.execute(
+            text(
+                "SELECT id, plex_rating_key FROM track "
+                "WHERE id IN (" + ",".join(str(int(i)) for i in track_ids) + ")"
+            )
+        ).all()
+        by_id = {int(r[0]): r[1] for r in rows if r[1] is not None}
+        return [str(by_id[int(tid)]) for tid in track_ids if int(tid) in by_id]
+
+
 def _evict_oldest_mirror_rows_sync(evict_count: int) -> list[str]:
     """Evict the oldest ``evict_count`` rows from SuggestionsMirror; return
     the corresponding Track.plex_rating_key values oldest-first so the

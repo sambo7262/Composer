@@ -1376,6 +1376,512 @@ class TestDiscoveryCallWeekly:
         assert row.plays_since_last_discovery == 15
 
 
+# ---------------------------------------------------------------------------
+# 260517-nkt Task 3 — discovery_call_weekly wiring: cap mirror BEFORE write
+# + push new picks to Plex AFTER write + remove evicted keys symmetrically
+# + self-heal on NotFound + skip Plex push when no ManagedPlaylist row.
+#
+# Bug A: discovery wrote picks to SuggestionsMirror but never to Plex
+# (drift). Bug B: with Bug A uncapped, mirror exceeded
+# SUGGESTIONS_TARGET_SIZE so maybe_schedule_refill's deficit gate became
+# 0 forever and sql_refill never fired.
+# ---------------------------------------------------------------------------
+
+
+def _seed_managed_suggestions_for_discovery(
+    db, *, plex_rating_key: str,
+):
+    """Seed a ManagedPlaylist(kind='suggestions') row for discovery tests."""
+    from app.models.vibe import ManagedPlaylist
+    from datetime import datetime, timezone
+
+    db.add(ManagedPlaylist(
+        kind="suggestions",
+        vibe_id=None,
+        plex_rating_key=plex_rating_key,
+        composer_name="Composer · Suggestions",
+        last_pushed_at=datetime.now(timezone.utc).isoformat(),
+        track_count=0,
+    ))
+    db.commit()
+
+
+def _seed_plex_creds_for_discovery(db):
+    """Seed Plex ServiceConfig + encrypted token so _read_plex_creds_sync
+    returns non-empty creds."""
+    from app.services.settings_service import save_setting
+
+    save_setting(
+        session=db,
+        service_name="plex",
+        url="http://localhost:32400",
+        credential="test-token",
+    )
+
+
+def _seed_mirror_rows(
+    db, *, count: int, base_added_at: str,
+):
+    """Seed N existing SuggestionsMirror rows (each pointing at a unique
+    Track) with strictly ascending added_at starting from base_added_at.
+
+    Returns the list of seeded plex_rating_keys (oldest-first) so tests can
+    assert which ones get evicted.
+    """
+    from datetime import datetime, timedelta
+    from app.models.suggestions import SuggestionsMirror
+    from app.models.track import Track
+
+    base = datetime.fromisoformat(base_added_at)
+    rks: list = []
+    for i in range(count):
+        rk = f"seed-rk-{i:03d}"
+        t = Track(plex_rating_key=rk, title=f"Seed {i}", artist="SeedArtist")
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+        db.add(SuggestionsMirror(
+            track_id=t.id,
+            position=i,
+            # +1 second per row so added_at strictly ascending →
+            # eviction order is fully deterministic.
+            added_at=(base + timedelta(seconds=i)).isoformat(),
+        ))
+        db.commit()
+        rks.append(rk)
+    return rks
+
+
+class TestDiscoveryCallWeeklyPlexPushAndCap:
+    """260517-nkt Task 3 — Bug A (Plex push) + Bug B (mirror cap) wiring.
+
+    Each test mocks AnthropicClient + check_or_raise (as the existing
+    TestDiscoveryCallWeekly tests do), and additionally mocks
+    update_playlist_items / remove_tracks_from_suggestions_playlist /
+    _materialize_suggestions_plex_playlist at the suggestions_discovery
+    module attribute layer so we can assert what discovery does (or
+    doesn't) call.
+    """
+
+    def test_discovery_pushes_new_picks_to_plex(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """Bug A fix: with a ManagedPlaylist(kind='suggestions') row that
+        already has plex_rating_key set, discovery calls
+        update_playlist_items EXACTLY ONCE with the new picks'
+        plex_rating_keys.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+        from app.services import suggestions_discovery
+        from app.services.suggestions_discovery import (
+            DiscoveryPick, DiscoveryPicksResponse, discovery_call_weekly,
+        )
+
+        env = _seed_discovery_environment(
+            db_with_phase7, num_candidates=10,
+            plays_since_last_discovery=15,
+        )
+        _seed_managed_suggestions_for_discovery(
+            db_with_phase7, plex_rating_key="mp-rk-12345",
+        )
+        _seed_plex_creds_for_discovery(db_with_phase7)
+
+        # 3 valid picks against the seeded candidate ids.
+        picks = [
+            DiscoveryPick(track_id=env["track_ids"][i],
+                          rationale=f"LLM r{i}")
+            for i in range(3)
+        ]
+        response = DiscoveryPicksResponse(picks=picks)
+        call_mock = AsyncMock(return_value=response)
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+        update_mock = AsyncMock(return_value=MagicMock())
+        remove_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(
+            suggestions_discovery, "update_playlist_items", update_mock,
+        )
+        monkeypatch.setattr(
+            suggestions_discovery,
+            "remove_tracks_from_suggestions_playlist", remove_mock,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        # Plex add called exactly once with the 3 NEW picks' rating keys.
+        assert update_mock.await_count == 1
+        args = update_mock.await_args.args
+        # update_playlist_items(plex_url, plex_token, mp_rk, keys)
+        assert args[0] == "http://localhost:32400"
+        assert args[1] == "test-token"
+        assert args[2] == "mp-rk-12345"
+        pushed_keys = args[3]
+        assert isinstance(pushed_keys, list)
+        # Map seeded track ids -> their plex_rating_keys via env order.
+        # _seed_discovery_environment seeds rk=f"cand-{i}".
+        expected_keys = [f"cand-{i}" for i in range(3)]
+        assert pushed_keys == expected_keys
+
+        # Mirror was below target (10 < 30), so no eviction → remove not
+        # called (or called with empty list — we don't care which here;
+        # the dedicated below-target test pins that behavior).
+
+    def test_discovery_evicts_oldest_when_mirror_at_target(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """Bug B fix: with mirror EXACTLY at target (30 rows) and 3 new
+        picks incoming, evict_count = 30 + 3 - 30 = 3. Post-run mirror
+        size stays at 30; the 3 OLDEST rating keys are passed to the
+        Plex remove helper.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+        from app.services import suggestions_discovery
+        from app.services.suggestions_service import _count_mirror_rows_sync
+        from app.services.suggestions_discovery import (
+            DiscoveryPick, DiscoveryPicksResponse, discovery_call_weekly,
+        )
+
+        env = _seed_discovery_environment(
+            db_with_phase7, num_candidates=10,
+            plays_since_last_discovery=15,
+        )
+        _seed_managed_suggestions_for_discovery(
+            db_with_phase7, plex_rating_key="mp-rk-12345",
+        )
+        _seed_plex_creds_for_discovery(db_with_phase7)
+        # Mirror exactly at target.
+        seed_rks = _seed_mirror_rows(
+            db_with_phase7, count=30,
+            base_added_at="2025-01-01T00:00:00+00:00",
+        )
+        assert _count_mirror_rows_sync() == 30
+
+        picks = [
+            DiscoveryPick(track_id=env["track_ids"][i],
+                          rationale=f"LLM r{i}")
+            for i in range(3)
+        ]
+        response = DiscoveryPicksResponse(picks=picks)
+        call_mock = AsyncMock(return_value=response)
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+        update_mock = AsyncMock(return_value=MagicMock())
+        remove_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(
+            suggestions_discovery, "update_playlist_items", update_mock,
+        )
+        monkeypatch.setattr(
+            suggestions_discovery,
+            "remove_tracks_from_suggestions_playlist", remove_mock,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        # Mirror remains at target.
+        assert _count_mirror_rows_sync() == 30
+
+        # Plex remove called with the 3 oldest rating keys (seed-rk-000,
+        # seed-rk-001, seed-rk-002).
+        assert remove_mock.await_count == 1
+        remove_args = remove_mock.await_args.args
+        # remove_tracks_from_suggestions_playlist(url, token, mp_rk, keys)
+        assert remove_args[2] == "mp-rk-12345"
+        evicted_keys = remove_args[3]
+        assert evicted_keys == seed_rks[:3]
+
+    def test_discovery_evicts_overflow_when_mirror_above_target(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """Bug B accumulated case: mirror at 40 rows (Bug A's pre-fix
+        inflation), 5 new picks incoming → evict_count = 40 + 5 - 30 = 15.
+        Post-run mirror size collapses to 30; the 15 oldest rating keys
+        are removed from Plex.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+        from app.services import suggestions_discovery
+        from app.services.suggestions_service import _count_mirror_rows_sync
+        from app.services.suggestions_discovery import (
+            DiscoveryPick, DiscoveryPicksResponse, discovery_call_weekly,
+        )
+
+        env = _seed_discovery_environment(
+            db_with_phase7, num_candidates=10,
+            plays_since_last_discovery=15,
+        )
+        _seed_managed_suggestions_for_discovery(
+            db_with_phase7, plex_rating_key="mp-rk-12345",
+        )
+        _seed_plex_creds_for_discovery(db_with_phase7)
+        seed_rks = _seed_mirror_rows(
+            db_with_phase7, count=40,
+            base_added_at="2025-01-01T00:00:00+00:00",
+        )
+        assert _count_mirror_rows_sync() == 40
+
+        picks = [
+            DiscoveryPick(track_id=env["track_ids"][i],
+                          rationale=f"LLM r{i}")
+            for i in range(5)
+        ]
+        response = DiscoveryPicksResponse(picks=picks)
+        call_mock = AsyncMock(return_value=response)
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+        update_mock = AsyncMock(return_value=MagicMock())
+        remove_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(
+            suggestions_discovery, "update_playlist_items", update_mock,
+        )
+        monkeypatch.setattr(
+            suggestions_discovery,
+            "remove_tracks_from_suggestions_playlist", remove_mock,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        assert _count_mirror_rows_sync() == 30
+
+        assert remove_mock.await_count == 1
+        evicted_keys = remove_mock.await_args.args[3]
+        # 15 oldest = seed-rk-000 through seed-rk-014.
+        assert evicted_keys == seed_rks[:15]
+
+    def test_discovery_does_not_evict_when_mirror_below_target(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """Mirror below target (20 rows + 5 new picks = 25 < 30): no
+        eviction. Post-run mirror size = 25; Plex remove helper is NOT
+        called (or called with empty list — we assert NOT-called for
+        a clean signal).
+        """
+        from unittest.mock import AsyncMock, MagicMock
+        from app.services import suggestions_discovery
+        from app.services.suggestions_service import _count_mirror_rows_sync
+        from app.services.suggestions_discovery import (
+            DiscoveryPick, DiscoveryPicksResponse, discovery_call_weekly,
+        )
+
+        env = _seed_discovery_environment(
+            db_with_phase7, num_candidates=10,
+            plays_since_last_discovery=15,
+        )
+        _seed_managed_suggestions_for_discovery(
+            db_with_phase7, plex_rating_key="mp-rk-12345",
+        )
+        _seed_plex_creds_for_discovery(db_with_phase7)
+        _seed_mirror_rows(
+            db_with_phase7, count=20,
+            base_added_at="2025-01-01T00:00:00+00:00",
+        )
+        assert _count_mirror_rows_sync() == 20
+
+        picks = [
+            DiscoveryPick(track_id=env["track_ids"][i],
+                          rationale=f"LLM r{i}")
+            for i in range(5)
+        ]
+        response = DiscoveryPicksResponse(picks=picks)
+        call_mock = AsyncMock(return_value=response)
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+        update_mock = AsyncMock(return_value=MagicMock())
+        remove_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(
+            suggestions_discovery, "update_playlist_items", update_mock,
+        )
+        monkeypatch.setattr(
+            suggestions_discovery,
+            "remove_tracks_from_suggestions_playlist", remove_mock,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        # 20 existing + 5 new = 25.
+        assert _count_mirror_rows_sync() == 25
+        # Add was made.
+        assert update_mock.await_count == 1
+        # No eviction → no remove call.
+        assert remove_mock.await_count == 0
+
+    def test_discovery_self_heals_on_plex_notfound(
+        self, db_with_phase7, monkeypatch,
+    ):
+        """update_playlist_items raises plexapi.NotFound → discovery
+        invokes _materialize_suggestions_plex_playlist with the FULL
+        current mirror's plex_rating_keys (post-write, post-evict).
+        Mirrors the refill_mirror_sql:1036-1054 self-heal idiom exactly.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+        from plexapi import exceptions as _plexex
+        from app.services import suggestions_discovery
+        from app.services.suggestions_service import _count_mirror_rows_sync
+        from app.services.suggestions_discovery import (
+            DiscoveryPick, DiscoveryPicksResponse, discovery_call_weekly,
+        )
+
+        env = _seed_discovery_environment(
+            db_with_phase7, num_candidates=10,
+            plays_since_last_discovery=15,
+        )
+        _seed_managed_suggestions_for_discovery(
+            db_with_phase7, plex_rating_key="mp-rk-12345",
+        )
+        _seed_plex_creds_for_discovery(db_with_phase7)
+        # 5 pre-existing mirror rows so the post-write mirror has
+        # something to materialize from (in addition to the 3 new picks).
+        seed_rks = _seed_mirror_rows(
+            db_with_phase7, count=5,
+            base_added_at="2025-01-01T00:00:00+00:00",
+        )
+
+        picks = [
+            DiscoveryPick(track_id=env["track_ids"][i],
+                          rationale=f"LLM r{i}")
+            for i in range(3)
+        ]
+        response = DiscoveryPicksResponse(picks=picks)
+        call_mock = AsyncMock(return_value=response)
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+        update_mock = AsyncMock(
+            side_effect=_plexex.NotFound("404 Not Found: playlist"),
+        )
+        materialize_mock = AsyncMock(return_value="new-rk-789")
+        remove_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(
+            suggestions_discovery, "update_playlist_items", update_mock,
+        )
+        monkeypatch.setattr(
+            suggestions_discovery,
+            "_materialize_suggestions_plex_playlist", materialize_mock,
+        )
+        monkeypatch.setattr(
+            suggestions_discovery,
+            "remove_tracks_from_suggestions_playlist", remove_mock,
+        )
+
+        _run_async(discovery_call_weekly())
+
+        # Materialize called once with full current mirror (post-write).
+        assert materialize_mock.await_count == 1
+        mat_args = materialize_mock.await_args.args
+        assert mat_args[0] == "http://localhost:32400"
+        assert mat_args[1] == "test-token"
+        full_keys = mat_args[2]
+        assert isinstance(full_keys, list)
+        # Expected: 5 seeded keys + 3 new pick keys (cand-0..cand-2) =
+        # 8 total. Mirror has 8 rows post-write.
+        assert _count_mirror_rows_sync() == 8
+        expected_keys_set = set(seed_rks) | {f"cand-{i}" for i in range(3)}
+        assert set(full_keys) == expected_keys_set
+
+    def test_discovery_skips_plex_push_when_no_managed_playlist_row(
+        self, db_with_phase7, monkeypatch, caplog,
+    ):
+        """No ManagedPlaylist(kind='suggestions') row seeded → discovery
+        writes picks to the mirror, logs a warning, and does NOT call
+        update_playlist_items. Mirrors refill_mirror_sql:1004-1008.
+        """
+        import logging
+        from unittest.mock import AsyncMock, MagicMock
+        from app.services import suggestions_discovery
+        from app.services.suggestions_service import _count_mirror_rows_sync
+        from app.services.suggestions_discovery import (
+            DiscoveryPick, DiscoveryPicksResponse, discovery_call_weekly,
+        )
+
+        env = _seed_discovery_environment(
+            db_with_phase7, num_candidates=10,
+            plays_since_last_discovery=15,
+        )
+        # NO _seed_managed_suggestions_for_discovery call.
+        _seed_plex_creds_for_discovery(db_with_phase7)
+
+        picks = [
+            DiscoveryPick(track_id=env["track_ids"][i],
+                          rationale=f"LLM r{i}")
+            for i in range(3)
+        ]
+        response = DiscoveryPicksResponse(picks=picks)
+        call_mock = AsyncMock(return_value=response)
+        monkeypatch.setattr(
+            suggestions_discovery, "AnthropicClient",
+            _make_fake_anthropic_client(call_mock),
+        )
+
+        async def _no_op(*a, **kw):
+            return None
+        monkeypatch.setattr(
+            suggestions_discovery, "check_or_raise", _no_op,
+        )
+        update_mock = AsyncMock(return_value=MagicMock())
+        remove_mock = AsyncMock(return_value=0)
+        monkeypatch.setattr(
+            suggestions_discovery, "update_playlist_items", update_mock,
+        )
+        monkeypatch.setattr(
+            suggestions_discovery,
+            "remove_tracks_from_suggestions_playlist", remove_mock,
+        )
+
+        with caplog.at_level(
+            logging.WARNING, logger="app.services.suggestions_discovery",
+        ):
+            _run_async(discovery_call_weekly())
+
+        # Mirror still got the 3 new picks (write happened before push).
+        assert _count_mirror_rows_sync() == 3
+        # Plex push helpers were NOT called.
+        assert update_mock.await_count == 0
+        assert remove_mock.await_count == 0
+        # Warning about missing ManagedPlaylist was emitted.
+        log_text = caplog.text.lower()
+        assert (
+            "no managedplaylist" in log_text
+            or "skipping plex push" in log_text
+        )
+
+
 class TestSuggestionsDiscoveryAstShape:
     def test_no_session_outside_sync_helper_in_suggestions_discovery(self):
         """Phase 5 D-09 invariant — every ``Session(get_engine())`` call in

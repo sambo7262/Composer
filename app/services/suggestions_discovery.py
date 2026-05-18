@@ -57,6 +57,24 @@ from app.services.llm_cost_breaker import (
     check_or_raise,
 )
 
+# 260517-nkt — Plex push + mirror cap symbols used by discovery_call_weekly.
+# Imported at module level so tests can monkeypatch the names via
+# ``monkeypatch.setattr(suggestions_discovery, "update_playlist_items", ...)``
+# (mirrors the test pattern already used for AnthropicClient and
+# check_or_raise above).
+from app.services.plex_playlist_service import update_playlist_items
+from app.services.suggestions_service import (
+    SUGGESTIONS_TARGET_SIZE,
+    _count_mirror_rows_sync,
+    _evict_oldest_mirror_rows_sync,
+    _find_suggestions_managed_playlist_sync,
+    _materialize_suggestions_plex_playlist,
+    _read_all_mirror_rating_keys_sync,
+    _read_plex_creds_sync,
+    _read_plex_keys_for_track_ids_sync,
+    remove_tracks_from_suggestions_playlist,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -899,12 +917,157 @@ async def discovery_call_weekly() -> None:
 
         latency_ms = int((time.monotonic() - start) * 1000)
         if valid_picks:
+            # ----------------------------------------------------------------
+            # 260517-nkt Part 2 (Bug B fix) — cap mirror BEFORE write.
+            # Compute the eviction count so post-write count holds at
+            # SUGGESTIONS_TARGET_SIZE (30). When the mirror is already
+            # below target, evict_count == 0 and the helper is a guarded
+            # noop (returns []).
+            # ----------------------------------------------------------------
+            current_count = await asyncio.to_thread(_count_mirror_rows_sync)
+            evict_count = max(
+                0,
+                current_count + len(valid_picks) - SUGGESTIONS_TARGET_SIZE,
+            )
+            evicted_keys: list = await asyncio.to_thread(
+                _evict_oldest_mirror_rows_sync, evict_count,
+            )
+
+            # Write picks (UNCHANGED — _write_discovery_picks_sync still
+            # owns the SuggestionsMirror INSERT OR IGNORE + SuggestionHistory
+            # + RefillTriggerLog row).
             await asyncio.to_thread(
                 _write_discovery_picks_sync,
                 valid_picks,
                 len(candidates),
                 latency_ms,
                 0.0,  # cost is tracked by the AnthropicClient's LLMUsage row
+            )
+
+            # ----------------------------------------------------------------
+            # 260517-nkt Part 1 (Bug A fix) — push new picks to Plex AFTER
+            # write. Mirrors the canonical Plex-push branch in
+            # suggestions_service.refill_mirror_sql:1001-1066 EXACTLY:
+            # ManagedPlaylist lookup → deferred-materialize branch on empty
+            # plex_rating_key → update_playlist_items branch with NotFound
+            # self-heal. ADD-first, REMOVE-after (gotcha #10: user sees
+            # fresh tracks immediately, then old ones disappear).
+            # ----------------------------------------------------------------
+            new_track_ids = [p.track_id for p in valid_picks]
+            new_keys = await asyncio.to_thread(
+                _read_plex_keys_for_track_ids_sync, new_track_ids,
+            )
+            mp = await asyncio.to_thread(
+                _find_suggestions_managed_playlist_sync,
+            )
+            added_ok = False
+            removed_count = 0
+            plex_url = ""
+            plex_token = ""
+            if mp is None:
+                logger.warning(
+                    "discovery_call_weekly: no ManagedPlaylist("
+                    "kind=suggestions) row found; bootstrap was likely "
+                    "skipped. Skipping Plex push."
+                )
+            elif not mp.plex_rating_key:
+                # Deferred-materialize branch — mirrors
+                # refill_mirror_sql:1009-1015. First non-empty
+                # discovery: materialize the Plex playlist with the new
+                # picks and update the sentinel row.
+                plex_url, plex_token = await asyncio.to_thread(
+                    _read_plex_creds_sync,
+                )
+                await _materialize_suggestions_plex_playlist(
+                    plex_url, plex_token, new_keys,
+                )
+                added_ok = True
+            else:
+                plex_url, plex_token = await asyncio.to_thread(
+                    _read_plex_creds_sync,
+                )
+                try:
+                    await update_playlist_items(
+                        plex_url, plex_token,
+                        mp.plex_rating_key, new_keys,
+                    )
+                    added_ok = True
+                except Exception as exc:
+                    # CANONICAL 4-part NotFound match — byte-for-byte
+                    # mirror of suggestions_service.py:1036-1043.
+                    # PermissionError is intentionally NOT recovered
+                    # (OPS-06 / Pitfall 20 invariant violation).
+                    err_str = (
+                        type(exc).__name__ + " " + str(exc)
+                    ).lower()
+                    from plexapi import exceptions as _plexex
+                    is_not_found = (
+                        isinstance(exc, _plexex.NotFound)
+                        or "notfound" in err_str
+                        or "not found" in err_str
+                        or "404" in err_str
+                    )
+                    if is_not_found and not isinstance(
+                        exc, PermissionError,
+                    ):
+                        logger.warning(
+                            "discovery_call_weekly: Plex playlist "
+                            "rk=%s vanished (likely user-deleted); "
+                            "re-materializing from full current mirror.",
+                            mp.plex_rating_key,
+                        )
+                        try:
+                            full_mirror_keys = await asyncio.to_thread(
+                                _read_all_mirror_rating_keys_sync,
+                            )
+                            await _materialize_suggestions_plex_playlist(
+                                plex_url, plex_token, full_mirror_keys,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "discovery_call_weekly: re-materialize "
+                                "after vanish-detect ALSO failed; mirror "
+                                "state is the truth — next refill will "
+                                "retry."
+                            )
+                    else:
+                        logger.exception(
+                            "discovery_call_weekly: Plex "
+                            "update_playlist_items failed (not a "
+                            "vanish); mirror state is the truth — "
+                            "Plex will reconcile on next weekly prune."
+                        )
+
+            # ----------------------------------------------------------------
+            # 260517-nkt Part 2 cont. — remove evicted rating keys from
+            # Plex AFTER the add. Wrapped in its own try/except so a
+            # removal failure does NOT undo the add (weekly prune
+            # reconciles).
+            # ----------------------------------------------------------------
+            if (
+                added_ok and evicted_keys
+                and mp is not None and mp.plex_rating_key
+            ):
+                try:
+                    removed_count = await (
+                        remove_tracks_from_suggestions_playlist(
+                            plex_url, plex_token,
+                            mp.plex_rating_key, evicted_keys,
+                        )
+                    )
+                except Exception:
+                    logger.exception(
+                        "discovery_call_weekly: remove evicted keys "
+                        "failed; weekly prune will reconcile.",
+                    )
+                    removed_count = 0
+
+            logger.info(
+                "discovery_call_weekly Plex sync: added=%d removed=%d "
+                "(mirror_target=%d)",
+                len(new_keys) if added_ok else 0,
+                removed_count,
+                SUGGESTIONS_TARGET_SIZE,
             )
 
         # Successful run — reset counter + stamp timestamp.
