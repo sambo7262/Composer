@@ -1368,3 +1368,109 @@ def test_artist_discovery_call_weekly_dedupe_tiebreak_keeps_first(
         f"Stable iteration order — first pick must win; "
         f"got rationale={records[0]['llm_rationale']!r}"
     )
+
+
+def test_artist_discovery_call_weekly_dedupes_artist_name_across_mb_ids(
+    db_with_phase7, monkeypatch,
+):
+    """QUICK FIX (260517-n7j) — same artist surfacing with TWO distinct
+    mb_ids (the MusicBrainz alias/split case) collapses to ONE record at
+    the writer boundary. Proves the by-name dedup runs AFTER the by-mbid
+    dedup and catches what the mb_id collapse cannot.
+
+    Scenario:
+      - 1 active vibe, 1 starred seed track.
+      - LB returns TWO distinct mb_ids ("X" + "Y") from the same seed
+        (this is the MusicBrainz alias case — same human artist, two
+        catalog entries).
+      - The LLM picks BOTH mb_ids with the same artist_name="Bonobo"
+        but different llm_ranks (X=5, Y=2).
+      - The by-mbid dedup CANNOT collapse them (distinct mb_ids).
+      - The by-name dedup MUST collapse them — Y wins on rank=2.
+
+    Tiebreak rule MUST match
+    ``_dedupe_discovery_candidates_by_name_sync``.
+    """
+    from app.services import (
+        discovery_service, listenbrainz_client, musicbrainz_client,
+    )
+
+    _seed_lidarr_configured(db_with_phase7)
+    _seed_vibe(db_with_phase7, 1)
+    _make_track_with_artist_mbid(db_with_phase7, 1, "seed-mbid-1")
+    _seed_starred_tracks_in_vibe(db_with_phase7, 1, [1])
+
+    async def _fake_lb(seed_mbid, limit=100):
+        # Seed yields TWO distinct mb_ids (the alias case).
+        if seed_mbid == "seed-mbid-1":
+            return [
+                {"artist_mbid": "X", "name": "Bonobo", "score": 100},
+                {"artist_mbid": "Y", "name": "Bonobo", "score": 95},
+            ]
+        return []
+    monkeypatch.setattr(
+        listenbrainz_client, "get_similar_artists", _fake_lb,
+    )
+
+    async def _fake_lookup(mb_id):
+        return {
+            "id": mb_id, "name": "Bonobo",
+            "artist-relation-list": [], "release-group-list": [],
+        }
+    monkeypatch.setattr(
+        musicbrainz_client, "lookup_artist", _fake_lookup,
+    )
+
+    async def _no_lidarr():
+        return set()
+    monkeypatch.setattr(
+        discovery_service, "_get_lidarr_known_artists", _no_lidarr,
+    )
+
+    async def _no_op(*a, **kw):
+        return None
+    monkeypatch.setattr(discovery_service, "check_or_raise", _no_op)
+
+    # LLM picks BOTH mb_ids, SAME artist_name "Bonobo", different ranks.
+    response_obj = discovery_service.ArtistDiscoveryPicksResponse(picks=[
+        discovery_service.LLMArtistPick(
+            mb_id="X", artist_name="Bonobo", rank=5, rationale="alias-X",
+        ),
+        discovery_service.LLMArtistPick(
+            mb_id="Y", artist_name="Bonobo", rank=2, rationale="alias-Y",
+        ),
+    ])
+    call_mock = AsyncMock(return_value=response_obj)
+    monkeypatch.setattr(
+        discovery_service, "AnthropicClient",
+        _make_fake_anthropic_client(call_mock),
+    )
+
+    captured = {"records": None}
+
+    def _capture_write(records):
+        captured["records"] = list(records)
+        return len(records)
+
+    monkeypatch.setattr(
+        discovery_service,
+        "_write_discovery_candidates_sync",
+        _capture_write,
+    )
+
+    _run_async(discovery_service.artist_discovery_call_weekly())
+
+    records = captured["records"]
+    assert records is not None, "_write_discovery_candidates_sync was never called"
+    assert len(records) == 1, (
+        f"Same artist_name with different mb_ids must collapse to ONE; "
+        f"got {len(records)}: {records!r}"
+    )
+    winner = records[0]
+    assert winner["artist_name"] == "Bonobo"
+    assert winner["llm_rank"] == 2, (
+        f"Lower llm_rank must win; got rank={winner['llm_rank']!r}"
+    )
+    assert winner["mb_id"] == "Y", (
+        f"Winner must be the Y pick (rank=2); got mb_id={winner['mb_id']!r}"
+    )
