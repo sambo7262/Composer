@@ -1016,6 +1016,152 @@ class TestEvictOldestMirrorRowsSync:
         assert evicted == ["RK_A", "RK_B"]
 
 
+# ---------------------------------------------------------------------------
+# 260517-nkt Task 2 — `remove_tracks_from_suggestions_playlist` unit tests.
+#
+# Async helper: removes a set of rating keys from the Composer · Suggestions
+# Plex playlist. Pre-flight guards on ``is_managed_playlist`` (OPS-06 /
+# Pitfall 20). All PlexAPI work routes through ``asyncio.to_thread``
+# (Phase 5 Convention #1). NotFound is intentionally NOT caught — the
+# caller (discovery_call_weekly in Task 3) owns the self-heal path.
+# ---------------------------------------------------------------------------
+
+
+class TestRemoveTracksFromSuggestionsPlaylist:
+    """260517-nkt Task 2 — async Plex remove helper tests.
+
+    Monkeypatches ``PlexServer`` at the suggestions_service module layer
+    (lazy import: the helper does ``from plexapi.server import PlexServer``
+    inside the function body, so the test stubs ``plexapi.server.PlexServer``
+    on sys.modules instead).
+    """
+
+    def test_remove_tracks_empty_list_returns_zero_no_plex_call(
+        self, db_phase7, monkeypatch,
+    ):
+        """Empty input → return 0 immediately; PlexServer never constructed.
+
+        Spy: replace ``plexapi.server.PlexServer`` with a sentinel that
+        raises if called. The helper's empty-list guard must fire BEFORE
+        any import/construction.
+        """
+        import plexapi.server as _plexsvr
+        from app.services.suggestions_service import (
+            remove_tracks_from_suggestions_playlist,
+        )
+
+        def _boom(*a, **kw):
+            raise RuntimeError("PlexServer must not be constructed")
+
+        monkeypatch.setattr(_plexsvr, "PlexServer", _boom)
+
+        result = _run_async(
+            remove_tracks_from_suggestions_playlist(
+                "http://localhost:32400", "tok", "12345", [],
+            )
+        )
+        assert result == 0
+
+    def test_remove_tracks_raises_permission_error_when_not_managed(
+        self, db_phase7, monkeypatch,
+    ):
+        """is_managed_playlist → False ⇒ PermissionError; PlexServer
+        never constructed (guard fires before any Plex call).
+        """
+        import plexapi.server as _plexsvr
+        from app.services import plex_playlist_service
+        from app.services.suggestions_service import (
+            remove_tracks_from_suggestions_playlist,
+        )
+
+        def _boom(*a, **kw):
+            raise RuntimeError("PlexServer must not be constructed")
+
+        monkeypatch.setattr(_plexsvr, "PlexServer", _boom)
+        monkeypatch.setattr(
+            plex_playlist_service, "is_managed_playlist",
+            lambda rk: False,
+        )
+
+        with pytest.raises(PermissionError) as exc_info:
+            _run_async(
+                remove_tracks_from_suggestions_playlist(
+                    "http://localhost:32400", "tok", "99999",
+                    ["rk-1", "rk-2"],
+                )
+            )
+        # Sanity: OPS-06 / Pitfall 20 message is preserved.
+        msg = str(exc_info.value)
+        assert "OPS-06" in msg or "Pitfall 20" in msg
+        assert "99999" in msg
+
+    def test_remove_tracks_calls_removeItems_via_to_thread(
+        self, db_phase7, monkeypatch,
+    ):
+        """is_managed_playlist → True ⇒ removeItems called once with the
+        list of fetched items; helper returns the post-removal playlist
+        item count.
+        """
+        import plexapi.server as _plexsvr
+        from unittest.mock import MagicMock
+        from app.services import plex_playlist_service
+        from app.services.suggestions_service import (
+            remove_tracks_from_suggestions_playlist,
+        )
+
+        monkeypatch.setattr(
+            plex_playlist_service, "is_managed_playlist",
+            lambda rk: True,
+        )
+
+        # The stub PlexServer.fetchItem returns one stub for the
+        # playlist (mp_rating_key int cast) and one stub per track key.
+        # The playlist stub records the removeItems call and exposes
+        # items() returning a list of length post_remove_count.
+        playlist_stub = MagicMock(name="playlist")
+        post_remove_items = [MagicMock(name=f"item-{i}") for i in range(7)]
+        playlist_stub.items.return_value = post_remove_items
+        removeItems_calls: list = []
+        playlist_stub.removeItems.side_effect = (
+            lambda items: removeItems_calls.append(items)
+        )
+
+        track_stubs: dict = {
+            10: MagicMock(name="track-10"),
+            11: MagicMock(name="track-11"),
+            12: MagicMock(name="track-12"),
+        }
+
+        class _StubPlexServer:
+            def __init__(self, url, token, timeout=None):
+                self.url = url
+                self.token = token
+
+            def fetchItem(self, key):
+                # int cast → playlist key 12345 vs track keys 10/11/12.
+                if key == 12345:
+                    return playlist_stub
+                return track_stubs[int(key)]
+
+        monkeypatch.setattr(_plexsvr, "PlexServer", _StubPlexServer)
+
+        result = _run_async(
+            remove_tracks_from_suggestions_playlist(
+                "http://localhost:32400", "tok", "12345",
+                ["10", "11", "12"],
+            )
+        )
+        # Post-removal item count from playlist.items() len.
+        assert result == 7
+        # removeItems called exactly once with the 3 fetched track stubs,
+        # in order.
+        assert len(removeItems_calls) == 1
+        passed_items = removeItems_calls[0]
+        assert passed_items == [
+            track_stubs[10], track_stubs[11], track_stubs[12],
+        ]
+
+
 class TestUnratedSqlRefill:
     """Hotfix 260516 — SQL refill must surface UNRATED tracks only.
 

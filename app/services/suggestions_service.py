@@ -371,6 +371,63 @@ async def _materialize_suggestions_plex_playlist(
     return new_rk
 
 
+async def remove_tracks_from_suggestions_playlist(
+    plex_url: str,
+    plex_token: str,
+    mp_rating_key: str,
+    rating_keys_to_remove: list[str],
+) -> int:
+    """Remove rating keys from the Composer-managed Suggestions Plex
+    playlist. Returns the playlist's item count AFTER removal.
+
+    Counterpart to :func:`plex_playlist_service.update_playlist_items`
+    (additive) so discovery's evict-then-add flow (260517-nkt) can prune
+    the Plex playlist symmetrically with the SuggestionsMirror cap.
+
+    Pre-flight :func:`plex_playlist_service.is_managed_playlist` (OPS-06
+    / Pitfall 20) — raises :class:`PermissionError` if False. Returns 0
+    immediately for an empty ``rating_keys_to_remove`` list (no
+    PlexServer construction in that case).
+
+    All PlexAPI calls dispatched via :func:`asyncio.to_thread` per Phase
+    5 Convention #1. NotFound on the playlist is intentionally NOT caught
+    — the caller (``discovery_call_weekly``) owns the self-heal path
+    that re-materializes from the current mirror.
+    """
+    if not rating_keys_to_remove:
+        return 0
+
+    # Pre-flight: import + guard mirrors update_playlist_items:246 EXACTLY.
+    from app.services.plex_playlist_service import is_managed_playlist
+    if not is_managed_playlist(mp_rating_key):
+        raise PermissionError(
+            f"OPS-06 / Pitfall 20: playlist {mp_rating_key} is not "
+            f"Composer-managed (no ManagedPlaylist row); refusing to mutate."
+        )
+
+    # GAP-03 / update_playlist_items:260 idiom — cast to int once up-front
+    # so all fetchItem call sites receive int, avoiding PlexAPI's URL-concat
+    # bug on bare-string ekeys.
+    playlist_key_int = int(mp_rating_key)
+
+    # Lazy import keeps the suggestions_service module-import graph free of
+    # plexapi (test environments can monkeypatch plexapi.server.PlexServer
+    # to a stub before this helper is invoked).
+    from plexapi.server import PlexServer
+
+    def _remove_items_sync() -> int:
+        plex = PlexServer(plex_url, plex_token, timeout=30)
+        playlist = plex.fetchItem(playlist_key_int)
+        # Mirror plex_playlist_service._remove_items:568-574 — per-item
+        # fetch via plex.fetchItem(int(k)) so the AST gate sees the call
+        # only inside this sync nested function (not in the async body).
+        items = [plex.fetchItem(int(k)) for k in rating_keys_to_remove]
+        playlist.removeItems(items)
+        return len(playlist.items())
+
+    return await asyncio.to_thread(_remove_items_sync)
+
+
 async def bootstrap_suggestions_queue() -> None:
     """D-01 / D-02 — single bootstrap path called from BOTH wizard
     finalize and the Phase 7 lifespan migration.
