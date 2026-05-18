@@ -856,6 +856,312 @@ class TestRefillMirrorSql:
         assert len(log_rows) == 0
 
 
+# ---------------------------------------------------------------------------
+# 260517-nkt Task 1 — `_evict_oldest_mirror_rows_sync` unit tests.
+#
+# Helper purpose: discovery_call_weekly needs to cap the SuggestionsMirror
+# at SUGGESTIONS_TARGET_SIZE BEFORE writing new picks. This helper evicts
+# the oldest N rows and returns their corresponding Track.plex_rating_key
+# values (oldest-first) so the caller can also remove them from the Plex
+# playlist symmetrically. Ordering: sm.added_at ASC, sm.id ASC.
+# ---------------------------------------------------------------------------
+
+
+class TestEvictOldestMirrorRowsSync:
+    """260517-nkt Task 1 — pure unit tests for the eviction SQL helper.
+
+    No PlexAPI involvement; pure SQLite. Uses ``_count_mirror_rows_sync``
+    as a side-effect probe per the established pattern in
+    ``TestRefillMirrorSql`` above.
+    """
+
+    def _seed_track_and_mirror_row(
+        self, session, *, rk: str, added_at: str,
+    ):
+        """Seed one Track + one SuggestionsMirror row pointing at it.
+
+        Returns the resulting (Track, SuggestionsMirror) pair.
+        """
+        from app.models.suggestions import SuggestionsMirror
+        from app.models.track import Track
+
+        t = Track(plex_rating_key=rk, title=f"Title {rk}", artist="A")
+        session.add(t)
+        session.commit()
+        session.refresh(t)
+        sm = SuggestionsMirror(
+            track_id=t.id, position=0, added_at=added_at,
+        )
+        session.add(sm)
+        session.commit()
+        session.refresh(sm)
+        return t, sm
+
+    def test_evict_oldest_zero_or_negative_count_is_noop(self, db_phase7):
+        """``evict_count <= 0`` is a guarded noop: nothing deleted, empty
+        list returned, no DB mutation. Covers both 0 and negative input
+        (the caller computes ``max(0, current + new - target)`` which can
+        underflow to a negative if a future plan adds a different gate).
+        """
+        from app.services.suggestions_service import (
+            _count_mirror_rows_sync, _evict_oldest_mirror_rows_sync,
+        )
+
+        for i in range(3):
+            self._seed_track_and_mirror_row(
+                db_phase7, rk=f"rk-{i}",
+                added_at=f"2025-01-0{i + 1}T00:00:00+00:00",
+            )
+        assert _count_mirror_rows_sync() == 3
+
+        assert _evict_oldest_mirror_rows_sync(0) == []
+        assert _count_mirror_rows_sync() == 3
+
+        assert _evict_oldest_mirror_rows_sync(-5) == []
+        assert _count_mirror_rows_sync() == 3
+
+    def test_evict_oldest_orders_by_added_at_then_id(self, db_phase7):
+        """Ordering contract: ORDER BY sm.added_at ASC, sm.id ASC.
+
+        Seed 5 rows with INTENTIONALLY mixed insertion order vs.
+        ``added_at`` (so id order != added_at order). Eviction must use
+        ``added_at`` as the primary key. Also seed two rows that share
+        one ``added_at`` so the id-ASC tiebreaker can be exercised.
+        """
+        from app.services.suggestions_service import (
+            _count_mirror_rows_sync, _evict_oldest_mirror_rows_sync,
+        )
+        from app.models.suggestions import SuggestionsMirror
+        from app.models.track import Track
+
+        # Insertion order id -> added_at:
+        #   id=1 -> 2025-01-05  (newest)
+        #   id=2 -> 2025-01-01  (oldest)
+        #   id=3 -> 2025-01-03
+        #   id=4 -> 2025-01-02
+        #   id=5 -> 2025-01-04
+        added_for = {
+            "tA": "2025-01-05T00:00:00+00:00",
+            "tB": "2025-01-01T00:00:00+00:00",
+            "tC": "2025-01-03T00:00:00+00:00",
+            "tD": "2025-01-02T00:00:00+00:00",
+            "tE": "2025-01-04T00:00:00+00:00",
+        }
+        for rk, added in added_for.items():
+            self._seed_track_and_mirror_row(
+                db_phase7, rk=rk, added_at=added,
+            )
+        assert _count_mirror_rows_sync() == 5
+
+        # Evict 3 oldest → 2025-01-01, 2025-01-02, 2025-01-03 go away;
+        # survivors are 2025-01-04 and 2025-01-05.
+        _evict_oldest_mirror_rows_sync(3)
+        assert _count_mirror_rows_sync() == 2
+        remaining = db_phase7.exec(select(SuggestionsMirror)).all()
+        survivor_added = {sm.added_at for sm in remaining}
+        assert survivor_added == {
+            "2025-01-04T00:00:00+00:00",
+            "2025-01-05T00:00:00+00:00",
+        }
+
+        # Reset to exercise the id-ASC tiebreaker on shared added_at.
+        # Drop and re-create the rows so we have a clean slate.
+        for sm in db_phase7.exec(select(SuggestionsMirror)).all():
+            db_phase7.delete(sm)
+        for t in db_phase7.exec(select(Track)).all():
+            db_phase7.delete(t)
+        db_phase7.commit()
+        assert _count_mirror_rows_sync() == 0
+
+        shared = "2025-02-01T00:00:00+00:00"
+        # Two rows share the shared added_at — lower id should be evicted
+        # first.
+        _, sm_lower = self._seed_track_and_mirror_row(
+            db_phase7, rk="rk-lower", added_at=shared,
+        )
+        _, sm_higher = self._seed_track_and_mirror_row(
+            db_phase7, rk="rk-higher", added_at=shared,
+        )
+        assert sm_lower.id < sm_higher.id  # sanity
+
+        _evict_oldest_mirror_rows_sync(1)
+        survivors = db_phase7.exec(select(SuggestionsMirror)).all()
+        assert len(survivors) == 1
+        assert survivors[0].id == sm_higher.id  # lower-id row evicted
+
+    def test_evict_oldest_returns_plex_rating_keys_of_evicted_rows(
+        self, db_phase7,
+    ):
+        """Return value contract: oldest-first list of Track.plex_rating_key
+        for the rows that were evicted. Caller uses this list to drive the
+        Plex removal call symmetrically with the SuggestionsMirror cap.
+        """
+        from app.services.suggestions_service import (
+            _evict_oldest_mirror_rows_sync,
+        )
+
+        # 4 rows with strictly ascending added_at — A oldest, D newest.
+        for rk, ts in [
+            ("RK_A", "2025-03-01T00:00:00+00:00"),
+            ("RK_B", "2025-03-02T00:00:00+00:00"),
+            ("RK_C", "2025-03-03T00:00:00+00:00"),
+            ("RK_D", "2025-03-04T00:00:00+00:00"),
+        ]:
+            self._seed_track_and_mirror_row(
+                db_phase7, rk=rk, added_at=ts,
+            )
+
+        evicted = _evict_oldest_mirror_rows_sync(2)
+        # Oldest-first: A, B. C and D survive.
+        assert evicted == ["RK_A", "RK_B"]
+
+
+# ---------------------------------------------------------------------------
+# 260517-nkt Task 2 — `remove_tracks_from_suggestions_playlist` unit tests.
+#
+# Async helper: removes a set of rating keys from the Composer · Suggestions
+# Plex playlist. Pre-flight guards on ``is_managed_playlist`` (OPS-06 /
+# Pitfall 20). All PlexAPI work routes through ``asyncio.to_thread``
+# (Phase 5 Convention #1). NotFound is intentionally NOT caught — the
+# caller (discovery_call_weekly in Task 3) owns the self-heal path.
+# ---------------------------------------------------------------------------
+
+
+class TestRemoveTracksFromSuggestionsPlaylist:
+    """260517-nkt Task 2 — async Plex remove helper tests.
+
+    Monkeypatches ``PlexServer`` at the suggestions_service module layer
+    (lazy import: the helper does ``from plexapi.server import PlexServer``
+    inside the function body, so the test stubs ``plexapi.server.PlexServer``
+    on sys.modules instead).
+    """
+
+    def test_remove_tracks_empty_list_returns_zero_no_plex_call(
+        self, db_phase7, monkeypatch,
+    ):
+        """Empty input → return 0 immediately; PlexServer never constructed.
+
+        Spy: replace ``plexapi.server.PlexServer`` with a sentinel that
+        raises if called. The helper's empty-list guard must fire BEFORE
+        any import/construction.
+        """
+        import plexapi.server as _plexsvr
+        from app.services.suggestions_service import (
+            remove_tracks_from_suggestions_playlist,
+        )
+
+        def _boom(*a, **kw):
+            raise RuntimeError("PlexServer must not be constructed")
+
+        monkeypatch.setattr(_plexsvr, "PlexServer", _boom)
+
+        result = _run_async(
+            remove_tracks_from_suggestions_playlist(
+                "http://localhost:32400", "tok", "12345", [],
+            )
+        )
+        assert result == 0
+
+    def test_remove_tracks_raises_permission_error_when_not_managed(
+        self, db_phase7, monkeypatch,
+    ):
+        """is_managed_playlist → False ⇒ PermissionError; PlexServer
+        never constructed (guard fires before any Plex call).
+        """
+        import plexapi.server as _plexsvr
+        from app.services import plex_playlist_service
+        from app.services.suggestions_service import (
+            remove_tracks_from_suggestions_playlist,
+        )
+
+        def _boom(*a, **kw):
+            raise RuntimeError("PlexServer must not be constructed")
+
+        monkeypatch.setattr(_plexsvr, "PlexServer", _boom)
+        monkeypatch.setattr(
+            plex_playlist_service, "is_managed_playlist",
+            lambda rk: False,
+        )
+
+        with pytest.raises(PermissionError) as exc_info:
+            _run_async(
+                remove_tracks_from_suggestions_playlist(
+                    "http://localhost:32400", "tok", "99999",
+                    ["rk-1", "rk-2"],
+                )
+            )
+        # Sanity: OPS-06 / Pitfall 20 message is preserved.
+        msg = str(exc_info.value)
+        assert "OPS-06" in msg or "Pitfall 20" in msg
+        assert "99999" in msg
+
+    def test_remove_tracks_calls_removeItems_via_to_thread(
+        self, db_phase7, monkeypatch,
+    ):
+        """is_managed_playlist → True ⇒ removeItems called once with the
+        list of fetched items; helper returns the post-removal playlist
+        item count.
+        """
+        import plexapi.server as _plexsvr
+        from unittest.mock import MagicMock
+        from app.services import plex_playlist_service
+        from app.services.suggestions_service import (
+            remove_tracks_from_suggestions_playlist,
+        )
+
+        monkeypatch.setattr(
+            plex_playlist_service, "is_managed_playlist",
+            lambda rk: True,
+        )
+
+        # The stub PlexServer.fetchItem returns one stub for the
+        # playlist (mp_rating_key int cast) and one stub per track key.
+        # The playlist stub records the removeItems call and exposes
+        # items() returning a list of length post_remove_count.
+        playlist_stub = MagicMock(name="playlist")
+        post_remove_items = [MagicMock(name=f"item-{i}") for i in range(7)]
+        playlist_stub.items.return_value = post_remove_items
+        removeItems_calls: list = []
+        playlist_stub.removeItems.side_effect = (
+            lambda items: removeItems_calls.append(items)
+        )
+
+        track_stubs: dict = {
+            10: MagicMock(name="track-10"),
+            11: MagicMock(name="track-11"),
+            12: MagicMock(name="track-12"),
+        }
+
+        class _StubPlexServer:
+            def __init__(self, url, token, timeout=None):
+                self.url = url
+                self.token = token
+
+            def fetchItem(self, key):
+                # int cast → playlist key 12345 vs track keys 10/11/12.
+                if key == 12345:
+                    return playlist_stub
+                return track_stubs[int(key)]
+
+        monkeypatch.setattr(_plexsvr, "PlexServer", _StubPlexServer)
+
+        result = _run_async(
+            remove_tracks_from_suggestions_playlist(
+                "http://localhost:32400", "tok", "12345",
+                ["10", "11", "12"],
+            )
+        )
+        # Post-removal item count from playlist.items() len.
+        assert result == 7
+        # removeItems called exactly once with the 3 fetched track stubs,
+        # in order.
+        assert len(removeItems_calls) == 1
+        passed_items = removeItems_calls[0]
+        assert passed_items == [
+            track_stubs[10], track_stubs[11], track_stubs[12],
+        ]
+
+
 class TestUnratedSqlRefill:
     """Hotfix 260516 — SQL refill must surface UNRATED tracks only.
 
