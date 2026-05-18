@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Generator
 from unittest.mock import AsyncMock, patch
@@ -1014,6 +1014,305 @@ class TestEvictOldestMirrorRowsSync:
         evicted = _evict_oldest_mirror_rows_sync(2)
         # Oldest-first: A, B. C and D survive.
         assert evicted == ["RK_A", "RK_B"]
+
+
+# ---------------------------------------------------------------------------
+# 260517-p2b Task 1 — Phase 8.3 one-shot startup mirror-trim migration tests.
+#
+# Lifespan-time, idempotent, MigrationLog-gated. Mirrors the
+# `run_phase_08_2_discovery_dedupe_artist_name` shape byte-for-byte: in-flight
+# marker on entry, success stamp on completion, completed_at left NULL on the
+# outer-try failure path. Plex push failure has its own inner try/except so
+# the DB-trim success stamp still fires (the DB trim is the loop-unstall
+# win; Plex reconciles via weekly prune).
+# ---------------------------------------------------------------------------
+
+
+class TestPhase083TrimSuggestionsMirror:
+    """260517-p2b — Phase 8.3 startup-trim migration.
+
+    Pre-seeds SuggestionsMirror with N rows + ManagedPlaylist + Plex creds,
+    monkeypatches ``remove_tracks_from_suggestions_playlist`` at the
+    ``app.services.suggestions_service`` module layer (so the in-module
+    reference is the one swapped), and drives
+    ``run_phase_08_3_trim_suggestions_mirror_to_target`` via ``_run_async``.
+    """
+
+    def _seed_mirror_rows(self, session, n: int):
+        """Seed n Track + SuggestionsMirror rows with strictly ascending
+        ``added_at`` (oldest first). Returns the list of rating_keys in
+        oldest-first order so tests can assert which keys were evicted.
+        """
+        from app.models.suggestions import SuggestionsMirror
+        from app.models.track import Track
+
+        rating_keys: list[str] = []
+        base = datetime.now(timezone.utc) - timedelta(minutes=n)
+        for i in range(n):
+            rk = f"rk-{i:03d}"
+            t = Track(plex_rating_key=rk, title=f"Title {rk}", artist="A")
+            session.add(t)
+            session.commit()
+            session.refresh(t)
+            added_at = (base + timedelta(minutes=i)).isoformat()
+            sm = SuggestionsMirror(
+                track_id=t.id, position=i, added_at=added_at,
+            )
+            session.add(sm)
+            session.commit()
+            rating_keys.append(rk)
+        return rating_keys
+
+    def test_phase_08_3_trim_evicts_oldest_when_above_target(
+        self, db_phase7, monkeypatch,
+    ):
+        """Pre-seed 39 SuggestionsMirror rows (mirror size > target=30) +
+        managed playlist + Plex creds. Run migration. Expect:
+          - 9 oldest rows evicted; mirror count == 30
+          - remove_tracks_from_suggestions_playlist called exactly once
+            with rating_keys arg of length 9
+          - MigrationLog stamped with completed_at not None
+        """
+        from app.models.vibe import MigrationLog
+        from app.services import suggestions_service
+        from app.services.suggestions_service import (
+            PHASE_08_3_MIGRATION_ID,
+            _count_mirror_rows_sync,
+            run_phase_08_3_trim_suggestions_mirror_to_target,
+        )
+
+        rating_keys = self._seed_mirror_rows(db_phase7, 39)
+        _seed_managed_suggestions(db_phase7, plex_rating_key="999")
+        _seed_plex_creds(db_phase7)
+        assert _count_mirror_rows_sync() == 39
+
+        plex_mock = AsyncMock(return_value=30)
+        monkeypatch.setattr(
+            suggestions_service,
+            "remove_tracks_from_suggestions_playlist",
+            plex_mock,
+        )
+
+        _run_async(run_phase_08_3_trim_suggestions_mirror_to_target())
+
+        # DB: mirror trimmed to target.
+        assert _count_mirror_rows_sync() == 30, (
+            "Mirror must be trimmed to SUGGESTIONS_TARGET_SIZE=30; "
+            f"got {_count_mirror_rows_sync()}"
+        )
+
+        # The 9 OLDEST rating_keys (first 9 by insertion which == oldest
+        # by added_at) are gone.
+        from app.models.suggestions import SuggestionsMirror
+        from app.models.track import Track
+        db_phase7.expire_all()
+        surviving_rk = {
+            row[0] for row in db_phase7.execute(
+                select(Track.plex_rating_key).join(
+                    SuggestionsMirror,
+                    SuggestionsMirror.track_id == Track.id,
+                )
+            ).all()
+        }
+        evicted_expected = set(rating_keys[:9])
+        surviving_expected = set(rating_keys[9:])
+        assert surviving_rk == surviving_expected, (
+            f"Survivors must be the 30 newest rating_keys; "
+            f"got {sorted(surviving_rk)!r}, expected {sorted(surviving_expected)!r}"
+        )
+        assert not (surviving_rk & evicted_expected), (
+            "Oldest 9 rating_keys must have been evicted"
+        )
+
+        # Plex push called exactly once with a 9-element rating_keys arg.
+        assert plex_mock.await_count == 1, (
+            f"Plex remove helper must be called once; got {plex_mock.await_count}"
+        )
+        # Signature is: (plex_url, plex_token, mp_rating_key, rating_keys_to_remove)
+        # Inspect the rating_keys positional arg (index 3) — also accept kwarg form.
+        call = plex_mock.await_args
+        if call.args and len(call.args) >= 4:
+            keys_arg = call.args[3]
+        else:
+            keys_arg = call.kwargs.get("rating_keys_to_remove")
+        assert keys_arg is not None, (
+            f"Plex remove helper called without rating_keys arg: {call!r}"
+        )
+        assert len(keys_arg) == 9, (
+            f"rating_keys arg must have length 9 (evicted count); "
+            f"got {len(keys_arg)}"
+        )
+        # Oldest-first ordering contract is enforced by _evict_oldest_mirror_rows_sync.
+        assert list(keys_arg) == rating_keys[:9], (
+            f"rating_keys must be oldest-first; got {list(keys_arg)!r}, "
+            f"expected {rating_keys[:9]!r}"
+        )
+
+        # MigrationLog stamped.
+        db_phase7.expire_all()
+        log = db_phase7.exec(
+            select(MigrationLog).where(
+                MigrationLog.phase_id == PHASE_08_3_MIGRATION_ID
+            )
+        ).first()
+        assert log is not None, "MigrationLog row must be created"
+        assert log.completed_at is not None, (
+            "completed_at must be stamped after a successful trim"
+        )
+
+    def test_phase_08_3_trim_noop_when_at_or_below_target(
+        self, db_phase7, monkeypatch,
+    ):
+        """Pre-seed 25 rows (below target) + managed playlist + creds. Run.
+        Expect:
+          - mirror count unchanged at 25
+          - Plex helper either not called, or called with empty rating_keys
+          - MigrationLog stamped with completed_at not None
+        """
+        from app.models.vibe import MigrationLog
+        from app.services import suggestions_service
+        from app.services.suggestions_service import (
+            PHASE_08_3_MIGRATION_ID,
+            _count_mirror_rows_sync,
+            run_phase_08_3_trim_suggestions_mirror_to_target,
+        )
+
+        self._seed_mirror_rows(db_phase7, 25)
+        _seed_managed_suggestions(db_phase7, plex_rating_key="999")
+        _seed_plex_creds(db_phase7)
+        assert _count_mirror_rows_sync() == 25
+
+        plex_mock = AsyncMock(return_value=25)
+        monkeypatch.setattr(
+            suggestions_service,
+            "remove_tracks_from_suggestions_playlist",
+            plex_mock,
+        )
+
+        _run_async(run_phase_08_3_trim_suggestions_mirror_to_target())
+
+        assert _count_mirror_rows_sync() == 25, (
+            f"Below-target mirror must be unchanged; got {_count_mirror_rows_sync()}"
+        )
+
+        # Acceptable: not called at all, OR called with empty rating_keys.
+        if plex_mock.await_count > 0:
+            call = plex_mock.await_args
+            if call.args and len(call.args) >= 4:
+                keys_arg = call.args[3]
+            else:
+                keys_arg = call.kwargs.get("rating_keys_to_remove", [])
+            assert len(keys_arg) == 0, (
+                "On no-op, if Plex helper is called, rating_keys must be empty; "
+                f"got {list(keys_arg)!r}"
+            )
+
+        # Migration must still stamp completed_at — the no-op IS the result.
+        db_phase7.expire_all()
+        log = db_phase7.exec(
+            select(MigrationLog).where(
+                MigrationLog.phase_id == PHASE_08_3_MIGRATION_ID
+            )
+        ).first()
+        assert log is not None and log.completed_at is not None, (
+            "completed_at must be stamped even on a no-op trim"
+        )
+
+    def test_phase_08_3_trim_is_idempotent(
+        self, db_phase7, monkeypatch,
+    ):
+        """Pre-seed 35 rows; run twice. After first run:
+          - mirror count == 30
+          - Plex helper await_count == 1
+        After second run:
+          - mirror count STILL == 30 (no further mutation)
+          - Plex helper await_count STILL == 1 (gate short-circuits)
+        """
+        from app.services import suggestions_service
+        from app.services.suggestions_service import (
+            _count_mirror_rows_sync,
+            run_phase_08_3_trim_suggestions_mirror_to_target,
+        )
+
+        self._seed_mirror_rows(db_phase7, 35)
+        _seed_managed_suggestions(db_phase7, plex_rating_key="999")
+        _seed_plex_creds(db_phase7)
+
+        plex_mock = AsyncMock(return_value=30)
+        monkeypatch.setattr(
+            suggestions_service,
+            "remove_tracks_from_suggestions_playlist",
+            plex_mock,
+        )
+
+        # First run — trims.
+        _run_async(run_phase_08_3_trim_suggestions_mirror_to_target())
+        assert _count_mirror_rows_sync() == 30
+        assert plex_mock.await_count == 1, (
+            f"First run must call Plex helper once; got {plex_mock.await_count}"
+        )
+
+        # Second run — gate must short-circuit.
+        _run_async(run_phase_08_3_trim_suggestions_mirror_to_target())
+        assert _count_mirror_rows_sync() == 30, (
+            f"Second run must NOT mutate mirror; got {_count_mirror_rows_sync()}"
+        )
+        assert plex_mock.await_count == 1, (
+            f"Second run must NOT call Plex helper; await_count={plex_mock.await_count}"
+        )
+
+    def test_phase_08_3_trim_handles_plex_notfound(
+        self, db_phase7, monkeypatch,
+    ):
+        """Pre-seed 35 rows. Monkeypatch remove helper with
+        side_effect=plexapi.exceptions.NotFound. Expect:
+          - no exception bubbles out of the migration
+          - mirror count == 30 (DB trim committed even though Plex push raised)
+          - MigrationLog stamped with completed_at not None
+            (Plex failure does NOT block the success stamp)
+        """
+        from plexapi import exceptions as _plexex
+
+        from app.models.vibe import MigrationLog
+        from app.services import suggestions_service
+        from app.services.suggestions_service import (
+            PHASE_08_3_MIGRATION_ID,
+            _count_mirror_rows_sync,
+            run_phase_08_3_trim_suggestions_mirror_to_target,
+        )
+
+        self._seed_mirror_rows(db_phase7, 35)
+        _seed_managed_suggestions(db_phase7, plex_rating_key="999")
+        _seed_plex_creds(db_phase7)
+
+        plex_mock = AsyncMock(
+            side_effect=_plexex.NotFound("(404) not_found"),
+        )
+        monkeypatch.setattr(
+            suggestions_service,
+            "remove_tracks_from_suggestions_playlist",
+            plex_mock,
+        )
+
+        # Must not raise.
+        _run_async(run_phase_08_3_trim_suggestions_mirror_to_target())
+
+        # DB trim committed despite Plex failure.
+        assert _count_mirror_rows_sync() == 30, (
+            f"DB trim must commit even when Plex NotFound; got {_count_mirror_rows_sync()}"
+        )
+
+        # Stamp fires — the DB trim was the loop-unstall win.
+        db_phase7.expire_all()
+        log = db_phase7.exec(
+            select(MigrationLog).where(
+                MigrationLog.phase_id == PHASE_08_3_MIGRATION_ID
+            )
+        ).first()
+        assert log is not None and log.completed_at is not None, (
+            "Plex NotFound must NOT block the success stamp — the DB trim "
+            "was the actual loop-unstall win"
+        )
 
 
 # ---------------------------------------------------------------------------
