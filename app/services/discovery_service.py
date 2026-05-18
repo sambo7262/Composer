@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 PHASE_08_MIGRATION_ID = "8.0-discovery-bootstrap"
 PHASE_08_1_MIGRATION_ID = "8.1-discovery-dedupe-mb-id"
+PHASE_08_2_MIGRATION_ID = "8.2-discovery-dedupe-artist-name"
 
 
 # D-E2 locked palette — Tailwind 4 -500 stops. Orange-500 (#f97316) goes
@@ -298,6 +299,71 @@ def _dedupe_discovery_candidates_sync() -> int:
     return deleted_total
 
 
+def _dedupe_discovery_candidates_by_name_sync() -> int:
+    """QUICK FIX (260517-n7j) — collapse duplicate :class:`DiscoveryCandidate`
+    rows by NORMALIZED ``artist_name`` (``(artist_name or "").strip().casefold()``).
+
+    Why a SECOND dedup pass (after the Phase 8.1 mb_id collapse)?
+    MusicBrainz returns multiple ``mb_id`` entries for a single human artist
+    (group/solo aliases, splits, disambiguations, regional variants), so the
+    Phase 8.1 mb_id dedup misses user-perceived duplicates that share a name
+    but differ on ``mb_id``. The user-perceived "duplicate" is artist_name-
+    keyed, not mb_id-keyed.
+
+    Why in-process Python (NOT SQL ``LOWER()``)? SQLite ``LOWER()`` is
+    ASCII-only and would silently disagree with Python's ``casefold()`` for
+    Unicode (German ß → "ss", Greek σ/ς merge, Turkish dotless ı, etc.).
+    Match-with-write-time-block requires identical normalization, and the
+    write-time block uses ``casefold()`` — so this helper must too.
+
+    Tiebreak rule MUST match the in-memory dedup at
+    :func:`artist_discovery_call_weekly` (lowest ``COALESCE(llm_rank, 9999)``,
+    then lowest ``id``).
+
+    Rows whose normalized key is the empty string (None / "" / whitespace-
+    only ``artist_name``) are SKIPPED — never deleted, never bucketed. They
+    pass through untouched. The writer is responsible for whatever downstream
+    treatment those edge-case rows deserve.
+
+    MusicBrainz semantic caveat: some artists genuinely share names (e.g.,
+    two unrelated bands both called "Sun"). The user explicitly accepted
+    this trade-off — lowest-rank winner survives. This is intentional
+    product behavior, not a bug.
+
+    Returns the total number of deleted rows.
+    """
+    from app.models.discovery import DiscoveryCandidate
+
+    deleted_total = 0
+    with Session(get_engine()) as session:
+        all_rows = list(session.exec(select(DiscoveryCandidate)).all())
+        # Bucket in-process by normalized artist_name key. casefold() — NOT
+        # lower() — for Unicode parity with the write-time block.
+        buckets: dict[str, list] = {}
+        for row in all_rows:
+            name_key = (row.artist_name or "").strip().casefold()
+            if not name_key:
+                # Empty / whitespace-only artist_name — pass through.
+                continue
+            buckets.setdefault(name_key, []).append(row)
+        for _name_key, rows in buckets.items():
+            if len(rows) <= 1:
+                continue
+            # Winner: lowest COALESCE(llm_rank, 9999), ties → lowest id.
+            rows.sort(
+                key=lambda r: (
+                    r.llm_rank if r.llm_rank is not None else 9999,
+                    r.id,
+                )
+            )
+            for loser in rows[1:]:
+                session.delete(loser)
+                deleted_total += 1
+        if deleted_total > 0:
+            session.commit()
+    return deleted_total
+
+
 async def run_phase_08_discovery_bootstrap() -> None:
     """Lifespan one-shot. Gated by ``MigrationLog(phase_id='8.0-discovery-bootstrap')``.
 
@@ -398,6 +464,60 @@ async def run_phase_08_1_discovery_dedupe_mb_id() -> None:
     )
     logger.info(
         "Phase 8.1 dedupe migration complete: "
+        "deleted %d duplicate DiscoveryCandidate rows.",
+        deleted,
+    )
+
+
+async def run_phase_08_2_discovery_dedupe_artist_name() -> None:
+    """QUICK FIX (260517-n7j) — lifespan one-shot. Gated by
+    ``MigrationLog(phase_id='8.2-discovery-dedupe-artist-name')``.
+
+    Stacks AFTER the Phase 8.1 mb_id dedup as a strict SUPERSET: collapses
+    user-perceived duplicates that share a normalized ``artist_name``
+    (``(artist_name or "").strip().casefold()``) but differ on ``mb_id``
+    (MusicBrainz alias / split / disambiguation cases). The Phase 8.1
+    mb_id dedup runs first and the write-time blocks remain belt-and-
+    suspenders; this migration cleans the NAS DB once on next deploy.
+
+    Mirrors the shape of :func:`run_phase_08_1_discovery_dedupe_mb_id`
+    exactly — same gate pattern, same failure semantics (leaves
+    ``completed_at`` NULL on exception so the next restart retries).
+    """
+    existing = await asyncio.to_thread(
+        _read_migration_log_sync, PHASE_08_2_MIGRATION_ID,
+    )
+    if existing is not None and existing.completed_at is not None:
+        logger.info(
+            "Phase 8.2 dedupe migration already complete "
+            "(completed_at=%s); skipping.",
+            existing.completed_at,
+        )
+        return
+
+    # In-flight marker — next restart retries on failure.
+    await asyncio.to_thread(
+        _upsert_migration_log_sync, PHASE_08_2_MIGRATION_ID, None,
+    )
+
+    try:
+        deleted = await asyncio.to_thread(
+            _dedupe_discovery_candidates_by_name_sync,
+        )
+    except Exception:
+        logger.exception(
+            "Phase 8.2 dedupe migration failed; "
+            "will retry on next restart."
+        )
+        return
+
+    await asyncio.to_thread(
+        _upsert_migration_log_sync,
+        PHASE_08_2_MIGRATION_ID,
+        datetime.now(timezone.utc).isoformat(),
+    )
+    logger.info(
+        "Phase 8.2 dedupe migration complete: "
         "deleted %d duplicate DiscoveryCandidate rows.",
         deleted,
     )
@@ -1301,6 +1421,35 @@ async def artist_discovery_call_weekly() -> None:
             ):
                 by_mbid[p["mb_id"]] = p
         valid_picks = list(by_mbid.values())
+
+        # SECOND dedup pass (QUICK FIX 260517-n7j) — collapse by normalized
+        # artist_name. MusicBrainz has multiple mb_id entries per human
+        # artist (group/solo aliases, splits, disambiguations, regional
+        # variants), so the user-perceived "duplicate" is artist_name-
+        # keyed, not mb_id-keyed. Normalization:
+        # `(artist_name or "").strip().casefold()` — MUST match
+        # _dedupe_discovery_candidates_by_name_sync exactly. casefold() not
+        # lower() — Unicode-safe for German ß, Greek σ/ς, etc.
+        # Survivor: lowest COALESCE(llm_rank, 9999); ties broken by stable
+        # iteration order. Rows with empty/whitespace artist_name pass
+        # through via `passthrough` (don't silently drop — let the writer
+        # handle them).
+        #
+        # The Phase 8.1 mb_id dedup above remains as belt-and-suspenders.
+        # Stacked, not replaced.
+        by_name: dict = {}
+        passthrough: list = []
+        for p in valid_picks:
+            name_key = (p.get("artist_name") or "").strip().casefold()
+            if not name_key:
+                passthrough.append(p)
+                continue
+            existing = by_name.get(name_key)
+            if existing is None or (
+                (p.get("llm_rank") or 9999) < (existing.get("llm_rank") or 9999)
+            ):
+                by_name[name_key] = p
+        valid_picks = list(by_name.values()) + passthrough
 
         written = await asyncio.to_thread(
             _write_discovery_candidates_sync, valid_picks,
