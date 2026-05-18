@@ -254,7 +254,10 @@ async def lifespan(app: FastAPI):
     # MigrationLog(phase_id='7.0-suggestions-bootstrap'). No-op on
     # subsequent restarts and on fresh installs that bootstrapped via the
     # wizard finalize hook (D-01).
-    from app.services.suggestions_service import run_phase_07_suggestions_bootstrap
+    from app.services.suggestions_service import (
+        run_phase_07_suggestions_bootstrap,
+        run_phase_08_3_trim_suggestions_mirror_to_target,
+    )
     await run_phase_07_suggestions_bootstrap()
     # Phase 8 D-B4 + D-E2 + Pitfall 12 — discovery bootstrap. Stamps
     # CostMeterBaseline.deploy_at (home cost chip baseline), seeds
@@ -277,6 +280,12 @@ async def lifespan(app: FastAPI):
     # MigrationLog gate (phase_id='8.2-discovery-dedupe-artist-name').
     from app.services.discovery_service import run_phase_08_2_discovery_dedupe_artist_name
     await run_phase_08_2_discovery_dedupe_artist_name()
+    # QUICK FIX (260517-p2b): one-shot startup trim of oversized
+    # SuggestionsMirror down to SUGGESTIONS_TARGET_SIZE. Idempotent via
+    # MigrationLog. MUST run AFTER 8.1/8.2 dedupes so it sees post-dedupe
+    # state, and BEFORE event_bus so the first webhook of the new boot
+    # sees a trimmed mirror with a positive maybe_schedule_refill deficit.
+    await run_phase_08_3_trim_suggestions_mirror_to_target()
     # Phase 5: queue → dispatcher → scheduler order is mandatory.
     get_event_bus()
     await start_dispatcher()

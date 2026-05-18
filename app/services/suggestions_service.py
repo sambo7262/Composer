@@ -75,6 +75,12 @@ _STD_FLOOR = 1e-6
 SUGGESTIONS_TARGET_SIZE = 30  # SUGG-01 default (configurable in later plan)
 SUGGESTIONS_PLAYLIST_NAME = "Composer · Suggestions"  # Phase 6 D-25 namespace
 PHASE_07_MIGRATION_ID = "7.0-suggestions-bootstrap"
+# QUICK FIX (260517-p2b) — Phase 8.3 one-shot lifespan trim of pre-existing
+# oversized SuggestionsMirror down to SUGGESTIONS_TARGET_SIZE. The 260517-nkt
+# discovery WRITE cap is forward-looking only; this migration cleans the
+# carryover state once so maybe_schedule_refill's deficit gate can re-open
+# and the rate-feedback loop unstalls. Gated by MigrationLog(phase_id=...).
+PHASE_08_3_MIGRATION_ID = "8.3-trim-suggestions-mirror-to-target"
 # Sentinel for "Plex playlist not yet created" — Plan 02 first refill detects
 # this and runs the real plex_playlist_service.create_playlist call with the
 # first batch of suggestions.
@@ -1410,3 +1416,127 @@ async def handle_soft_negative_sweep() -> int:
     count = await asyncio.to_thread(_soft_negative_sweep_sync)
     logger.info("Soft-negative sweep wrote %d NegativeSignal rows", count)
     return count
+
+
+async def run_phase_08_3_trim_suggestions_mirror_to_target() -> None:
+    """QUICK FIX (260517-p2b) — lifespan one-shot. Gated by
+    ``MigrationLog(phase_id='8.3-trim-suggestions-mirror-to-target')``.
+
+    Trims any existing oversized SuggestionsMirror down to
+    ``SUGGESTIONS_TARGET_SIZE`` on the next boot. The 260517-nkt discovery
+    WRITE cap is forward-looking only; this migration cleans the carryover
+    state once so ``maybe_schedule_refill``'s deficit gate can re-open and
+    the rate-feedback loop unstalls on NAS installs that carried a 39-row
+    mirror over from pre-260517-nkt unconstrained cron runs.
+
+    Mirrors the shape of
+    :func:`app.services.discovery_service.run_phase_08_2_discovery_dedupe_artist_name`
+    — same gate pattern, same failure semantics (outer try/except leaves
+    ``completed_at`` NULL on exception so the next restart retries).
+
+    The Plex push has its OWN inner try/except so push failure does NOT
+    block the success stamp (the DB trim is the loop-unstall win; Plex
+    reconciles via the weekly prune job). NotFound is detected via the
+    canonical idiom byte-equivalent to
+    ``app/services/suggestions_service.py:1204-1211``.
+    """
+    existing = await asyncio.to_thread(
+        _read_migration_log_sync, PHASE_08_3_MIGRATION_ID,
+    )
+    if existing is not None and existing.completed_at is not None:
+        logger.info(
+            "Phase 8.3 mirror-trim migration already complete "
+            "(completed_at=%s); skipping.",
+            existing.completed_at,
+        )
+        return
+
+    # In-flight marker — outer except leaves this NULL → retry next boot.
+    await asyncio.to_thread(
+        _upsert_migration_log_sync, PHASE_08_3_MIGRATION_ID, None,
+    )
+
+    try:
+        current = await asyncio.to_thread(_count_mirror_rows_sync)
+        evict_count = max(0, current - SUGGESTIONS_TARGET_SIZE)
+
+        if evict_count == 0:
+            logger.info(
+                "Phase 8.3 mirror-trim migration: mirror already at or "
+                "below target (count=%d, target=%d)",
+                current, SUGGESTIONS_TARGET_SIZE,
+            )
+            evicted_keys: list[str] = []
+            plex_removed = 0
+        else:
+            evicted_keys = await asyncio.to_thread(
+                _evict_oldest_mirror_rows_sync, evict_count,
+            )
+
+            # Plex push — best effort, own try/except so failure here does
+            # NOT block the success stamp below. The DB trim is the actual
+            # loop-unstall win; Plex reconciles via the weekly prune job.
+            mp = await asyncio.to_thread(
+                _find_suggestions_managed_playlist_sync,
+            )
+            if mp is None:
+                logger.warning(
+                    "Phase 8.3: no ManagedPlaylist(kind=suggestions) row; "
+                    "DB trim committed, Plex sync deferred to weekly prune"
+                )
+                plex_removed = 0
+            elif not mp.plex_rating_key:
+                logger.warning(
+                    "Phase 8.3: deferred playlist (no plex_rating_key yet); "
+                    "DB trim committed, Plex push skipped"
+                )
+                plex_removed = 0
+            else:
+                plex_url, plex_token = await asyncio.to_thread(
+                    _read_plex_creds_sync,
+                )
+                try:
+                    plex_removed = await remove_tracks_from_suggestions_playlist(
+                        plex_url, plex_token, mp.plex_rating_key, evicted_keys,
+                    )
+                except Exception as exc:
+                    # NotFound canonical idiom — byte-equivalent to
+                    # app/services/suggestions_service.py:1204-1211.
+                    err_str = (type(exc).__name__ + " " + str(exc)).lower()
+                    from plexapi import exceptions as _plexex
+                    is_not_found = (
+                        isinstance(exc, _plexex.NotFound)
+                        or "notfound" in err_str
+                        or "not found" in err_str
+                        or "404" in err_str
+                    )
+                    if is_not_found:
+                        logger.warning(
+                            "Phase 8.3: Plex playlist rk=%s NotFound during "
+                            "trim; DB state authoritative",
+                            mp.plex_rating_key,
+                        )
+                    else:
+                        logger.exception(
+                            "Phase 8.3 Plex remove failed; DB state "
+                            "authoritative"
+                        )
+                    plex_removed = 0
+    except Exception:
+        # Trim itself failed — leave completed_at NULL so next boot retries.
+        logger.exception(
+            "Phase 8.3 mirror-trim migration failed; "
+            "will retry on next boot"
+        )
+        return
+
+    await asyncio.to_thread(
+        _upsert_migration_log_sync,
+        PHASE_08_3_MIGRATION_ID,
+        datetime.now(timezone.utc).isoformat(),
+    )
+    logger.info(
+        "Phase 8.3 mirror-trim migration complete: evicted %d rows "
+        "(mirror_size %d → %d, plex_removed=%d)",
+        evict_count, current, current - evict_count, plex_removed,
+    )
