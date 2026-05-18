@@ -270,6 +270,13 @@ async def lifespan(app: FastAPI):
     # MigrationLog gate (phase_id='8.1-discovery-dedupe-mb-id').
     from app.services.discovery_service import run_phase_08_1_discovery_dedupe_mb_id
     await run_phase_08_1_discovery_dedupe_mb_id()
+    # QUICK FIX (260517-n7j): one-shot collapse of pre-existing duplicate
+    # DiscoveryCandidate rows that share a normalized artist_name but
+    # differ in mb_id (the MusicBrainz alias/split case the Phase 8.1
+    # mb_id dedup cannot catch). Stacks AFTER 8.1. Idempotent via
+    # MigrationLog gate (phase_id='8.2-discovery-dedupe-artist-name').
+    from app.services.discovery_service import run_phase_08_2_discovery_dedupe_artist_name
+    await run_phase_08_2_discovery_dedupe_artist_name()
     # Phase 5: queue → dispatcher → scheduler order is mandatory.
     get_event_bus()
     await start_dispatcher()
