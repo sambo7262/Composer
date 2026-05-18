@@ -162,6 +162,70 @@ def _count_mirror_rows_sync() -> int:
         )
 
 
+def _evict_oldest_mirror_rows_sync(evict_count: int) -> list[str]:
+    """Evict the oldest ``evict_count`` rows from SuggestionsMirror; return
+    the corresponding Track.plex_rating_key values oldest-first so the
+    caller can remove them from the Plex playlist symmetrically.
+
+    Ordering: ``ORDER BY sm.added_at ASC, sm.id ASC``. ``added_at`` is an
+    ISO 8601 UTC string (model line 43), and every writer in this codebase
+    uses ``datetime.now(timezone.utc).isoformat()`` so lexicographic
+    comparison is correct — DO NOT cast to datetime. The ``sm.id ASC``
+    tiebreaker keeps eviction deterministic when two rows share the same
+    timestamp (e.g. a discovery batch that writes within the same second).
+
+    Concurrency note: this helper plus ``_write_discovery_picks_sync`` run
+    in two separate transactions, which is acceptable because discovery is
+    the sole writer to SuggestionsMirror under the weekly cron path
+    (``refill_mirror_sql`` is the other writer, but it only fires on play,
+    and the weekly cron runs at a quiet hour). The UNIQUE(track_id)
+    constraint at suggestions model line 41 makes any accidental collision
+    a hard error rather than silent corruption.
+
+    Caller contract: this helper is sync; ``discovery_call_weekly`` wraps
+    it via ``asyncio.to_thread`` per Phase 5 Convention #1.
+    """
+    if evict_count <= 0:
+        return []
+    with Session(get_engine()) as session:
+        # SELECT first to capture plex_rating_key values in the same order
+        # the DELETE will use, so the returned list is deterministically
+        # oldest-first.
+        rows = session.execute(
+            text(
+                """
+                SELECT t.plex_rating_key
+                FROM suggestionsmirror sm
+                JOIN track t ON t.id = sm.track_id
+                ORDER BY sm.added_at ASC, sm.id ASC
+                LIMIT :n
+                """
+            ),
+            {"n": evict_count},
+        ).all()
+        evicted_keys: list[str] = [
+            str(r[0]) for r in rows if r[0] is not None
+        ]
+        # DELETE via subquery so SQLite's ORDER BY + LIMIT semantics on
+        # the DELETE itself are well-defined (raw "DELETE ... ORDER BY"
+        # support varies by SQLite build).
+        session.execute(
+            text(
+                """
+                DELETE FROM suggestionsmirror
+                WHERE id IN (
+                    SELECT id FROM suggestionsmirror
+                    ORDER BY added_at ASC, id ASC
+                    LIMIT :n
+                )
+                """
+            ),
+            {"n": evict_count},
+        )
+        session.commit()
+        return evicted_keys
+
+
 def _update_suggestions_managed_playlist_rk_sync(
     new_plex_rating_key: str, track_count: int,
 ) -> bool:
