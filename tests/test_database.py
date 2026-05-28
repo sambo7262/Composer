@@ -34,6 +34,19 @@ def test_foreign_keys_enabled(test_engine):
     assert fk == 1
 
 
+def test_busy_timeout_pragma_is_set_to_5000(test_engine):
+    """Quick 260528-jlg: busy_timeout=5000 lets concurrent writers wait up to
+    5s for a SQLite lock instead of failing instantly with SQLITE_BUSY.
+    Eliminates the intermittent 'database is locked' error seen during the
+    Sunday weekly maintenance tick when a webhook write contended with the
+    cron's prune/discovery writes."""
+    with test_engine.connect() as conn:
+        result = conn.execute(text("PRAGMA busy_timeout"))
+        timeout_ms = result.scalar()
+
+    assert timeout_ms == 5000
+
+
 def test_phase5_migration(test_engine):
     """OPS-01: init_db() creates Phase 5 schema additions.
 
