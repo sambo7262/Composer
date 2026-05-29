@@ -259,7 +259,7 @@ class TestRunAnalysis:
     @patch("app.services.analysis_service.extract_features")
     def test_successful_analysis_sets_analyzed_at(self, mock_extract, mock_isfile, mock_getsize, analysis_db):
         """Each successful analysis sets analyzed_at timestamp and clears analysis_error."""
-        _make_track(analysis_db, key="1", file_path="/data/Music/song.flac", analysis_error="old error")
+        _make_track(analysis_db, key="1", file_path="/data/Music/song.flac")
 
         mock_extract.return_value = {
             "energy": 0.8, "tempo": 120.0, "danceability": 0.7,
@@ -299,6 +299,73 @@ class TestRunAnalysis:
             track = session.exec(select(Track).where(Track.plex_rating_key == "1")).first()
             assert track.analysis_error is not None
             assert track.analyzed_at is None
+
+    @patch("app.services.analysis_service.os.path.getsize", return_value=1000)
+    @patch("app.services.analysis_service.os.path.isfile", return_value=True)
+    @patch("app.services.analysis_service.extract_features")
+    def test_failed_tracks_are_not_retried(self, mock_extract, mock_isfile, mock_getsize, analysis_db):
+        """A track with a persisted analysis_error is skipped on subsequent runs."""
+        _make_track(analysis_db, key="1", file_path="/data/Music/song.flac", analysis_error="boom")
+
+        mock_extract.return_value = {
+            "energy": 0.8, "tempo": 120.0, "danceability": 0.7,
+            "valence": 0.6, "musical_key": "C", "scale": "major",
+            "spectral_complexity": 50.0, "loudness": -10.0,
+        }
+
+        from app.services.analysis_service import run_analysis, get_analysis_status
+        _run_async(run_analysis())
+
+        # extractor must never be called — the errored track is excluded from the queue
+        mock_extract.assert_not_called()
+        status = get_analysis_status()
+        assert status.total_tracks == 0
+
+        from app.database import get_engine
+        with Session(get_engine()) as session:
+            track = session.exec(select(Track).where(Track.plex_rating_key == "1")).first()
+            assert track.analysis_error == "boom"
+            assert track.analyzed_at is None
+
+    @patch("app.services.analysis_service.os.path.getsize", return_value=1000)
+    @patch("app.services.analysis_service.os.path.isfile", return_value=True)
+    @patch("app.services.analysis_service.extract_features")
+    def test_clear_analysis_errors_requeues_failed(self, mock_extract, mock_isfile, mock_getsize, analysis_db):
+        """clear_analysis_errors() resets failed tracks so a re-run analyzes them."""
+        _make_track(analysis_db, key="1", file_path="/data/Music/song.flac", analysis_error="boom")
+
+        mock_extract.return_value = {
+            "energy": 0.8, "tempo": 120.0, "danceability": 0.7,
+            "valence": 0.6, "musical_key": "C", "scale": "major",
+            "spectral_complexity": 50.0, "loudness": -10.0,
+        }
+
+        from app.services.analysis_service import (
+            clear_analysis_errors,
+            run_analysis,
+        )
+        cleared = clear_analysis_errors()
+        assert cleared == 1
+
+        _run_async(run_analysis())
+
+        from app.database import get_engine
+        with Session(get_engine()) as session:
+            track = session.exec(select(Track).where(Track.plex_rating_key == "1")).first()
+            assert track.analyzed_at is not None
+            assert track.analysis_error is None
+
+    def test_get_failed_tracks_returns_persisted_failures(self, analysis_db):
+        """get_failed_tracks() surfaces tracks with a persisted analysis_error."""
+        _make_track(analysis_db, key="1", title="Good", file_path="/data/Music/a.flac")
+        _make_track(analysis_db, key="2", title="Bad", artist="X", file_path="/data/Music/b.flac", analysis_error="boom")
+
+        from app.services.analysis_service import get_failed_tracks
+        failed = get_failed_tracks()
+
+        assert len(failed) == 1
+        assert failed[0]["track"] == "X - Bad"
+        assert failed[0]["error"] == "boom"
 
     @patch("app.services.analysis_service.os.path.getsize", return_value=1000)
     @patch("app.services.analysis_service.os.path.isfile", return_value=True)
@@ -371,11 +438,11 @@ class TestRunAnalysis:
         # Missing file should be counted as failed
         assert status.failed_tracks == 1
 
-    @patch("app.services.analysis_service.os.path.getsize", return_value=200_000_000)
+    @patch("app.services.analysis_service.os.path.getsize", return_value=600_000_000)
     @patch("app.services.analysis_service.os.path.isfile", return_value=True)
     @patch("app.services.analysis_service.extract_features")
     def test_skips_oversized_files(self, mock_extract, mock_isfile, mock_getsize, analysis_db):
-        """Files > 100MB are skipped (T-03-05 mitigation)."""
+        """Files over MAX_FILE_SIZE_BYTES (500MB) are skipped (T-03-05 mitigation)."""
         _make_track(analysis_db, key="1", file_path="/data/Music/huge.flac")
 
         from app.services.analysis_service import run_analysis, get_analysis_status
