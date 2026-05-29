@@ -108,14 +108,24 @@
       </span>
     </div>
   </div>
-  {% if analysis_status.failed_tracks > 0 %}
+  {% if error_count and error_count > 0 %}
+  {# Persistent failures from the DB (analysis_error column) — survives restarts
+     and is the durable source now that failed tracks are skipped on re-runs. #}
   <div class="mt-2">
-    <button @click="showErrors = !showErrors"
-            class="text-text-secondary hover:text-text-primary text-[12px] underline transition-colors">
-      {{ analysis_status.failed_tracks }} failed
-    </button>
+    <div class="flex items-center gap-3">
+      <button @click="showErrors = !showErrors"
+              class="text-text-secondary hover:text-text-primary text-[12px] underline transition-colors">
+        {{ error_count }} failed
+      </button>
+      <button hx-post="/api/analysis/retry-failed"
+              hx-target="#analysis-banner"
+              hx-swap="outerHTML"
+              class="text-text-secondary hover:text-accent text-[12px] underline transition-colors">
+        Retry failed
+      </button>
+    </div>
     <div x-show="showErrors" x-cloak class="mt-2 space-y-1 max-h-40 overflow-y-auto">
-      {% for err in analysis_status.errors %}
+      {% for err in failed_tracks_db %}
       <div class="text-[11px] text-text-secondary bg-surface-elevated rounded px-2 py-1">
         <span class="text-text-primary">{{ err.track }}</span> &mdash; {{ err.error }}
       </div>
@@ -127,7 +137,7 @@
 
 {% else %}
 {# Idle state: show analyze button with context-dependent message #}
-<div id="analysis-banner" class="mb-6 flex items-center justify-between">
+<div id="analysis-banner" class="mb-6" x-data="{ showErrors: false }">
   <div class="flex items-center gap-3">
     {% if unanalyzed_count > 0 %}
     <button hx-post="/api/analysis/start"
@@ -150,5 +160,29 @@
     </span>
     {% endif %}
   </div>
+  {% if error_count and error_count > 0 %}
+  {# Persistent failures — visible even when idle, with manual retry. #}
+  <div class="mt-2">
+    <div class="flex items-center gap-3">
+      <button @click="showErrors = !showErrors"
+              class="text-text-secondary hover:text-text-primary text-[12px] underline transition-colors">
+        {{ error_count }} failed
+      </button>
+      <button hx-post="/api/analysis/retry-failed"
+              hx-target="#analysis-banner"
+              hx-swap="outerHTML"
+              class="text-text-secondary hover:text-accent text-[12px] underline transition-colors">
+        Retry failed
+      </button>
+    </div>
+    <div x-show="showErrors" x-cloak class="mt-2 space-y-1 max-h-40 overflow-y-auto">
+      {% for err in failed_tracks_db %}
+      <div class="text-[11px] text-text-secondary bg-surface-elevated rounded px-2 py-1">
+        <span class="text-text-primary">{{ err.track }}</span> &mdash; {{ err.error }}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 </div>
 {% endif %}

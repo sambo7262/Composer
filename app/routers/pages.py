@@ -16,7 +16,7 @@ from app.models.event_log import EventLog
 from app.models.track import Track
 from app.models.vibe import SetupState, Vibe
 from app.routers import api_webhooks
-from app.services.analysis_service import get_analysis_status
+from app.services.analysis_service import get_analysis_status, get_failed_tracks
 from app.services.event_bus import get_event_bus
 from app.services.poll_service import get_poll_status
 from app.services.settings_service import get_setting, is_service_configured
@@ -588,6 +588,10 @@ async def library_page(request: Request, session: Session = Depends(get_session)
             Track.file_path.isnot(None),  # type: ignore[union-attr]
         )
     ).one()
+    error_count = session.exec(
+        select(func.count()).select_from(Track).where(Track.analysis_error.isnot(None))  # type: ignore[union-attr]
+    ).one()
+    failed_tracks_db = get_failed_tracks()
 
     # Query initial page of tracks (page 1, 50 per page, sorted by title asc)
     per_page = 50
@@ -626,6 +630,8 @@ async def library_page(request: Request, session: Session = Depends(get_session)
             "analysis_state": analysis_status.state.value,
             "analyzed_count": analyzed_count,
             "unanalyzed_count": unanalyzed_count,
+            "error_count": error_count,
+            "failed_tracks_db": failed_tracks_db,
         },
     )
 

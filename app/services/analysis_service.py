@@ -72,6 +72,46 @@ def get_analysis_status() -> AnalysisStatus:
     return _analysis_status
 
 
+def get_failed_tracks(limit: int = 50) -> list[dict]:
+    """Return persistently-failed tracks (analysis_error set) for UI display.
+
+    The in-memory AnalysisStatus.errors list only covers the current run and
+    resets on restart; since failed tracks are now skipped on subsequent runs
+    (analysis_error IS NULL gate), this DB-backed query is the durable source of
+    "what is still failing".
+    """
+    engine = get_engine()
+    with Session(engine) as session:
+        rows = session.exec(
+            select(Track.artist, Track.title, Track.analysis_error)
+            .where(Track.analysis_error.isnot(None))  # type: ignore[union-attr]
+            .limit(limit)
+        ).all()
+        return [
+            {"track": f"{artist} - {title}", "error": error}
+            for artist, title, error in rows
+        ]
+
+
+def clear_analysis_errors() -> int:
+    """Clear analysis_error on all failed tracks so they re-enter the work queue.
+
+    Returns the number of tracks reset. Used by the "Retry failed" action — e.g.
+    after the user fixes/re-adds corrupt files. Re-running analysis will set the
+    error again for any that still fail.
+    """
+    engine = get_engine()
+    with Session(engine) as session:
+        failed = session.exec(
+            select(Track).where(Track.analysis_error.isnot(None))  # type: ignore[union-attr]
+        ).all()
+        for track in failed:
+            track.analysis_error = None
+            session.add(track)
+        session.commit()
+        return len(failed)
+
+
 def _detect_plex_music_root_sync() -> str:
     """Auto-detect Plex music root from common prefix of file paths.
 

@@ -10,7 +10,9 @@ from app.database import get_session
 from app.models.track import Track
 from app.services.analysis_service import (
     AnalysisStateEnum,
+    clear_analysis_errors,
     get_analysis_status,
+    get_failed_tracks,
     run_analysis,
     stop_analysis,
 )
@@ -43,6 +45,7 @@ def _get_analysis_db_stats(session: Session) -> dict:
         "analyzed_count": analyzed_count,
         "error_count": error_count,
         "unanalyzed_count": unanalyzed_count,
+        "failed_tracks_db": get_failed_tracks(),
     }
 
 
@@ -106,6 +109,36 @@ async def stop_analysis_endpoint(
         {
             "analysis_status": status,
             "analysis_state": "paused",
+            **db_stats,
+        },
+    )
+
+
+@router.post("/retry-failed", response_class=HTMLResponse)
+async def retry_failed_analysis(
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Clear analysis_error on all failed tracks and re-run analysis.
+
+    Used after the user fixes/re-adds files that previously failed extraction.
+    Tracks that still fail will simply re-acquire their analysis_error.
+    """
+    templates = get_templates()
+    cleared = await asyncio.to_thread(clear_analysis_errors)
+
+    status = get_analysis_status()
+    if cleared > 0 and status.state != AnalysisStateEnum.RUNNING:
+        asyncio.create_task(run_analysis())
+        status = get_analysis_status()
+
+    db_stats = _get_analysis_db_stats(session)
+    return templates.TemplateResponse(
+        request,
+        "partials/analysis_banner.html",
+        {
+            "analysis_status": status,
+            "analysis_state": status.state.value,
             **db_stats,
         },
     )
