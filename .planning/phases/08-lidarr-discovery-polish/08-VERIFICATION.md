@@ -1,9 +1,11 @@
 ---
 phase: 08-lidarr-discovery-polish
 verified: 2026-05-17 PT
-status: human_needed
+updated: 2026-05-29
+status: verified
 must_haves_verified: 49/49
 requirements_covered: 12/12
+human_verification: confirmed via NAS UAT 2026-05-29 (see 08-HUMAN-UAT.md — all 5 items pass including Lidarr Add round-trip)
 ---
 
 # Phase 8: Lidarr Discovery + Polish — Verification

@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: — Music Companion
-status: executing
-stopped_at: Phase 7 context gathered via /gsd-discuss-phase. Four gray areas resolved (refill cadence + bootstrap, shortlist composition, queue UI + dismiss interaction, skip-tracking calibration); 13 implementation decisions captured in `07-CONTEXT.md`. Researcher and planner can proceed without re-asking the user. The system-prompt-caching fix (Anthropic >2048-token minimum that bit Phase 6.2) is folded into Phase 7 D-07 as the shared longer preamble — load-bearing for SC4 ("`cache_read_input_tokens` accumulating").
-last_updated: "2026-05-17T14:59:40.361Z"
-last_activity: 2026-05-17
+status: phase_complete
+stopped_at: Phase 8 wrapped 2026-05-29 — all HUMAN-UAT items in Phases 6, 7, 7.1, 8 confirmed working on NAS (including Lidarr Add round-trip). All 4 verification files flipped to status=verified. Milestone v2.0 feature-complete; Phase 9 (Feed the Engine) is optional/cuttable.
+last_updated: "2026-05-29T00:00:00.000Z"
+last_activity: 2026-05-29
 progress:
   total_phases: 11
   completed_phases: 11
@@ -21,23 +21,25 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-08)
 
 **Core value:** Your Plex stars are the truth. Composer turns them into living vibe playlists and a steady stream of personalized discoveries — without you having to describe a vibe each time.
-**Current focus:** Phase 08 — lidarr-discovery-polish
+**Current focus:** Milestone v2.0 feature-complete — Phase 8 wrapped 2026-05-29
 
 ## Current Position
 
-Phase: 08
-Plan: Not started
-Status: Executing Phase 08
-Last activity: 2026-05-28 - Completed quick task 260528-jlg (SQLite busy_timeout=5000 — eliminates concurrent-write lock errors)
+Phase: 08 (wrapped)
+Plan: All 5 complete + verified
+Status: Phase 8 closed; milestone v2.0 ready for /gsd-complete-milestone (Phase 9 optional)
+Last activity: 2026-05-29 - Phase 8 UAT closed; full milestone UAT debt (Phases 6/7/7.1/8) cleared on NAS
 
 ### v2.0 Phase Snapshot
 
 | Phase | Goal (one-line) | Status |
 |-------|-----------------|--------|
 | 5 — Plex Event Foundation + Rating Sync | Composer reliably ingests Plex webhook + polling events, dedupes them, propagates `RatingChanged` end-to-end | Complete |
-| 6 — Vibe Clustering + Setup Wizard | First-run wizard ends with 3–7 named vibe playlists in Plex, auto-slotting newly-rated tracks | Complete (2026-05-13) |
-| 7 — Suggestions Queue + v1 Chat Retirement | Continuous Composer · Suggestions playlist drains and refills; vibes home is the new landing page | Next up |
-| 8 — Lidarr Discovery + Polish | Taste-aware artist discovery, one-click add, auto-ingest of arrivals, mobile responsive pass | Pending |
+| 6 — Vibe Clustering + Setup Wizard | First-run wizard ends with 3–7 named vibe playlists in Plex, auto-slotting newly-rated tracks | Complete + UAT verified (2026-05-29) |
+| 7 — Suggestions Queue + v1 Chat Retirement | Continuous Composer · Suggestions playlist drains and refills; vibes home is the new landing page | Complete + UAT verified (2026-05-29) |
+| 7.1 — Suggestions Cost Architecture | SQL refill + weekly LLM discovery; $0 LLM in hot path | Complete + UAT verified (2026-05-29) |
+| 8 — Lidarr Discovery + Polish | Taste-aware artist discovery, one-click add, auto-ingest of arrivals, mobile responsive pass | Complete + UAT verified (2026-05-29) |
+| 9 — Feed the Engine (OPTIONAL) | Bulk rating, play-rated nudge, Surprise Me — cuttable | Pending / cuttable |
 | 9 — Feed the Engine (OPTIONAL) | Bulk rating, play-rated nudge, Surprise Me — cuttable | Pending |
 
 ## Performance Metrics

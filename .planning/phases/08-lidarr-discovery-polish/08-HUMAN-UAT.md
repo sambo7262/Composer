@@ -1,14 +1,14 @@
 ---
-status: partial
+status: complete
 phase: 08-lidarr-discovery-polish
 source: [08-VERIFICATION.md]
 started: 2026-05-17
-updated: 2026-05-17
+updated: 2026-05-29
 ---
 
 ## Current Test
 
-[awaiting human testing of items not pre-approved]
+[all items confirmed — items 1-3 pre-approved Plan 04 UAT; items 4-5 confirmed via NAS UAT 2026-05-29 including Lidarr Add round-trip]
 
 ## Tests
 
@@ -26,21 +26,21 @@ result: pre-approved (UAT iter push `98a6f0b`)
 
 ### 4. CR-01 weekly rotation (multi-tick UAT)
 expected: after a second Sunday cron tick (or two manual ticks ≥1 week apart simulated via SQL), `/discover` displays only the most recent week's `DiscoveryCandidate` rows; older rows remain in the DB but are filtered out
-result: pending (needs ≥2 cron tick cycles to validate end-to-end)
+result: passed (NAS UAT 2026-05-29 — confirmed working)
 
 ### 5. Manual-tick button round-trip
 expected: clicking `[Run weekly tick now]` on `/debug/discovery` flips state to `running`, the 5s poll shows `running → idle/error`, candidates land on `/discover`, cost chip transitions to post-first-tick state with `next refresh in 7d`
-result: pending (needs real Lidarr + MB + Anthropic to round-trip on NAS)
+result: passed (NAS UAT 2026-05-29 — confirmed working; Lidarr Add round-trip also confirmed)
 
 ## Summary
 
 total: 5
-passed: 3
+passed: 5
 issues: 0
-pending: 2
+pending: 0
 skipped: 0
 blocked: 0
 
 ## Gaps
 
-(none — items 4 and 5 are time/topology-bound, not gaps)
+(none)
