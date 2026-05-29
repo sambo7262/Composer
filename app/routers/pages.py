@@ -584,6 +584,7 @@ async def library_page(request: Request, session: Session = Depends(get_session)
     unanalyzed_count = session.exec(
         select(func.count()).select_from(Track).where(
             Track.analyzed_at.is_(None),  # type: ignore[union-attr]
+            Track.analysis_error.is_(None),  # type: ignore[union-attr]
             Track.file_path.isnot(None),  # type: ignore[union-attr]
         )
     ).one()

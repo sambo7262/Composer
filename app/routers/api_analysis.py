@@ -35,6 +35,7 @@ def _get_analysis_db_stats(session: Session) -> dict:
     unanalyzed_count = session.exec(
         select(func.count()).select_from(Track).where(
             Track.analyzed_at.is_(None),  # type: ignore[union-attr]
+            Track.analysis_error.is_(None),  # type: ignore[union-attr]
             Track.file_path.isnot(None),  # type: ignore[union-attr]
         )
     ).one()

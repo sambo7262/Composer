@@ -208,6 +208,7 @@ async def run_analysis() -> None:
             with Session(engine) as session:
                 statement = select(Track.id, Track.artist, Track.title).where(
                     Track.analyzed_at.is_(None),  # type: ignore[union-attr]
+                    Track.analysis_error.is_(None),  # type: ignore[union-attr]
                     Track.file_path.isnot(None),  # type: ignore[union-attr]
                 )
                 results = session.exec(statement).all()
@@ -328,6 +329,7 @@ async def trigger_post_sync_analysis() -> None:
         with Session(engine) as session:
             statement = select(Track.id).where(
                 Track.analyzed_at.is_(None),  # type: ignore[union-attr]
+                Track.analysis_error.is_(None),  # type: ignore[union-attr]
                 Track.file_path.isnot(None),  # type: ignore[union-attr]
             ).limit(1)
             result = session.exec(statement).first()
