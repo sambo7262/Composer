@@ -1,8 +1,9 @@
 ---
 phase: 02-library-sync
 verified: 2026-04-09T21:00:00Z
-status: human_needed
-score: 4/4 must-haves verified
+updated: 2026-05-29
+status: verified
+score: 4/4 must-haves verified — running in production on NAS continuously since v1.0 ship (2026-04)
 overrides_applied: 0
 human_verification:
   - test: "Navigate to /library after app startup and confirm the Library link is present in the nav bar, the page loads, and the track table renders (with tracks or empty state)"

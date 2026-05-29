@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: — Music Companion
-status: phase_complete
-stopped_at: Phase 8 wrapped 2026-05-29 — all HUMAN-UAT items in Phases 6, 7, 7.1, 8 confirmed working on NAS (including Lidarr Add round-trip). All 4 verification files flipped to status=verified. Milestone v2.0 feature-complete; Phase 9 (Feed the Engine) is optional/cuttable.
-last_updated: "2026-05-29T00:00:00.000Z"
-last_activity: 2026-05-29
+status: Awaiting next milestone
+stopped_at: Phase 7 context gathered via /gsd-discuss-phase. Four gray areas resolved (refill cadence + bootstrap, shortlist composition, queue UI + dismiss interaction, skip-tracking calibration); 13 implementation decisions captured in `07-CONTEXT.md`. Researcher and planner can proceed without re-asking the user. The system-prompt-caching fix (Anthropic >2048-token minimum that bit Phase 6.2) is folded into Phase 7 D-07 as the shared longer preamble — load-bearing for SC4 ("`cache_read_input_tokens` accumulating").
+last_updated: "2026-05-29T19:50:37.340Z"
+last_activity: 2026-05-29 — Milestone v2.0 completed and archived
 progress:
   total_phases: 11
   completed_phases: 11
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-05-08)
 
 ## Current Position
 
-Phase: 08 (wrapped)
-Plan: All 5 complete + verified
-Status: Phase 8 closed; milestone v2.0 ready for /gsd-complete-milestone (Phase 9 optional)
-Last activity: 2026-05-29 - Phase 8 UAT closed; full milestone UAT debt (Phases 6/7/7.1/8) cleared on NAS
+Phase: Milestone v2.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-05-29 — Milestone v2.0 completed and archived
 
 ### v2.0 Phase Snapshot
 
@@ -39,8 +39,7 @@ Last activity: 2026-05-29 - Phase 8 UAT closed; full milestone UAT debt (Phases 
 | 7 — Suggestions Queue + v1 Chat Retirement | Continuous Composer · Suggestions playlist drains and refills; vibes home is the new landing page | Complete + UAT verified (2026-05-29) |
 | 7.1 — Suggestions Cost Architecture | SQL refill + weekly LLM discovery; $0 LLM in hot path | Complete + UAT verified (2026-05-29) |
 | 8 — Lidarr Discovery + Polish | Taste-aware artist discovery, one-click add, auto-ingest of arrivals, mobile responsive pass | Complete + UAT verified (2026-05-29) |
-| 9 — Feed the Engine (OPTIONAL) | Bulk rating, play-rated nudge, Surprise Me — cuttable | Pending / cuttable |
-| 9 — Feed the Engine (OPTIONAL) | Bulk rating, play-rated nudge, Surprise Me — cuttable | Pending |
+| 9 — Feed the Engine (OPTIONAL) | Bulk rating, play-rated nudge, Surprise Me | **Cut** — covered by Suggestions queue + weekly discovery |
 
 ## Performance Metrics
 
@@ -208,3 +207,7 @@ Next actions:
   - Phase 7 requirements: SUGG-01..11 (11 reqs), UI-01..06 (6 reqs), OPS-05 (1 req), DEBUG-03 + DEBUG-05 (2 reqs) = 20 requirements total.
   - Phase 7 ships the LLM cost circuit breaker (Pitfall 11) in the FIRST commit, not the last — daily 50 calls + 5/60s burst + 60s per-event debounce. Plan accordingly.
   - Optional cleanup queue (still deferred, doesn't block Phase 7): WR-01 finalize dead code, WR-03 zero-member vibe leak; pre-existing test failures in `deferred-items.md`.
+
+## Operator Next Steps
+
+- Start the next milestone with /gsd-new-milestone

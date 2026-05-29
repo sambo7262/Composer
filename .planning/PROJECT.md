@@ -8,26 +8,22 @@ A self-hosted music companion that turns your Plex star ratings into a continuou
 
 Your Plex stars are the truth. Composer turns them into living vibe playlists and a steady stream of personalized discoveries — without you having to describe a vibe each time.
 
-## Current Milestone: v2.0 Music Companion
+## Current State
 
-**Goal:** Pivot Composer from a one-shot vibe-to-playlist generator into a continuous music companion built around your rated tracks as the taste signal — auto-curating vibe playlists and surfacing personalized discoveries from your unrated library.
+**Last shipped:** v2.0 Music Companion (2026-05-29) — 7 phases, 25 plans.
 
-**Target features:**
-- Plex rating sync (userRating) as the foundational taste signal
-- AI-clustered vibes (3–7) derived from rated tracks; user-named, persistent
-- Auto-slot newly rated tracks into matching vibe playlist(s) on Plex
-- Continuous "Composer Suggestions" queue (~30 unrated tracks) that drains as you listen
-- Lidarr taste-aware artist discovery with one-click add
-- Auto-ingest Lidarr arrivals into the analysis + scoring pipeline
-- Mobile-first UI (portrait-first across all v2 surfaces)
-- First-run setup wizard (rating source → propose vibes → confirm)
-- v1 mood-chat UI retired
+Composer is a continuous music companion built around Plex `userRating` as the taste signal. Rated tracks auto-organize into 3–7 named vibe playlists; a continuously-refilling Suggestions queue + weekly LLM-driven discovery surfaces unrated tracks; Lidarr-aware artist discovery brings new music into the library. Mobile-first portrait UI throughout. Running in production on user's Synology NAS.
+
+**Next milestone:** TBD — run `/gsd-new-milestone` to start the next cycle.
+
+**Candidate carry-forwards:**
+- **ENG-02 (played-but-not-rated nudge)** — surface tracks with `viewCount ≥ 5 AND user_rating = 0` on the vibes home; tap → Plexamp deeplink. Not covered by Suggestions/discovery loop. ~1–2 hrs scope.
 
 **Key context:**
 - User has 460+ rated tracks (and growing) across a ~10k-track Plex library
 - Rating happens in Plexamp during normal listening; Composer reads that signal, never overrides it
 - Composer manages only its own playlists; existing Plex playlists stay untouched
-- Anthropic Claude is the LLM (replaced Ollama mid-v1); used sparingly for vibe clustering and suggestion ranking only
+- Anthropic Claude is the LLM (replaced Ollama mid-v1); used sparingly for vibe clustering and weekly discovery only ($0 LLM cost in hot path after Phase 7.1)
 
 ## Requirements
 
@@ -44,21 +40,23 @@ Shipped in v1.0 (phases 1–4):
 - [x] Essentia extracts audio features (energy, tempo, danceability, valence) from local files with pause/resume and per-track caching (Phase 3)
 - [x] Mood-to-playlist chat pipeline: natural-language description → LLM-derived feature criteria → scored library tracks → editable playlist → push to Plex (Phase 4) *(retiring in v2.0; capabilities absorbed into vibe + suggestions model)*
 
-### Active (v2.0)
+Shipped in v2.0 (phases 5–8):
 
-High-level scope. Detailed REQ-IDs live in `.planning/REQUIREMENTS.md`.
+- [x] Sync Plex `userRating` per track via webhook + polling fallback + manual refresh (Phase 5)
+- [x] AI-cluster the rated set into 3–7 vibes via guided wizard; user names/edits/finalizes (Phase 6 / 6.1 / 6.2 — LLM-direct two-pass assignment)
+- [x] Auto-slot newly-rated tracks into matching vibes within ~10s; cap=2 vibes per track (Phase 6)
+- [x] Manage one Plex playlist per vibe under `Composer · {name}` namespace (Phase 6)
+- [x] Continuous "Composer · Suggestions" Plex playlist (default 30 tracks) drains and refills (Phase 7)
+- [x] SQL-driven refill against `TrackVibe.distance` ($0 in hot path) + once-weekly LLM discovery (Phase 7.1)
+- [x] Auto-ingest Lidarr arrivals into Essentia analysis + vibe scoring (Phase 8)
+- [x] `/discover` page with taste-aware artist recommendations; one-click Add-to-Lidarr (Phase 8)
+- [x] Mobile-first portrait UI across `/vibes`, `/suggestions`, `/discover`, `/library`, `/settings` (Phases 7 + 8)
+- [x] v1 mood-chat UI retired; vibes home is the landing page (Phase 7)
+- [x] Lidarr connection-test bug fixed (Phase 8)
 
-- [ ] Sync Plex `userRating` per track and detect rating changes via webhook (primary) + polling (fallback) + manual refresh
-- [ ] AI-cluster the rated set into 3–7 candidate vibes during a guided first-run setup wizard; user names/edits/finalizes
-- [ ] Cache per-vibe feature profiles; auto-slot newly-rated tracks into matching vibes via audio-feature distance
-- [ ] Manage one Plex playlist per vibe (Composer-owned, never touches existing user playlists)
-- [ ] Maintain a continuous "Composer Suggestions" Plex playlist (default 30 tracks) that drains as tracks are played and refills with taste-matched candidates
-- [ ] Detect track consumption via Plex `lastViewedAt` (webhook + polling); refill via audio-feature shortlist + LLM ranking
-- [ ] Auto-ingest Lidarr-imported tracks into Essentia analysis + vibe/suggestion scoring
-- [ ] Surface taste-aware artist recommendations not yet in the library; one-click add to Lidarr with configured quality profile
-- [ ] Mobile-first portrait-first design for all new v2 surfaces; responsive pass on legacy settings/library screens
-- [ ] Retire the v1 mood-chat UI; vibes home becomes the new landing page
-- [ ] Fix Lidarr connection-test bug carried over from v1
+### Active
+
+(No active requirements — next milestone TBD. Run `/gsd-new-milestone` to define scope.)
 
 ### Out of Scope
 
